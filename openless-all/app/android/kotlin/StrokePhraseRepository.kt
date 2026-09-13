@@ -25,17 +25,22 @@ internal class StrokePhraseRepository(context: Context) {
     }
     private var loaded = false
 
-    fun searchAsync(prefix: String, packageName: String, callback: (List<Candidate>) -> Unit) {
+    fun searchAsync(prefix: String, callback: (List<Candidate>) -> Unit) {
         if (prefix.isEmpty()) return callback(emptyList())
         executor.execute {
             ensureLoaded()
             val result = (synchronized(cache) { cache[prefix] } ?: findLongestSuffix(prefix).also {
                 synchronized(cache) { cache[prefix] = it }
             }).sortedWith(compareByDescending<Candidate> {
-                it.baseWeight + userFrequency.score(packageName, it.matchedPrefix.ifEmpty { prefix }, it.text).toInt()
+                it.baseWeight + userFrequency.score(it.matchedPrefix.ifEmpty { prefix }, it.text).toInt()
             })
             Handler(Looper.getMainLooper()).post { callback(result) }
         }
+    }
+
+    /** Records that `candidate` was committed after `context`, off the caller's thread. */
+    fun recordUsage(context: String, candidate: String) {
+        executor.execute { userFrequency.record(context, candidate) }
     }
 
     fun shutdown() = executor.shutdownNow()

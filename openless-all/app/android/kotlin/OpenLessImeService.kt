@@ -2,6 +2,7 @@ package com.openless.app
 
 import android.Manifest
 import android.content.Context
+import android.content.res.Configuration
 import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
@@ -73,6 +74,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private var currentMessage = "点击开始说话"
     private var status: TextView? = null
     private var voiceButton: VoiceButton? = null
+    // Silence-detection for the main voice panel: if the mic capture never
+    // reports a meaningful level for a while after recording starts, the
+    // audio link is probably broken upstream (muted mic, dead capture
+    // session, etc.) even though the UI otherwise looks like it's recording.
+    private var voiceLinkWarning: TextView? = null
+    private var recordingStartedAtMs = 0L
+    private var maxObservedLevelThisSession = 0f
     // The exact text this dictation session committed, so the undo/redo
     // toggle can remove/restore precisely that span rather than guessing.
     private var lastDictationText: String? = null
@@ -112,7 +120,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
     private val strokeRepository by lazy { StrokeInputRepository(this) }
     private val phraseRepository by lazy { StrokePhraseRepository(this) }
-    private val userFrequency by lazy { StrokeUserFrequency(this) }
     private var strokeCode = ""
     private var strokeQueryEpoch = 0L
     // In-memory word-segmentation buffer: characters the user has marked with
@@ -126,9 +133,36 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private var strokePreview: TextView? = null
     private var strokeCandidates: LinearLayout? = null
 
-    // Single source of truth for the encode row's light-blue text, reused
-    // as-is (not a new similar blue) for the selected/first candidate.
-    private val strokeEncodeAccentColor = Color.rgb(120, 190, 255)
+    // Single source of truth for the encode row's blue text, reused as-is
+    // (not a new similar blue) for the selected/first candidate. A property,
+    // not a val, since it must track the live system theme, not whatever it
+    // resolved to when the service was first created.
+    private val strokeEncodeAccentColor: Int
+        get() = tone(Color.rgb(120, 190, 255), Color.rgb(20, 110, 220))
+
+    /**
+     * True when the keyboard should render its dark palette — follows the
+     * OpenLess app's OWN Settings > Appearance choice (mirrored into
+     * `openless_ime_ui`'s "theme_mode" by OpenLessApplication's WebView
+     * poll), not the raw OS dark-mode setting. Falls back to the OS setting
+     * only if the app's WebView has never resolved a theme yet (fresh
+     * install before Settings was opened once) — the app's own default
+     * preference is itself "system", so this fallback agrees with it.
+     * Re-read on every call, never cached, so a change is picked up on the
+     * next panel rebuild.
+     */
+    private val isDarkTheme: Boolean
+        get() {
+            val mirrored = getSharedPreferences("openless_ime_ui", MODE_PRIVATE).getString("theme_mode", null)
+            return when (mirrored) {
+                "light" -> false
+                "dark" -> true
+                else -> (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) != Configuration.UI_MODE_NIGHT_NO
+            }
+        }
+
+    /** Picks `dark` or `light` for the current system theme — the one place every themed color in this file goes through. */
+    private fun tone(dark: Int, light: Int): Int = if (isDarkTheme) dark else light
     // Mirrors whatever's currently in strokeCandidates (word/stroke matches
     // or phrase associations) as plain (label, action) pairs, so the "show
     // more" overlay can replay the exact same set without duplicating the
@@ -186,8 +220,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 val unit = minOf(bounds.width(), bounds.height()) / 100f
                 val cx = bounds.left + bounds.width() / 2f
                 val top = bounds.top.toFloat()
+                // Mirrors the "5" key's own icon shape, including its top
+                // trimmed by 1/6 (bottom unchanged): 28 + (68-28)/6 ≈ 34.67.
                 val path = Path().apply {
-                    moveTo(cx + 1f * unit, top + 28f * unit)
+                    moveTo(cx + 1f * unit, top + 34.67f * unit)
                     lineTo(cx - 14f * unit, top + 68f * unit)
                     lineTo(cx + 16f * unit, top + 68f * unit)
                 }
@@ -297,7 +333,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
             minimumHeight = dp(300)
             setPadding(dp(16), dp(8), dp(16), dp(4))
-            setBackgroundColor(Color.rgb(48, 48, 48))
+            setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
             clipChildren = false
             clipToPadding = false
         }
@@ -309,7 +345,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             text = displayStatus(currentMessage)
             textSize = 16f
             gravity = android.view.Gravity.CENTER
-            setTextColor(Color.rgb(190, 190, 190))
+            setTextColor(tone(Color.rgb(190, 190, 190), Color.rgb(110, 110, 115)))
             setPadding(0, dp(6), 0, dp(4))
         }
         panel.addView(status, LinearLayout.LayoutParams(
@@ -317,18 +353,31 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             dp(38),
         ))
 
-        voiceButton = VoiceButton(this).apply {
+        voiceButton = VoiceButton(this, isDarkTheme).apply {
             isClickable = true
             setOnClickListener { toggleDictation() }
             contentDescription = ui("OpenLess 语音听写", "OpenLess dictation")
         }
         val buttonHolder = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             gravity = android.view.Gravity.CENTER
             setBackgroundColor(Color.TRANSPARENT)
             clipChildren = false
             clipToPadding = false
         }
         buttonHolder.addView(voiceButton!!, LinearLayout.LayoutParams(dp(176), dp(72)))
+        voiceLinkWarning = TextView(this).apply {
+            text = ui("检测到麦克风无声音，点击重启应用", "No mic audio detected — tap to restart the app")
+            textSize = 16f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            gravity = android.view.Gravity.CENTER
+            setTextColor(Color.rgb(255, 90, 90))
+            setPadding(dp(12), dp(8), dp(12), 0)
+            visibility = View.GONE
+            isClickable = true
+            setOnClickListener { restartApp() }
+        }
+        buttonHolder.addView(voiceLinkWarning, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         panel.addView(buttonHolder, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             0,
@@ -381,7 +430,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         view.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = (height / 2).toFloat()
-            setColor(Color.rgb(54, 54, 54))
+            setColor(tone(Color.rgb(54, 54, 54), Color.rgb(225, 225, 228)))
         }
     }
 
@@ -512,7 +561,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
             minimumHeight = dp(300)
             setPadding(dp(16), dp(8), dp(16), dp(10))
-            setBackgroundColor(Color.rgb(48, 48, 48))
+            setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
             clipChildren = false
             clipToPadding = false
         }
@@ -536,7 +585,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             // text already sitting in the real field, not a tappable control.
             text = editingOriginalText.orEmpty()
             textSize = 15f
-            setTextColor(Color.rgb(120, 190, 255))
+            setTextColor(strokeEncodeAccentColor)
             maxLines = 2
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
@@ -559,7 +608,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         })
 
         val bottomRow = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
-        voiceButton = VoiceButton(this).apply {
+        voiceButton = VoiceButton(this, isDarkTheme).apply {
             isClickable = true
             setOnClickListener { toggleDictation() }
             contentDescription = ui("说出正确的词", "Speak the correct word")
@@ -573,12 +622,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             text = ui("说出正确的词", "Speak to edit")
             textSize = 15f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setTextColor(Color.WHITE)
+            setTextColor(tone(Color.WHITE, Color.rgb(30, 30, 34)))
         }
         status = TextView(this).apply {
             text = displayStatus(currentMessage)
             textSize = 12f
-            setTextColor(Color.rgb(160, 160, 160))
+            setTextColor(tone(Color.rgb(160, 160, 160), Color.rgb(120, 120, 125)))
             setPadding(0, dp(2), 0, 0)
         }
         textStack.addView(title, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -591,9 +640,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         return root
     }
 
-    private fun buildDivider(): View = View(this).apply { setBackgroundColor(Color.rgb(68, 68, 68)) }
+    private fun buildDivider(): View = View(this).apply { setBackgroundColor(tone(Color.rgb(68, 68, 68), Color.rgb(215, 215, 218))) }
 
-    private fun buildModeToggle(): View = ModeToggle(this, inputMode) { selected -> selectInputMode(selected) }
+    private fun buildModeToggle(): View = ModeToggle(this, inputMode, isDarkTheme) { selected -> selectInputMode(selected) }
 
     /**
      * White-on-transparent wordmark used in every panel header, replacing
@@ -625,13 +674,20 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             wrapper.addView(android.widget.ImageView(this).apply {
                 setImageBitmap(bitmap)
                 scaleType = android.widget.ImageView.ScaleType.FIT_XY
+                // The wordmark asset is white-on-transparent; on the light
+                // theme's light panel that would be invisible, so it's
+                // recolored dark via a tint rather than shipping a second
+                // asset.
+                if (!isDarkTheme) {
+                    colorFilter = android.graphics.PorterDuffColorFilter(Color.rgb(30, 30, 34), android.graphics.PorterDuff.Mode.SRC_IN)
+                }
             }, FrameLayout.LayoutParams(widthPx, heightPx, android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL))
         } else {
             wrapper.addView(TextView(this).apply {
                 text = "OpenLess"
                 textSize = 18f
                 setTypeface(typeface, android.graphics.Typeface.BOLD)
-                setTextColor(Color.WHITE)
+                setTextColor(tone(Color.WHITE, Color.rgb(30, 30, 34)))
             }, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -688,7 +744,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
             minimumHeight = dp(300)
             setPadding(dp(8), dp(8), dp(8), dp(8))
-            setBackgroundColor(Color.rgb(48, 48, 48))
+            setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
         }
         val header = LinearLayout(this).apply {
             gravity = android.view.Gravity.CENTER_VERTICAL
@@ -739,12 +795,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     private fun buildStrokeView(): View {
-        val root = SwipeModeContainer(this) { direction -> swipeInputMode(direction) }.apply {
+        // Matches the punctuation rail's own 0.16f width share below (body's
+        // "0.16f/0.65f/0.19f" split) so a downward drag anywhere on the rail
+        // is excluded from swipe-to-dismiss and left entirely to SwipeRail.
+        val root = SwipeModeContainer(this, verticalDismissExclusionRatio = 0.16f) { direction -> swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
             minimumHeight = dp(300)
             setPadding(dp(4), dp(3), dp(4), dp(3))
-            setBackgroundColor(Color.rgb(48, 48, 48))
+            setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
         }
         val header = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
         header.addView(buildBrandView(), LinearLayout.LayoutParams(0, dp(38), 1f))
@@ -788,7 +847,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 text = "✕"
                 textSize = 13f
                 gravity = android.view.Gravity.CENTER
-                setTextColor(Color.rgb(150, 150, 150))
+                setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(130, 130, 135)))
                 contentDescription = ui("清除笔画编码", "Clear stroke code")
                 setOnClickListener { clearStrokes() }
             },
@@ -827,7 +886,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             text = "▾"
             textSize = 14f
             gravity = android.view.Gravity.CENTER
-            setTextColor(Color.rgb(180, 180, 180))
+            setTextColor(tone(Color.rgb(180, 180, 180), Color.rgb(130, 130, 135)))
             contentDescription = ui("展开更多候选", "Show more candidates")
         }
         expandCandidatesButton.setOnClickListener { showCandidateOverlay(expandCandidatesButton) }
@@ -851,7 +910,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             // padding is kept since it only insets key width, not row
             // position.
             setPadding(dp(2), 0, dp(2), 0)
-            background = roundedButton(Color.rgb(45, 45, 45), dp(4))
+            background = roundedButton(tone(Color.rgb(45, 45, 45), Color.rgb(230, 230, 234)), dp(4))
         }
         punctuationGroups[punctuationGroupIndex].forEachIndexed { index, mark ->
             punctuation.addView(keyboardKey(mark, 1f, action = { currentInputConnection?.commitText(mark, 1) }).apply {
@@ -862,7 +921,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             })
             if (index < 4) {
                 punctuation.addView(View(this).apply {
-                    setBackgroundColor(Color.rgb(28, 28, 28))
+                    setBackgroundColor(tone(Color.rgb(28, 28, 28), Color.rgb(205, 205, 210)))
                 }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
             }
         }
@@ -883,7 +942,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     toggleScriptPreference()
                 }, graphicCode = "script").apply {
                     if (traditionalOutput) {
-                        background = roundedButton(Color.rgb(112, 78, 92), dp(5))
+                        background = roundedButton(tone(Color.rgb(112, 78, 92), Color.rgb(232, 205, 213)), dp(5))
                     }
                 } else if (code == "voice") keyboardKey("0", 1f, action = {
                     currentInputConnection?.commitText(" ", 1)
@@ -973,7 +1032,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
             minimumHeight = dp(300)
             setPadding(dp(8), dp(8), dp(8), dp(8))
-            setBackgroundColor(Color.rgb(48, 48, 48))
+            setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
         }
         val header = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
         header.addView(buildBrandView().apply { setPadding(dp(8), 0, 0, 0) }, LinearLayout.LayoutParams(0, dp(38), 1f))
@@ -1183,7 +1242,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     textSize = 21f
                     setSingleLine(true)
                     gravity = android.view.Gravity.CENTER
-                    setTextColor(Color.rgb(245, 245, 245))
+                    setTextColor(tone(Color.rgb(245, 245, 245), Color.rgb(30, 30, 34)))
                     setPadding(dp(10), dp(10), dp(10), dp(10))
                     setOnClickListener {
                         action()
@@ -1200,7 +1259,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         val card = LinearLayout(this).apply {
             addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            background = roundedButton(Color.rgb(45, 45, 45), dp(8))
+            background = roundedButton(tone(Color.rgb(45, 45, 45), Color.rgb(238, 238, 241)), dp(8))
         }
         val popup = android.widget.PopupWindow(
             card,
@@ -1296,7 +1355,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
             minimumHeight = dp(300)
             setPadding(dp(8), dp(8), dp(8), dp(8))
-            setBackgroundColor(Color.rgb(48, 48, 48))
+            setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
         }
         root.addView(buildVoiceHeader(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38)).apply {
             marginStart = dp(8)
@@ -1309,7 +1368,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // the Select button itself — and lose it the moment it's toggled off.
         val gap = dp(6)
         val mediumTypeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-        val softWhite = Color.rgb(224, 224, 224)
+        val softWhite = tone(Color.rgb(224, 224, 224), Color.rgb(40, 40, 44))
 
         // Same keycap background as the stroke panel's own keys (plain
         // keyboardKey() default background/elevation for the normal state,
@@ -1321,7 +1380,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 textSize = textSizeSp
                 typeface = mediumTypeface
                 setTextColor(softWhite)
-                if (highlighted) background = roundedButton(Color.rgb(112, 78, 92), dp(5))
+                if (highlighted) background = roundedButton(tone(Color.rgb(112, 78, 92), Color.rgb(232, 205, 213)), dp(5))
                 attachPressScale(this)
             }
 
@@ -1342,8 +1401,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             // View itself — rotating the whole View would also distort its
             // rectangular background in a non-square cell.
             graphicRotation = rotationDegrees,
+            // Unlike the stroke panel's always-dark-red action keys, these
+            // icons sit on a normal or rose key that flips with the theme.
+            graphicIconColor = tone(Color.WHITE, Color.rgb(30, 30, 34)),
         ).apply {
-            if (highlighted) background = roundedButton(Color.rgb(112, 78, 92), dp(5))
+            if (highlighted) background = roundedButton(tone(Color.rgb(112, 78, 92), Color.rgb(232, 205, 213)), dp(5))
             attachPressScale(this)
         }
 
@@ -1420,7 +1482,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
             minimumHeight = dp(300)
             setPadding(dp(16), dp(8), dp(16), dp(8))
-            setBackgroundColor(Color.rgb(48, 48, 48))
+            setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
             clipChildren = false
             clipToPadding = false
         }
@@ -1443,7 +1505,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 text = label
                 textSize = 14f
                 gravity = android.view.Gravity.CENTER
-                setTextColor(if (selected) Color.rgb(153, 26, 40) else Color.rgb(190, 190, 190))
+                setTextColor(if (selected) Color.rgb(153, 26, 40) else tone(Color.rgb(190, 190, 190), Color.rgb(140, 140, 145)))
                 setTypeface(typeface, if (selected) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
                 setOnClickListener {
                     clipboardHistoryCategory = category
@@ -1471,7 +1533,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 text = ui("暂无粘贴板记录", "No clipboard history yet")
                 textSize = 14f
                 gravity = android.view.Gravity.CENTER
-                setTextColor(Color.rgb(140, 140, 140))
+                setTextColor(tone(Color.rgb(140, 140, 140), Color.rgb(140, 140, 145)))
                 setPadding(0, dp(20), 0, 0)
             })
         } else {
@@ -1479,11 +1541,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 listContainer.addView(TextView(this).apply {
                     text = entry.text
                     textSize = 14f
-                    setTextColor(Color.rgb(230, 230, 230))
+                    setTextColor(tone(Color.rgb(230, 230, 230), Color.rgb(30, 30, 34)))
                     maxLines = 2
                     ellipsize = android.text.TextUtils.TruncateAt.END
                     setPadding(dp(12), dp(10), dp(12), dp(10))
-                    background = roundedButton(Color.rgb(58, 58, 58), dp(8))
+                    background = roundedButton(tone(Color.rgb(58, 58, 58), Color.rgb(238, 238, 241)), dp(8))
                     setOnClickListener {
                         currentInputConnection?.commitText(entry.text, 1)
                         OpenLessClipboardHistory.recordCopy(this@OpenLessImeService, entry.text)
@@ -1506,6 +1568,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
     /** Commits the current character together with any segments already marked via 分词. */
     private fun commitStrokeCandidate(candidate: String) {
+        // Picking anything other than the top-ranked result is a correction
+        // — learn it, so this code favors `candidate` from now on. Picking
+        // the top result needs no recording: it's already where it should be.
+        if (OpenLessAndroidPreferences.strokeUsageEnabled(this) &&
+            strokeCode.isNotEmpty() && candidate != lastStrokeCandidates.firstOrNull()
+        ) {
+            strokeRepository.recordPersonalPick(strokeCode, candidate)
+        }
         commitWord((wordSegments + candidate).joinToString(""))
     }
 
@@ -1515,7 +1585,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val contextBeforeCommit = confirmedText.takeLast(MAX_ASSOCIATION_CONTEXT)
         if (!connection.commitText(outputScript(word), 1)) return
         if (OpenLessAndroidPreferences.strokeUsageEnabled(this)) {
-            userFrequency.record(currentInputEditorInfo?.packageName.orEmpty(), contextBeforeCommit, word)
+            phraseRepository.recordUsage(contextBeforeCommit, word)
         }
         confirmedText = (confirmedText + word).takeLast(MAX_ASSOCIATION_CONTEXT)
         clearStrokes()
@@ -1531,8 +1601,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val context = confirmedText.takeLast(MAX_ASSOCIATION_CONTEXT)
         val query = ++phraseQueryEpoch
         if (context.isEmpty()) return
-        val packageName = currentInputEditorInfo?.packageName.orEmpty()
-        phraseRepository.searchAsync(context, packageName) { result ->
+        phraseRepository.searchAsync(context) { result ->
             if (query != phraseQueryEpoch || inputMode != InputMode.STROKE || confirmedText.takeLast(MAX_ASSOCIATION_CONTEXT) != context) return@searchAsync
             strokeCandidates?.removeAllViews()
             val overlayEntries = mutableListOf<Pair<String, () -> Unit>>()
@@ -1554,7 +1623,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val connection = currentInputConnection ?: return
         if (suffix.isNotEmpty() && !connection.commitText(outputScript(suffix), 1)) return
         if (OpenLessAndroidPreferences.strokeUsageEnabled(this)) {
-            userFrequency.record(currentInputEditorInfo?.packageName.orEmpty(), matchedContext, displayText)
+            phraseRepository.recordUsage(matchedContext, displayText)
         }
         confirmedText = (confirmedText + suffix).takeLast(MAX_ASSOCIATION_CONTEXT)
         clearStrokes()
@@ -1601,14 +1670,24 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // the whole button (which would also rotate — and for a non-square
         // cell, distort — its background).
         graphicRotation: Float = 0f,
+        // Only meaningful with graphicActionCode: StrokeActionView's icon
+        // color. Left null for the always-dark-red action keys (white in
+        // both themes, StrokeActionView's own default); the clipboard
+        // panel's direction/undo icons — which sit on a normal or rose key,
+        // not red — pass the theme-appropriate color explicitly.
+        graphicIconColor: Int? = null,
     ): TextView {
         val keyView = when {
-            microphoneIcon -> MicrophoneKeyView(this)
-            strokeIconCode != null -> StrokeKeyView(this, strokeIconCode)
-            graphicCode != null -> StrokeGlyphView(this, graphicCode)
-            graphicActionCode != null -> StrokeActionView(this, graphicActionCode, graphicRotation)
-            label == "←" || label == "↵" -> ActionSymbolView(this, label)
-            label == "⇧" -> ShiftKeyView(this, shiftState)
+            microphoneIcon -> MicrophoneKeyView(this, isDarkTheme)
+            strokeIconCode != null -> StrokeKeyView(this, strokeIconCode, isDarkTheme)
+            graphicCode != null -> StrokeGlyphView(this, graphicCode, isDarkTheme)
+            graphicActionCode != null -> if (graphicIconColor != null) {
+                StrokeActionView(this, graphicActionCode, graphicRotation, graphicIconColor)
+            } else {
+                StrokeActionView(this, graphicActionCode, graphicRotation)
+            }
+            label == "←" || label == "↵" -> ActionSymbolView(this, label, isDarkTheme)
+            label == "⇧" -> ShiftKeyView(this, shiftState, isDarkTheme)
             else -> TextView(this)
         }
         return keyView.apply {
@@ -1622,8 +1701,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             textSize = if (microphoneIcon) 10f else if (strokeIconCode != null) 1f else if (label == "Return") 17f else 22f
             gravity = if (microphoneIcon) android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL else android.view.Gravity.CENTER
             if (microphoneIcon) setPadding(0, dp(2), 0, 0)
-            setTextColor(Color.rgb(245, 245, 245))
-            background = roundedButton(Color.rgb(52, 52, 54), dp(5))
+            setTextColor(tone(Color.rgb(245, 245, 245), Color.rgb(30, 30, 34)))
+            background = roundedButton(tone(Color.rgb(52, 52, 54), Color.rgb(255, 255, 255)), dp(5))
             // Keep the existing palette and geometry, but give each key a subtle raised surface.
             elevation = dp(5).toFloat()
             translationZ = dp(1).toFloat()
@@ -1736,7 +1815,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private fun performKeyHaptic() {
         val preferences = getSharedPreferences("openless_ime_ui", MODE_PRIVATE)
         if (!preferences.getBoolean("key_haptic_enabled", true)) return
-        val durationMs = preferences.getLong("key_haptic_duration_ms", 12L).coerceIn(1L, 100L)
+        val durationMs = preferences.getLong("key_haptic_duration_ms", 12L).coerceIn(1L, 500L)
         val amplitude = preferences.getInt("key_haptic_amplitude", 55).coerceIn(1, 255)
         runCatching {
             val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -1906,6 +1985,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         } else {
             recording = true
             processing = false
+            // The actual start of a new recording attempt — reset the
+            // silence watch here, not in onCapsuleStateChanged's "recording"
+            // branch: that branch only reset it when `recording` was still
+            // false at the time, but this line already flips it true before
+            // the native "recording" callback ever arrives, so that reset
+            // was structurally unreachable on every normal tap-to-start.
+            recordingStartedAtMs = android.os.SystemClock.elapsedRealtime()
+            maxObservedLevelThisSession = 0f
+            voiceLinkWarning?.visibility = View.GONE
             setState("speaking", "再次点击结束")
             runNativeAction("开始听写") { OpenLessNative.nativeStartDictationForIme() }
         }
@@ -1933,8 +2021,21 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         voiceButton?.audioLevel = level.coerceIn(0f, 1f)
         when (state) {
             "recording" -> {
+                if (!recording) {
+                    // Fresh recording attempt — give it a clean silence watch.
+                    recordingStartedAtMs = android.os.SystemClock.elapsedRealtime()
+                    maxObservedLevelThisSession = 0f
+                    voiceLinkWarning?.visibility = View.GONE
+                }
                 recording = true
                 processing = false
+                maxObservedLevelThisSession = maxOf(maxObservedLevelThisSession, level)
+                val elapsedMs = android.os.SystemClock.elapsedRealtime() - recordingStartedAtMs
+                if (maxObservedLevelThisSession >= SILENCE_LEVEL_THRESHOLD) {
+                    voiceLinkWarning?.visibility = View.GONE
+                } else if (elapsedMs > SILENCE_CHECK_DELAY_MS) {
+                    voiceLinkWarning?.visibility = View.VISIBLE
+                }
                 setState("speaking", "再次点击结束")
             }
             "transcribing" -> {
@@ -2040,10 +2141,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             text = icon
             textSize = sizeDp * 0.45f
             gravity = android.view.Gravity.CENTER
-            setTextColor(Color.WHITE)
+            setTextColor(tone(Color.WHITE, Color.rgb(40, 40, 44)))
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(Color.rgb(54, 54, 54))
+                setColor(tone(Color.rgb(54, 54, 54), Color.rgb(225, 225, 228)))
             }
             contentDescription = description
             setOnClickListener { action() }
@@ -2265,11 +2366,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val panel = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = dp(6).toFloat()
-            setColor(Color.rgb(58, 58, 58))
+            setColor(tone(Color.rgb(58, 58, 58), Color.rgb(228, 228, 232)))
         }
         val divider = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            setColor(Color.rgb(82, 82, 82))
+            setColor(tone(Color.rgb(82, 82, 82), Color.rgb(205, 205, 210)))
         }
         val dividerBottomInset = (dp(60) - dp(24) - dp(1)).coerceAtLeast(0)
         return android.graphics.drawable.LayerDrawable(arrayOf(panel, divider)).apply {
@@ -2308,6 +2409,22 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      */
     private fun hideKeyboardPanel() {
         requestHideSelf(0)
+    }
+
+    /**
+     * Relaunches the whole app and kills this process, for the voice panel's
+     * "mic isn't producing audio" warning — a wedged capture/backend session
+     * is more reliably cleared by a real process restart than by retrying
+     * in place.
+     */
+    private fun restartApp() {
+        runCatching {
+            packageManager.getLaunchIntentForPackage(packageName)?.let { launchIntent ->
+                launchIntent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                startActivity(launchIntent)
+            }
+        }
+        android.os.Process.killProcess(android.os.Process.myPid())
     }
 
     private fun openKeyboardSettings() {
@@ -2409,12 +2526,24 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      */
     private class SwipeModeContainer(
         context: android.content.Context,
+        // Fraction of the container's width, measured from the left edge,
+        // where a downward drag never triggers dismiss — the stroke panel's
+        // punctuation rail lives there and owns vertical drags itself
+        // (cycling punctuation groups). Without this, a clean vertical drag
+        // starting on the rail was won by this container's own intercept
+        // check on the very same touch-move event, before the rail (a
+        // descendant, checked only after this ancestor) ever got a chance
+        // to call requestDisallowInterceptTouchEvent — so its own "stop the
+        // outer container" call never ran in time. Excluding the zone by
+        // touch-down position sidesteps that dispatch-order race entirely.
+        private val verticalDismissExclusionRatio: Float = 0f,
         private val onSwipe: (Int) -> Unit,
     ) : LinearLayout(context) {
         private var startX = 0f
         private var startY = 0f
         private var interceptingHorizontal = false
         private var interceptingVertical = false
+        private var verticalDismissBlockedForGesture = false
         private val touchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop
         // Small enough to still claim a horizontal drag early (so a vertical
         // scroll elsewhere doesn't accidentally get treated as a mode swipe
@@ -2452,6 +2581,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     startY = ev.y
                     interceptingHorizontal = false
                     interceptingVertical = false
+                    verticalDismissBlockedForGesture = verticalDismissExclusionRatio > 0f &&
+                        ev.x < width * verticalDismissExclusionRatio
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
                     val dx = ev.x - startX
@@ -2465,13 +2596,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                         parent?.requestDisallowInterceptTouchEvent(true)
                     }
                     // A downward drag anywhere not already claimed by a
-                    // nested vertical gesture (SwipeRail, the candidate
-                    // scroll) dismisses the keyboard. Those consumers already
-                    // call requestDisallowInterceptTouchEvent(true) as soon
-                    // as they recognize their own vertical drag, well before
-                    // this 120dp dismiss threshold, so they win the gesture
-                    // first when a drag starts inside them.
-                    if (!interceptingHorizontal && !interceptingVertical &&
+                    // nested vertical gesture (the candidate scroll) or
+                    // excluded by touch-down position (the punctuation rail)
+                    // dismisses the keyboard.
+                    if (!interceptingHorizontal && !interceptingVertical && !verticalDismissBlockedForGesture &&
                         dy > touchSlop && dy > kotlin.math.abs(dx) * 1.5f
                     ) {
                         interceptingVertical = true
@@ -2511,8 +2639,20 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private class ModeToggle(
         context: android.content.Context,
         private val selectedMode: InputMode,
+        private val darkTheme: Boolean,
         private val onModeSelected: (InputMode) -> Unit,
     ) : View(context) {
+        // Instance properties, not companion constants — this view is
+        // rebuilt on every panel refresh, so a live theme switch just means
+        // a fresh instance with the other branch's colors.
+        private val trackColor = if (darkTheme) Color.rgb(28, 28, 28) else Color.rgb(222, 222, 226)
+        private val dividerColor = if (darkTheme) Color.rgb(58, 58, 58) else Color.rgb(200, 200, 204)
+        // Matches the outer panel's own background exactly (see
+        // OpenLessImeService's panel-root tone(48,48,48 / 242,242,246)), so
+        // the selected toggle segment reads as continuous with the panel
+        // beneath it.
+        private val panelBackgroundColor = if (darkTheme) Color.rgb(48, 48, 48) else Color.rgb(242, 242, 246)
+        private val iconColor = if (darkTheme) Color.rgb(240, 240, 240) else Color.rgb(50, 50, 54)
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
@@ -2520,7 +2660,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // Labels are drawn at a size derived from the view height, not the
         // system text size, so they never shift with font scale or UI language.
         private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = ICON_COLOR
+            color = iconColor
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
         }
         private val textBounds = android.graphics.Rect()
@@ -2538,10 +2678,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             val centerY = h / 2f
 
             paint.style = Paint.Style.FILL
-            paint.color = Color.rgb(28, 28, 28)
+            paint.color = trackColor
             canvas.drawRoundRect(0f, 0f, w, h, h / 2f, h / 2f, paint)
 
-            paint.color = Color.rgb(58, 58, 58)
+            paint.color = dividerColor
             paint.strokeWidth = h * 0.012f
             for (i in 1 until modes.size) {
                 val x = segmentWidth * i
@@ -2564,11 +2704,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             trackClipPath.addRoundRect(0f, 0f, w, h, h / 2f, h / 2f, Path.Direction.CW)
             canvas.save()
             canvas.clipPath(trackClipPath)
-            paint.color = PANEL_BACKGROUND_COLOR
+            paint.color = panelBackgroundColor
             canvas.drawRect(segmentLeft, 0f, segmentRight, h, paint)
             canvas.restore()
 
-            paint.color = ICON_COLOR
+            paint.color = iconColor
             drawWaveform(canvas, segmentWidth * 0.5f, centerY, h)
             drawLabel(canvas, "笔画", segmentWidth * 1.5f, centerY, h * 0.34f, extraBold = true)
             drawCursorBrackets(canvas, segmentWidth * 2.5f, centerY, h)
@@ -2632,21 +2772,18 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             return true
         }
 
-        companion object {
-            private val ICON_COLOR = Color.rgb(240, 240, 240)
-            // Matches every panel's own background exactly, so the selected
-            // toggle segment reads as continuous with the panel beneath it.
-            private val PANEL_BACKGROUND_COLOR = Color.rgb(48, 48, 48)
-        }
     }
 
     /** Central stroke keys use a canvas glyph so their proportions do not depend on a font. */
     private class StrokeGlyphView(
         context: android.content.Context,
         private val glyphCode: String,
+        darkTheme: Boolean,
     ) : TextView(context) {
+        private val iconColor = if (darkTheme) Color.rgb(232, 232, 232) else Color.rgb(40, 40, 44)
+        private val mutedColor = if (darkTheme) Color.rgb(155, 155, 155) else Color.rgb(130, 130, 135)
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(232, 232, 232)
+            color = iconColor
             textAlign = Paint.Align.CENTER
             typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL)
         }
@@ -2673,33 +2810,40 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 else -> ""
             }
             if (top.isNotEmpty()) {
-                paint.color = Color.rgb(155, 155, 155)
+                paint.color = mutedColor
                 paint.textSize = 20f * unit
                 // Matches the "0" key's TextView-rendered top-gravity number, which
                 // sits lower than this baseline-based canvas position implied.
                 canvas.drawText(top, x, 32f * unit, paint)
-                paint.color = Color.rgb(232, 232, 232)
+                paint.color = iconColor
             }
             paint.textSize = if (text in listOf("符号", "通配", "分词", "繁")) 33f * unit else 27f * unit
             canvas.drawText(text, x, if (top.isEmpty()) 61f * unit else 76f * unit, paint)
         }
     }
 
-    /** Red actions are also custom-drawn to keep the reference glyph geometry stable. */
+    /**
+     * Red actions are also custom-drawn to keep the reference glyph geometry
+     * stable. Takes an explicit icon color rather than a theme flag: this
+     * view is reused both on the always-dark-red action keys (icon always
+     * white, in both themes) and, undecorated, on the clipboard panel's
+     * normal/highlighted keys (icon needs to flip with the theme there).
+     */
     private class StrokeActionView(
         context: android.content.Context,
         private val actionCode: String,
         private val iconRotation: Float = 0f,
+        private val iconColor: Int = Color.WHITE,
     ) : TextView(context) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
+            color = iconColor
             style = Paint.Style.STROKE
             strokeWidth = 5.2f
             strokeCap = Paint.Cap.SQUARE
             strokeJoin = Paint.Join.MITER
         }
         private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
+            color = iconColor
             textAlign = Paint.Align.CENTER
             typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL)
         }
@@ -2776,14 +2920,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private class StrokeKeyView(
         context: android.content.Context,
         private val strokeCode: String,
+        darkTheme: Boolean,
     ) : TextView(context) {
         private val numberPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(155, 155, 155)
+            color = if (darkTheme) Color.rgb(155, 155, 155) else Color.rgb(130, 130, 135)
             textAlign = Paint.Align.CENTER
             typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL)
         }
         private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(232, 232, 232)
+            color = if (darkTheme) Color.rgb(232, 232, 232) else Color.rgb(40, 40, 44)
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
@@ -2812,14 +2957,18 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     stroke.lineTo(centerX + 20f * unit, 62f * unit)
                 }
                 "s" -> {
-                    stroke.moveTo(centerX, 42f * unit)
+                    // Top trimmed by 1/6 of the original 42–79 length (bottom
+                    // unchanged) at the user's request: 42 + (79-42)/6 ≈ 48.17.
+                    stroke.moveTo(centerX, 48.17f * unit)
                     stroke.lineTo(centerX, 79f * unit)
                 }
                 "p" -> {
                     // Traced from the reference glyph: straight down for most
                     // of the stroke, hooking left only at the very end — a "J"
-                    // shape, not a curve along its whole length.
-                    stroke.moveTo(centerX - 2f * unit, 38f * unit)
+                    // shape, not a curve along its whole length. Top trimmed
+                    // by 1/6 of the original 38–77 length (bottom/control
+                    // points unchanged): 38 + (77-38)/6 = 44.5.
+                    stroke.moveTo(centerX - 2f * unit, 44.5f * unit)
                     stroke.cubicTo(
                         centerX - 2f * unit, 55f * unit,
                         centerX - 5f * unit, 68f * unit,
@@ -2835,7 +2984,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 else -> {
                     // Traced from the reference glyph: a diagonal down-left to
                     // a corner, then a horizontal finish to the right (乙/横折).
-                    stroke.moveTo(centerX + 1f * unit, 42f * unit)
+                    // Top trimmed by 1/6 of the original 42–71 diagonal length
+                    // (bottom unchanged): 42 + (71-42)/6 ≈ 46.83.
+                    stroke.moveTo(centerX + 1f * unit, 46.83f * unit)
                     stroke.lineTo(centerX - 13f * unit, 71f * unit)
                     stroke.lineTo(centerX + 15f * unit, 71f * unit)
                 }
@@ -2847,9 +2998,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private class ActionSymbolView(
         context: android.content.Context,
         private val symbol: String,
+        darkTheme: Boolean,
     ) : TextView(context) {
         private val symbolPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
+            color = if (darkTheme) Color.WHITE else Color.rgb(30, 30, 34)
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.SQUARE
             strokeJoin = Paint.Join.ROUND
@@ -2901,7 +3053,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private class ShiftKeyView(
         context: android.content.Context,
         private val state: ShiftState,
+        private val darkTheme: Boolean,
     ) : TextView(context) {
+        private val mutedColor = if (darkTheme) Color.rgb(190, 190, 190) else Color.rgb(120, 120, 125)
+        private val activeColor = if (darkTheme) Color.rgb(245, 245, 245) else Color.rgb(30, 30, 34)
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             strokeJoin = Paint.Join.ROUND
             strokeCap = Paint.Cap.ROUND
@@ -2925,17 +3080,17 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 ShiftState.OFF -> {
                     paint.style = Paint.Style.STROKE
                     paint.strokeWidth = 3f * unit
-                    paint.color = Color.rgb(190, 190, 190)
+                    paint.color = mutedColor
                 }
                 ShiftState.SHIFT_ONCE, ShiftState.CAPS_LOCK -> {
                     paint.style = Paint.Style.FILL
-                    paint.color = Color.rgb(245, 245, 245)
+                    paint.color = activeColor
                 }
             }
             canvas.drawPath(arrow, paint)
             if (state == ShiftState.CAPS_LOCK) {
                 paint.style = Paint.Style.FILL
-                paint.color = Color.rgb(245, 245, 245)
+                paint.color = activeColor
                 canvas.drawRoundRect(
                     cx - 17f * unit, cy + 22f * unit, cx + 17f * unit, cy + 28f * unit,
                     3f * unit, 3f * unit, paint,
@@ -2944,9 +3099,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     }
 
-    private class MicrophoneKeyView(context: android.content.Context) : TextView(context) {
+    private class MicrophoneKeyView(context: android.content.Context, darkTheme: Boolean) : TextView(context) {
         private val microphonePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(190, 190, 190)
+            color = if (darkTheme) Color.rgb(190, 190, 190) else Color.rgb(110, 110, 115)
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
             style = Paint.Style.FILL
@@ -2996,8 +3151,24 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     }
 
-    private class VoiceButton(context: android.content.Context) : View(context) {
+    private class VoiceButton(context: android.content.Context, private val darkTheme: Boolean) : View(context) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val idlePillColor = if (darkTheme) Color.rgb(54, 54, 54) else Color.rgb(225, 225, 228)
+        private val idleIconColor = if (darkTheme) Color.WHITE else Color.rgb(60, 60, 64)
+        private val waveformColor = if (darkTheme) Color.rgb(222, 222, 222) else Color.rgb(70, 70, 74)
+        private val processingDotColors = if (darkTheme) {
+            intArrayOf(
+                Color.rgb(245, 245, 245), Color.rgb(205, 205, 205),
+                Color.rgb(170, 170, 170), Color.rgb(235, 235, 235),
+                Color.rgb(190, 190, 190), Color.rgb(220, 220, 220),
+            )
+        } else {
+            intArrayOf(
+                Color.rgb(40, 40, 40), Color.rgb(90, 90, 90),
+                Color.rgb(130, 130, 130), Color.rgb(55, 55, 55),
+                Color.rgb(100, 100, 100), Color.rgb(70, 70, 70),
+            )
+        }
         var isRecording: Boolean = false
             set(value) {
                 field = value
@@ -3055,11 +3226,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             val radius = pillHeight * 0.5f
             // 录音/思考状态只显示动画，完全移除胶囊背景；待机状态保留话筒按钮。
             if (!isRecording && !isProcessing) {
-                paint.color = Color.rgb(54, 54, 54)
+                paint.color = idlePillColor
                 canvas.drawRoundRect(left, top, right, bottom, radius, radius, paint)
             }
 
-            paint.color = Color.WHITE
+            paint.color = idleIconColor
             paint.strokeWidth = width * 0.025f
             paint.strokeCap = Paint.Cap.ROUND
             if (!isRecording && !isProcessing) {
@@ -3108,7 +3279,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     ).toFloat()
                     val halfHeight = minOf(height * 0.95f, dp(66).toFloat()) *
                         (0.035f + live * 0.965f) * envelope * flow
-                    paint.color = Color.rgb(222, 222, 222)
+                    paint.color = waveformColor
                     paint.strokeWidth = dp(3).toFloat()
                     canvas.drawLine(x, centerY - halfHeight, x, centerY + halfHeight, paint)
                 }
@@ -3118,11 +3289,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 // top of that the whole ring's radius now breathes — growing
                 // then shrinking together as one — rather than each dot
                 // sizing itself independently off its own angle.
-                val colors = intArrayOf(
-                    Color.rgb(245, 245, 245), Color.rgb(205, 205, 205),
-                    Color.rgb(170, 170, 170), Color.rgb(235, 235, 235),
-                    Color.rgb(190, 190, 190), Color.rgb(220, 220, 220),
-                )
+                val colors = processingDotColors
                 val baseOrbit = minOf(width * 0.28f, height * 0.52f)
                 val baseDotRadius = minOf(width * 0.055f, height * 0.15f)
                 val breathe = 0.6f + 0.4f * ((1f + kotlin.math.sin((phase * 0.5f).toDouble()).toFloat()) / 2f)
@@ -3142,6 +3309,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     companion object {
         private const val TEST_TEXT = "OpenLess IME 测试上屏"
         private const val MAX_ASSOCIATION_CONTEXT = 8
+        private const val SILENCE_LEVEL_THRESHOLD = 0.02f
+        private const val SILENCE_CHECK_DELAY_MS = 3000L
 
         /**
          * Opts a view out of Android's system gesture navigation (back/home

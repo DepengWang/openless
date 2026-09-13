@@ -30,6 +30,13 @@ internal class StrokeInputRepository(context: Context) {
     private val frequency = AtomicReference<Map<String, Long>>(emptyMap())
     private val loading = Any()
 
+    // Personal per-code preference, learned from picking a non-top candidate.
+    // Kept global (not per-target-app, unlike phrase association) since which
+    // character you mean for a given stroke code is a habit, not context —
+    // sharing StrokeUserFrequency's store/cap with the phrase repository is
+    // intentional, both are "how you personally type" data.
+    private val userFrequency = StrokeUserFrequency(context)
+
     /** Warm the offline index before the first stroke key is pressed. */
     fun preloadAsync() {
         executor.execute { ensureLoaded() }
@@ -74,10 +81,24 @@ internal class StrokeInputRepository(context: Context) {
                 .map { it.first }
                 .distinct()
                 .toList()
-                .sortedByDescending { freq[it] ?: 0L }
+                // Personal pick for this exact code always outranks the
+                // static corpus frequency — corpus counts span 1 to several
+                // million, so adding a personal score would never move the
+                // needle for common characters. Candidates with no personal
+                // score (0.0, the common case) fall through to the corpus
+                // order unchanged.
+                .sortedWith(
+                    compareByDescending<String> { userFrequency.score(pattern, it) }
+                        .thenByDescending { freq[it] ?: 0L },
+                )
                 .take(MAX_CANDIDATES)
             android.os.Handler(android.os.Looper.getMainLooper()).post { callback(result) }
         }
+    }
+
+    /** Records that `candidate` was hand-picked over the top result for `pattern`, off the caller's thread. */
+    fun recordPersonalPick(pattern: String, candidate: String) {
+        executor.execute { userFrequency.record(pattern, candidate) }
     }
 
     fun shutdown() = executor.shutdownNow()
