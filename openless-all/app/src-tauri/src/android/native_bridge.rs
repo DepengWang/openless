@@ -286,6 +286,25 @@ fn spawn_cancel_dictation() {
     });
 }
 
+/// Records a correction rule from the IME's "edit result" flow, so a
+/// misrecognition the user just fixed by hand also gets fixed automatically
+/// for future dictations. Uses the same CorrectionRuleStore desktop's
+/// Corrections settings page writes to.
+fn spawn_add_correction_rule(pattern: String, replacement: String) {
+    let Some(backend) = CORE_BACKEND.get().cloned() else {
+        log::warn!("[android-native] core backend unavailable");
+        return;
+    };
+    if pattern.is_empty() || replacement.is_empty() || pattern == replacement {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = backend.add_correction_rule(pattern, replacement) {
+            log::warn!("[android-native] add_correction_rule failed: {error}");
+        }
+    });
+}
+
 async fn ensure_core_started(backend: &OpenLessBackend) -> Result<(), BackendError> {
     if !backend.snapshot().running {
         backend.start().await?;
@@ -388,7 +407,7 @@ fn capsule_state_name(state: CapsuleState) -> &'static str {
 #[cfg(target_os = "android")]
 mod jni_exports {
     use super::*;
-    use jni::objects::{JClass, JObject};
+    use jni::objects::{JClass, JObject, JString};
     use jni::sys::{jboolean, jstring, JNIEnv};
     use jni::JNIEnv as JniEnv;
 
@@ -458,6 +477,31 @@ mod jni_exports {
         _class: JClass,
     ) {
         spawn_cancel_dictation();
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeAddCorrectionRule(
+        env: *mut JNIEnv,
+        _class: JClass,
+        pattern: jstring,
+        replacement: jstring,
+    ) {
+        let mut jni_env = match JniEnv::from_raw(env) {
+            Ok(env) => env,
+            Err(error) => {
+                log::warn!("[android-native] attach JNI env for add_correction_rule failed: {error}");
+                return;
+            }
+        };
+        let pattern_str: String = jni_env
+            .get_string(&JString::from_raw(pattern))
+            .map(|value| value.into())
+            .unwrap_or_default();
+        let replacement_str: String = jni_env
+            .get_string(&JString::from_raw(replacement))
+            .map(|value| value.into())
+            .unwrap_or_default();
+        spawn_add_correction_rule(pattern_str, replacement_str);
     }
 
     #[no_mangle]

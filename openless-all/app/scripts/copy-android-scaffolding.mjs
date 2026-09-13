@@ -63,6 +63,8 @@ const KOTLIN_FILES = [
   'StrokeUserFrequency.kt',
   'OpenLessRuntimeService.kt',
   'OpenLessBackendWarmupActivity.kt',
+  'OpenLessClipboardHistory.kt',
+  'OpenLessKeyboardSettingsActivity.kt',
 ];
 
 const KOTLIN_TEST_FILES = [

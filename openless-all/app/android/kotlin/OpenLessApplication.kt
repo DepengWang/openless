@@ -32,14 +32,21 @@ class OpenLessApplication : Application() {
                 }
 
                 override fun onActivityResumed(activity: Activity) {
-                    if (activity.javaClass == MainActivity::class.java) {
-                        watchInterfaceLanguage(activity as MainActivity)
+                    // Settings are always opened through
+                    // OpenLessBackendWarmupActivity (a MainActivity subclass),
+                    // never MainActivity itself directly — an exact class
+                    // check here meant this never matched in practice, so the
+                    // interface-language poll never actually ran and the
+                    // mirrored locale pref went stale at whatever it was on
+                    // first install.
+                    if (activity is MainActivity) {
+                        watchInterfaceLanguage(activity)
                     }
                 }
 
                 override fun onActivityPaused(activity: Activity) {
-                    if (activity.javaClass == MainActivity::class.java) {
-                        readInterfaceLanguage(activity as MainActivity)
+                    if (activity is MainActivity) {
+                        readInterfaceLanguage(activity)
                         localeHandler.removeCallbacksAndMessages(null)
                     }
                 }

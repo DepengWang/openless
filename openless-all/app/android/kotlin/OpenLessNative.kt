@@ -26,6 +26,9 @@ object OpenLessNative {
 
     @JvmStatic external fun nativeCancelDictation()
 
+    /** Records a hand-corrected span from the IME's "edit result" flow into the shared correction dictionary. */
+    @JvmStatic external fun nativeAddCorrectionRule(pattern: String, replacement: String)
+
     @JvmStatic external fun nativeBackendSnapshot(): String
 
     @JvmStatic
