@@ -98,26 +98,74 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             },
         )
 
+        // Amplitude's 255 ceiling is Android's own VibrationEffect max, not a
+        // choice made here — the hardware/API can't go any stronger than
+        // that regardless of what this slider allows. Duration's ceiling is
+        // ours, so it's the one raised for a more noticeable pulse.
+        var currentAmplitude = prefs.getInt("key_haptic_amplitude", 55).coerceIn(1, 255)
+        var currentDurationMs = prefs.getLong("key_haptic_duration_ms", 12L).toInt().coerceIn(1, 500)
+        // No separate test button — letting go of either slider fires one
+        // vibration with the values as they now stand, so adjusting and
+        // feeling the result is a single motion.
         content.addView(
             sliderRow(
-                label = ui("震动强度", "Intensity"),
+                label = ui("震动强度（255 已是系统上限）", "Intensity (255 is the platform max)"),
                 min = 1,
                 max = 255,
-                current = prefs.getInt("key_haptic_amplitude", 55),
-                onChange = { value -> prefs.edit().putInt("key_haptic_amplitude", value).apply() },
+                current = currentAmplitude,
+                onChange = { value ->
+                    currentAmplitude = value
+                    prefs.edit().putInt("key_haptic_amplitude", value).apply()
+                },
+                onRelease = { fireTestVibration(currentAmplitude, currentDurationMs) },
             ),
         )
         content.addView(
             sliderRow(
                 label = ui("震动时长", "Duration"),
                 min = 1,
-                max = 100,
-                current = prefs.getLong("key_haptic_duration_ms", 12L).toInt(),
-                onChange = { value -> prefs.edit().putLong("key_haptic_duration_ms", value.toLong()).apply() },
+                max = 500,
+                current = currentDurationMs,
+                onChange = { value ->
+                    currentDurationMs = value
+                    prefs.edit().putLong("key_haptic_duration_ms", value.toLong()).apply()
+                },
+                onRelease = { fireTestVibration(currentAmplitude, currentDurationMs) },
             ),
         )
 
+        content.addView(sectionLabel(ui("个人偏好数据", "Personal preference data")))
+        val personalFrequency = StrokeUserFrequency(this)
+        content.addView(
+            TextView(this).apply {
+                text = ui(
+                    "已记录 ${personalFrequency.size()} / ${personalFrequency.capacity()} 条",
+                    "${personalFrequency.size()} / ${personalFrequency.capacity()} entries recorded",
+                )
+                textSize = 14f
+                setTextColor(Color.rgb(200, 200, 200))
+            },
+        )
+
         return root
+    }
+
+    /** Fires a one-shot vibration with the sliders' current (already-saved) values, so a change is felt immediately. */
+    private fun fireTestVibration(amplitude: Int, durationMs: Int) {
+        runCatching {
+            val vibrator = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as android.os.VibratorManager).defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
+            }
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                vibrator.vibrate(android.os.VibrationEffect.createOneShot(durationMs.toLong(), amplitude))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(durationMs.toLong())
+            }
+        }
     }
 
     private fun sectionLabel(text: String): View = TextView(this).apply {
@@ -128,7 +176,7 @@ class OpenLessKeyboardSettingsActivity : Activity() {
     }
 
     /** One labeled slider row. Reusable as more settings rows get added here. */
-    private fun sliderRow(label: String, min: Int, max: Int, current: Int, onChange: (Int) -> Unit): View {
+    private fun sliderRow(label: String, min: Int, max: Int, current: Int, onChange: (Int) -> Unit, onRelease: (() -> Unit)? = null): View {
         // Computed before building the SeekBar itself, since inside that
         // view's own apply{} block an unqualified "max" would resolve to
         // SeekBar's own max property (shadowing this function's max: Int
@@ -157,7 +205,9 @@ class OpenLessKeyboardSettingsActivity : Activity() {
                         if (fromUser) onChange(progress + min)
                     }
                     override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
-                    override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+                    override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                        onRelease?.invoke()
+                    }
                 })
             },
         )

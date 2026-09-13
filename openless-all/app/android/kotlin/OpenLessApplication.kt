@@ -40,13 +40,14 @@ class OpenLessApplication : Application() {
                     // mirrored locale pref went stale at whatever it was on
                     // first install.
                     if (activity is MainActivity) {
-                        watchInterfaceLanguage(activity)
+                        watchWebViewMirroredState(activity)
                     }
                 }
 
                 override fun onActivityPaused(activity: Activity) {
                     if (activity is MainActivity) {
                         readInterfaceLanguage(activity)
+                        readInterfaceTheme(activity)
                         localeHandler.removeCallbacksAndMessages(null)
                     }
                 }
@@ -111,12 +112,13 @@ class OpenLessApplication : Application() {
     // Mirror only that setting for the native IME; never read editor content.
     private val localeHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
-    private fun watchInterfaceLanguage(activity: Activity) {
+    private fun watchWebViewMirroredState(activity: Activity) {
         localeHandler.removeCallbacksAndMessages(null)
         val poll = object : Runnable {
             override fun run() {
                 if (activity.isFinishing || activity.isDestroyed) return
                 readInterfaceLanguage(activity)
+                readInterfaceTheme(activity)
                 localeHandler.postDelayed(this, 500L)
             }
         }
@@ -142,6 +144,34 @@ class OpenLessApplication : Application() {
             val prefs = getSharedPreferences("openless_ime_ui", MODE_PRIVATE)
             if (prefs.getString("locale", null) != locale) {
                 prefs.edit().putString("locale", locale).apply()
+            }
+        }
+    }
+
+    // The keyboard's light/dark palette follows the app's own theme setting
+    // (Settings > Appearance), not the raw OS setting — reading the resolved
+    // `data-ol-theme` attribute the WebView already computes (it handles the
+    // "system" preference itself) means this never needs to duplicate that
+    // resolution logic natively.
+    private fun readInterfaceTheme(activity: Activity) {
+        fun findWebView(view: android.view.View): android.webkit.WebView? {
+            if (view is android.webkit.WebView) return view
+            if (view is android.view.ViewGroup) {
+                for (index in 0 until view.childCount) {
+                    findWebView(view.getChildAt(index))?.let { return it }
+                }
+            }
+            return null
+        }
+        val webView = findWebView(activity.window.decorView) ?: return
+        webView.evaluateJavascript(
+            "(function(){return document.documentElement.dataset.olTheme === 'dark' ? 'dark' : 'light';})()",
+        ) { result ->
+            val theme = result.trim('"')
+            if (theme != "dark" && theme != "light") return@evaluateJavascript
+            val prefs = getSharedPreferences("openless_ime_ui", MODE_PRIVATE)
+            if (prefs.getString("theme_mode", null) != theme) {
+                prefs.edit().putString("theme_mode", theme).apply()
             }
         }
     }
