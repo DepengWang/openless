@@ -58,6 +58,19 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri mobile application")
         .run(|app, event| match event {
+            // Tao's Android backend treats "window destroyed" as "the whole
+            // app should exit" and calls std::process::exit() once this
+            // event isn't prevented (tauri-runtime-wry's on Destroyed
+            // handler, then tao::platform_impl::android exiting on
+            // ControlFlow::Exit). That exit() runs process-wide C++ static
+            // destructors (libhwui/libminikin included) while the
+            // Kotlin-side OpenLessImeService is still live in this same
+            // process, which produced repeated "destroyed mutex" native
+            // aborts unrelated to any Activity visibility. The backend must
+            // outlive this window, so always prevent the exit here.
+            RunEvent::ExitRequested { api, .. } => {
+                api.prevent_exit();
+            }
             RunEvent::Exit => {
                 if let Some(coordinator) = app.try_state::<Arc<Coordinator>>() {
                     coordinator.stop_hotkey_listener();
