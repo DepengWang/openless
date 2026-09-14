@@ -1,5 +1,8 @@
 package com.openless.app
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -30,6 +33,18 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         super.onCreate(savedInstanceState)
         activeInstance = java.lang.ref.WeakReference(this)
         settingsRequested = intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false)
+        // Only when visibly opened for settings: a permission dialog here
+        // during the invisible warmup path would get dragged to the
+        // background along with this Activity by sendToBackground() 180ms
+        // later, before the user could ever answer it. Android never
+        // auto-requests POST_NOTIFICATIONS (API 33+) — without asking
+        // explicitly at least once, OpenLessRuntimeService's foreground
+        // notification stays silently blocked and "Manage notifications"
+        // shows as a fixed, non-interactive "don't allow" in Settings,
+        // since there is nothing granted to manage.
+        if (settingsRequested) {
+            requestNotificationPermissionIfNeeded()
+        }
 
         // 不再修改窗口透明度或触摸属性。主 Activity 必须以正常窗口完成
         // Tauri/WebView 初始化，完成后仅退到后台，避免留下黑色/空白窗口状态。
@@ -60,7 +75,29 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         if (intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false)) {
             settingsRequested = true
             warmupHandler.removeCallbacks(sendToBackground)
+            // Covers openSettingsIfRunning() bringing an already-alive
+            // instance forward — onCreate() (and its own call to this) never
+            // runs again for that case, so this is the only other place a
+            // settings-visible moment happens.
+            requestNotificationPermissionIfNeeded()
         }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_POST_NOTIFICATIONS)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQUEST_POST_NOTIFICATIONS) return
+        val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+        android.util.Log.i("OpenLessBackendWarmupActivity", "POST_NOTIFICATIONS result granted=$granted")
     }
 
     override fun onDestroy() {
@@ -68,6 +105,16 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         if (activeInstance?.get() === this) {
             activeInstance = null
         }
+        // Only reachable here, not from onPause()/onStop(): this class never
+        // calls finish() on itself (see onBackPressed()), so onDestroy()
+        // firing means the *system* reclaimed this task — e.g. memory
+        // pressure, or "don't keep activities" — while the process (and
+        // this static recovery logic) is still alive. ensureBackendReady()
+        // already no-ops if the backend contract still checks out, so this
+        // is cheap when the destroy was harmless and only relaunches when
+        // it actually wasn't.
+        android.util.Log.w("OpenLessBackendWarmupActivity", "runtime activity destroyed by the system; re-checking backend")
+        ensureBackendReady(applicationContext)
         super.onDestroy()
     }
 
@@ -76,6 +123,7 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         private var activeInstance: java.lang.ref.WeakReference<OpenLessBackendWarmupActivity>? = null
 
         private const val EXTRA_SHOW_SETTINGS = "com.openless.app.extra.SHOW_SETTINGS"
+        private const val REQUEST_POST_NOTIFICATIONS = 9102
 
         /** The single Tauri host is still alive even while its task is in the background. */
         fun isRunning(): Boolean {

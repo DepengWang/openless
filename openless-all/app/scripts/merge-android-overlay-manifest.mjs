@@ -13,6 +13,7 @@ const PERMISSIONS = [
   'android.permission.FOREGROUND_SERVICE_MICROPHONE',
   'android.permission.FOREGROUND_SERVICE_SPECIAL_USE',
   'android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS',
+  'android.permission.POST_NOTIFICATIONS',
 ];
 
 const APPLICATION_SNIPPET = `
@@ -73,6 +74,7 @@ const SERVICE_SNIPPETS = [
             android:exported="false"
             android:excludeFromRecents="true"
             android:noHistory="false"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.openless" />`,
 ];
 
