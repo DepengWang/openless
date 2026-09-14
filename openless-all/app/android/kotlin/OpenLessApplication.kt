@@ -1,9 +1,11 @@
 package com.openless.app
 
+import android.Manifest
 import android.app.Activity
 import android.app.ActivityManager
 import android.app.Application
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
@@ -27,6 +29,7 @@ class OpenLessApplication : Application() {
                 override fun onActivityStarted(activity: Activity) {
                     if (activity.javaClass.name.endsWith("MainActivity")) {
                         maybeRequestBatteryOptimizationExemption(activity)
+                        maybeRequestNotificationPermission(activity)
                         maybeHideOverlayOnForeground()
                     }
                 }
@@ -196,10 +199,17 @@ class OpenLessApplication : Application() {
     private fun maybeRequestBatteryOptimizationExemption(activity: Activity) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
         val power = getSystemService(POWER_SERVICE) as? PowerManager ?: return
+        // Re-checked against live system state every time, not gated by a
+        // one-shot "already prompted" flag: some OEMs (OnePlus/ColorOS
+        // observed) silently revert this exemption back to "optimized" on
+        // their own, and a one-time flag would then never prompt again even
+        // though the app is no longer actually exempt.
         if (power.isIgnoringBatteryOptimizations(packageName)) return
         val prefs = getSharedPreferences("openless_runtime", MODE_PRIVATE)
-        if (prefs.getBoolean("battery_optimization_prompted", false)) return
-        prefs.edit().putBoolean("battery_optimization_prompted", true).apply()
+        val now = System.currentTimeMillis()
+        val lastPrompt = prefs.getLong("battery_optimization_prompted_at", 0L)
+        if (now >= lastPrompt && now - lastPrompt < BATTERY_PROMPT_COOLDOWN_MS) return
+        prefs.edit().putLong("battery_optimization_prompted_at", now).apply()
         runCatching {
             activity.startActivity(
                 Intent(
@@ -209,6 +219,26 @@ class OpenLessApplication : Application() {
             )
         }.onFailure { error ->
             Log.w(TAG, "battery optimization exemption request failed", error)
+        }
+    }
+
+    // POST_NOTIFICATIONS (API 33+) is never auto-granted, and
+    // OpenLessBackendWarmupActivity only asks for it when the settings UI is
+    // opened explicitly — a user who only ever invokes the IME via the
+    // keyboard switcher, without ever tapping the launcher icon, could go
+    // through that path forever without the request ever firing. Asking
+    // here too, on any real (launcher) app open, catches that case.
+    private fun maybeRequestNotificationPermission(activity: Activity) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        runCatching {
+            activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_POST_NOTIFICATIONS)
+        }.onFailure { error ->
+            Log.w(TAG, "notification permission request failed", error)
         }
     }
 
@@ -228,5 +258,7 @@ class OpenLessApplication : Application() {
 
     companion object {
         private const val TAG = "OpenLessApplication"
+        private const val BATTERY_PROMPT_COOLDOWN_MS = 3L * 24 * 60 * 60 * 1000
+        private const val REQUEST_POST_NOTIFICATIONS = 9103
     }
 }

@@ -2320,6 +2320,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             // a cold tap now honestly says so and kicks off warmup, instead
             // of pretending to record.
             if (!isBackendReady()) {
+                if (!awaitingBackendReadyRecheck) {
+                    backendRecheckStartedAtMs = android.os.SystemClock.elapsedRealtime()
+                    android.util.Log.w("OpenLessImeService", "backend not ready at mic tap; starting recovery watch")
+                }
                 setState("error", ui("服务尚未就绪", "Service not ready yet"))
                 voiceLinkWarning?.text = ui("服务尚未就绪，点击重启应用", "Service not ready — tap to restart the app")
                 voiceLinkWarning?.visibility = View.VISIBLE
@@ -2361,6 +2365,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // recheck loop is already running doesn't stack a duplicate one.
     private var awaitingBackendReadyRecheck = false
 
+    // elapsedRealtime() at the moment "not ready" was first detected, so the
+    // eventual recovery (or timeout) log can report how long it actually took.
+    private var backendRecheckStartedAtMs = 0L
+
     /**
      * Polls isBackendReady() roughly once a second after showing the
      * "service not ready" warning, since nothing else pushes a "the
@@ -2381,12 +2389,16 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         if (isBackendReady()) {
             awaitingBackendReadyRecheck = false
+            val elapsedMs = android.os.SystemClock.elapsedRealtime() - backendRecheckStartedAtMs
+            android.util.Log.i("OpenLessImeService", "backend recovered after ${elapsedMs}ms (attempt=$attempt)")
             voiceLinkWarning?.visibility = View.GONE
             setState("idle", ui("点击开始说话", "Tap to speak"))
             return
         }
         if (attempt >= 60) {
             awaitingBackendReadyRecheck = false
+            val elapsedMs = android.os.SystemClock.elapsedRealtime() - backendRecheckStartedAtMs
+            android.util.Log.w("OpenLessImeService", "backend still not ready after ${elapsedMs}ms; giving up recheck loop")
             return
         }
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
