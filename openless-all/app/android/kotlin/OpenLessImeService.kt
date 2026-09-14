@@ -2311,6 +2311,22 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             setState("thinking", "正在思考")
             runNativeAction("停止听写") { OpenLessNative.nativeStopDictationForIme() }
         } else {
+            // nativeStartDictationForIme() itself never throws when the
+            // Rust backend isn't registered yet — that side just logs a
+            // warning and no-ops — so runNativeAction()'s catch never fired
+            // for this case either: tapping the mic on a cold backend
+            // silently did nothing while the UI still claimed "recording".
+            // Checking readiness first, before touching any UI state, means
+            // a cold tap now honestly says so and kicks off warmup, instead
+            // of pretending to record.
+            if (!isBackendReady()) {
+                setState("error", ui("服务尚未就绪", "Service not ready yet"))
+                voiceLinkWarning?.text = ui("服务尚未就绪，点击重启应用", "Service not ready — tap to restart the app")
+                voiceLinkWarning?.visibility = View.VISIBLE
+                ensureBackendReady()
+                scheduleBackendReadyRecheck()
+                return
+            }
             recording = true
             processing = false
             // The actual start of a new recording attempt — reset the
@@ -2332,6 +2348,50 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         processing = false
         invalidateSession("已取消")
         runNativeAction("取消听写") { OpenLessNative.nativeCancelDictation() }
+    }
+
+    private fun isBackendReady(): Boolean = try {
+        OpenLessNative.requireBackendContract()
+        true
+    } catch (error: Throwable) {
+        false
+    }
+
+    // Guards scheduleBackendReadyRecheck() so a second mic tap while a
+    // recheck loop is already running doesn't stack a duplicate one.
+    private var awaitingBackendReadyRecheck = false
+
+    /**
+     * Polls isBackendReady() roughly once a second after showing the
+     * "service not ready" warning, since nothing else pushes a "the
+     * backend just finished warming up" event into this service — without
+     * this, the warning stayed stuck until some unrelated action (another
+     * mic tap, switching panels) happened to rebuild/reset it, even though
+     * the backend may have become ready seconds earlier in the background.
+     * Capped at ~60s of retries rather than polling forever if the backend
+     * genuinely never recovers. Raised from an earlier 20s cap after a real
+     * device recovery was observed taking ~31s (a double cold-start: the
+     * warmup Activity got destroyed once mid-warmup, then succeeded on a
+     * second attempt), which exceeded that cap and left the warning stuck.
+     */
+    private fun scheduleBackendReadyRecheck(attempt: Int = 0) {
+        if (attempt == 0) {
+            if (awaitingBackendReadyRecheck) return
+            awaitingBackendReadyRecheck = true
+        }
+        if (isBackendReady()) {
+            awaitingBackendReadyRecheck = false
+            voiceLinkWarning?.visibility = View.GONE
+            setState("idle", ui("点击开始说话", "Tap to speak"))
+            return
+        }
+        if (attempt >= 60) {
+            awaitingBackendReadyRecheck = false
+            return
+        }
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            scheduleBackendReadyRecheck(attempt + 1)
+        }, 1000L)
     }
 
     private fun runNativeAction(action: String, call: () -> Unit) {
@@ -2362,6 +2422,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 if (maxObservedLevelThisSession >= SILENCE_LEVEL_THRESHOLD) {
                     voiceLinkWarning?.visibility = View.GONE
                 } else if (elapsedMs > SILENCE_CHECK_DELAY_MS) {
+                    // This only runs once an actual recording session is
+                    // underway, so it can't overlap with the "backend not
+                    // ready" case in toggleDictation() (that one returns
+                    // before a session ever starts) — but set this widget's
+                    // own text explicitly anyway rather than trusting
+                    // whatever the other case last left it as.
+                    voiceLinkWarning?.text = ui("检测到麦克风无声音，点击重启应用", "No mic audio detected — tap to restart the app")
                     voiceLinkWarning?.visibility = View.VISIBLE
                 }
                 setState("speaking", "再次点击结束")
