@@ -1477,7 +1477,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * direction-pad panel.
      */
     private fun buildClipboardHistoryView(): View {
-        val root = SwipeModeContainer(this) { direction -> swipeInputMode(direction) }.apply {
+        // Rows handle their own left/right swipe (favorite / correction
+        // rule); the panel-switch swipe would otherwise compete for the
+        // exact same gesture.
+        val root = SwipeModeContainer(this, horizontalSwipeEnabled = false) { direction -> swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
             minimumHeight = dp(300)
@@ -1537,24 +1540,91 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 setPadding(0, dp(20), 0, 0)
             })
         } else {
-            entries.forEach { entry ->
-                listContainer.addView(TextView(this).apply {
-                    text = entry.text
+            entries.forEachIndexed { index, entry ->
+                // Two fixed-width zones behind the row, revealed left-to-right
+                // as it's dragged right: favorite first, delete beyond it.
+                val entryWrapper = FrameLayout(this)
+                val zoneWidth = dp(88)
+                val revealRow = LinearLayout(this)
+                val favoriteZone = TextView(this).apply {
+                    textSize = 13f
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    gravity = android.view.Gravity.CENTER
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(Color.rgb(181, 136, 32))
+                    setPadding(dp(6), 0, dp(6), 0)
+                }
+                val deleteZone = TextView(this).apply {
+                    text = ui("删除", "Delete")
+                    textSize = 13f
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    gravity = android.view.Gravity.CENTER
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(Color.rgb(153, 26, 40))
+                    setPadding(dp(6), 0, dp(6), 0)
+                }
+                revealRow.addView(favoriteZone, LinearLayout.LayoutParams(zoneWidth, ViewGroup.LayoutParams.MATCH_PARENT))
+                revealRow.addView(deleteZone, LinearLayout.LayoutParams(zoneWidth, ViewGroup.LayoutParams.MATCH_PARENT))
+                entryWrapper.addView(revealRow, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+                val row = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
+                val star = TextView(this).apply {
+                    text = if (entry.favorite) "★" else "☆"
                     textSize = 14f
-                    setTextColor(tone(Color.rgb(230, 230, 230), Color.rgb(30, 30, 34)))
-                    maxLines = 2
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                    setPadding(dp(12), dp(10), dp(12), dp(10))
-                    background = roundedButton(tone(Color.rgb(58, 58, 58), Color.rgb(238, 238, 241)), dp(8))
-                    setOnClickListener {
-                        currentInputConnection?.commitText(entry.text, 1)
-                        OpenLessClipboardHistory.recordCopy(this@OpenLessImeService, entry.text)
-                        clipboardHistoryMode = false
-                        refreshInputView()
+                    setTextColor(
+                        if (entry.favorite) Color.rgb(153, 26, 40) else tone(Color.rgb(120, 120, 120), Color.rgb(180, 180, 184)),
+                    )
+                }
+                row.addView(star, LinearLayout.LayoutParams(dp(22), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(4) })
+                row.addView(
+                    TextView(this).apply {
+                        text = entry.text
+                        textSize = 14f
+                        setTextColor(tone(Color.rgb(230, 230, 230), Color.rgb(30, 30, 34)))
+                        maxLines = 2
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                    },
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+                )
+                // Plain flat row — no keycap-style background/press effect —
+                // but still opaque, so it fully hides the reveal zones until dragged.
+                row.setPadding(dp(12), dp(10), dp(12), dp(10))
+                row.setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
+                entryWrapper.addView(row, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+                var suppressRowClick = false
+                row.setOnClickListener {
+                    if (suppressRowClick) {
+                        suppressRowClick = false
+                        return@setOnClickListener
                     }
-                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    bottomMargin = dp(8)
-                })
+                    currentInputConnection?.commitText(entry.text, 1)
+                    OpenLessClipboardHistory.recordCopy(this@OpenLessImeService, entry.text)
+                    clipboardHistoryMode = false
+                    refreshInputView()
+                }
+                attachClipboardRowSwipe(
+                    row = row,
+                    zoneWidth = zoneWidth,
+                    favoriteZone = favoriteZone,
+                    isFavorite = { entry.favorite },
+                    addLabel = ui("加入收藏", "Add"),
+                    removeLabel = ui("取消收藏", "Remove"),
+                    onSuppressClick = { suppressRowClick = true },
+                    onToggleFavorite = {
+                        OpenLessClipboardHistory.toggleFavorite(this, entry.text)
+                        refreshInputView()
+                    },
+                    onDelete = {
+                        OpenLessClipboardHistory.delete(this, entry.text)
+                        refreshInputView()
+                    },
+                    onSwipeLeft = { showCorrectionRulePrompt(row, entry.text) },
+                )
+                listContainer.addView(entryWrapper, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                if (index < entries.lastIndex) {
+                    listContainer.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
+                }
             }
         }
         val scroll = android.widget.ScrollView(this).apply {
@@ -1564,6 +1634,177 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         root.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         return root
+    }
+
+    /**
+     * Right swipe on one clipboard history row: the row itself tracks the
+     * finger 1:1 via translationX, revealing two fixed-width zones behind it
+     * — favorite first, delete beyond it — clamped so the drag can't pull
+     * the row past both zones' combined width. Releasing inside a zone
+     * commits that zone's action; releasing short of the favorite zone just
+     * springs the row back with no effect. Left swipe (add correction rule)
+     * keeps the old fixed-distance instant trigger for now — no reveal
+     * animation on that side yet.
+     *
+     * Uses rawX/rawY, not the view-local x/y: once translationX starts
+     * moving the row mid-gesture, view-local coordinates from the same
+     * ongoing touch stream are reported relative to the view's shifting
+     * transform and drift, while raw screen coordinates stay stable for the
+     * whole gesture.
+     *
+     * onSuppressClick runs synchronously inside this same ACTION_UP handling
+     * — not deferred — because the row's own click (paste + close panel)
+     * gets evaluated by the View's default onTouchEvent immediately after
+     * this listener returns, within the very same event. Deferring the
+     * suppress flag (as a first cut of this did, bundled inside the action
+     * callback) let that stale click fire first: it pasted the row's text,
+     * reordered it to the front via recordCopy(), and closed back to the
+     * main clipboard view — exactly the "jumps back / reorders" symptom.
+     * onToggleFavorite/onDelete/onSwipeLeft can still be posted, since only
+     * *those* (which rebuild the whole panel) need to avoid the panel
+     * flickering mid-gesture.
+     *
+     * The panel's own SwipeModeContainer has `horizontalSwipeEnabled = false`
+     * for this sub-panel specifically, so there is no competing ancestor
+     * gesture to race against here — recognizing the drag on ACTION_MOVE and
+     * calling requestDisallowInterceptTouchEvent is enough to keep the
+     * ScrollView from also treating it as a scroll attempt.
+     */
+    private fun attachClipboardRowSwipe(
+        row: View,
+        zoneWidth: Int,
+        favoriteZone: TextView,
+        isFavorite: () -> Boolean,
+        addLabel: String,
+        removeLabel: String,
+        onSuppressClick: () -> Unit,
+        onToggleFavorite: () -> Unit,
+        onDelete: () -> Unit,
+        onSwipeLeft: () -> Unit,
+    ) {
+        val touchSlop = android.view.ViewConfiguration.get(this).scaledTouchSlop
+        val leftCommitThreshold = dp(56)
+        val maxDrag = zoneWidth * 2f
+        var startRawX = 0f
+        var startRawY = 0f
+        var horizontalDrag = false
+        row.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startRawX = event.rawX
+                    startRawY = event.rawY
+                    horizontalDrag = false
+                    favoriteZone.text = if (isFavorite()) removeLabel else addLabel
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - startRawX
+                    val dy = event.rawY - startRawY
+                    if (!horizontalDrag && kotlin.math.abs(dx) > touchSlop && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.5f) {
+                        horizontalDrag = true
+                        view.parent?.requestDisallowInterceptTouchEvent(true)
+                    }
+                    if (horizontalDrag && dx > 0f) view.translationX = dx.coerceIn(0f, maxDrag)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (horizontalDrag) {
+                        val dx = event.rawX - startRawX
+                        if (dx > 0f) {
+                            val clamped = dx.coerceIn(0f, maxDrag)
+                            when {
+                                clamped >= maxDrag -> {
+                                    onSuppressClick()
+                                    view.post { onDelete() }
+                                }
+                                clamped >= zoneWidth -> {
+                                    onSuppressClick()
+                                    view.post { onToggleFavorite() }
+                                }
+                            }
+                            view.animate().translationX(0f).setDuration(150L).start()
+                        } else if (dx < -leftCommitThreshold) {
+                            onSuppressClick()
+                            view.post { onSwipeLeft() }
+                        }
+                    }
+                    horizontalDrag = false
+                }
+            }
+            // Never consumed: a plain tap (no horizontal drag recognized)
+            // still needs to fall through to the row's own click listener.
+            false
+        }
+    }
+
+    /**
+     * Swipe-left action: the clipboard text is treated as the wrong result,
+     * and this prompts for what it should have said — same
+     * nativeAddCorrectionRule bridge the dictation "edit result" flow uses,
+     * so future dictations correct it automatically.
+     */
+    private fun showCorrectionRulePrompt(anchor: View, wrongText: String) {
+        var activePopup: android.widget.PopupWindow? = null
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+        }
+        content.addView(
+            TextView(this).apply {
+                text = ui("把这句话加入纠错规则：", "Add this text as a correction rule:")
+                textSize = 13f
+                setTextColor(tone(Color.rgb(200, 200, 200), Color.rgb(90, 90, 95)))
+            },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(6) },
+        )
+        content.addView(
+            TextView(this).apply {
+                text = wrongText
+                textSize = 14f
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(Color.rgb(153, 26, 40))
+            },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) },
+        )
+        val targetInput = android.widget.EditText(this).apply {
+            hint = ui("正确的写法", "Correct wording")
+            textSize = 14f
+            setTextColor(tone(Color.rgb(230, 230, 230), Color.rgb(30, 30, 34)))
+            setHintTextColor(tone(Color.rgb(140, 140, 140), Color.rgb(150, 150, 154)))
+            isSingleLine = true
+        }
+        content.addView(targetInput, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(12) })
+        content.addView(
+            TextView(this).apply {
+                text = ui("保存", "Save")
+                textSize = 14f
+                gravity = android.view.Gravity.CENTER
+                setTextColor(strokeEncodeAccentColor)
+                setOnClickListener {
+                    val target = targetInput.text?.toString()?.trim().orEmpty()
+                    if (target.isNotEmpty() && target != wrongText) {
+                        OpenLessNative.nativeAddCorrectionRule(wrongText, target)
+                    }
+                    activePopup?.dismiss()
+                }
+            },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+        val card = LinearLayout(this).apply {
+            addView(content)
+            background = roundedButton(tone(Color.rgb(45, 45, 45), Color.rgb(238, 238, 241)), dp(10))
+        }
+        val popup = android.widget.PopupWindow(card, dp(260), ViewGroup.LayoutParams.WRAP_CONTENT, true)
+        activePopup = popup
+        popup.isOutsideTouchable = true
+        popup.elevation = dp(10).toFloat()
+        popup.showAtLocation(anchor, android.view.Gravity.CENTER, 0, 0)
+        // Best-effort: this EditText is hosted inside the IME's own window,
+        // so soft-input focus routing here is untested territory — this is
+        // the one part of the feature that needs an on-device check.
+        targetInput.post {
+            targetInput.requestFocus()
+            (getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)?.showSoftInput(targetInput, InputMethodManager.SHOW_IMPLICIT)
+        }
     }
 
     /** Commits the current character together with any segments already marked via 分词. */
@@ -2537,6 +2778,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // outer container" call never ran in time. Excluding the zone by
         // touch-down position sidesteps that dispatch-order race entirely.
         private val verticalDismissExclusionRatio: Float = 0f,
+        // Off for the clipboard history sub-panel: its rows use left/right
+        // swipes themselves (favorite / add correction rule), and trying to
+        // exclude just their region would hit the exact same dispatch-order
+        // race noted above for the punctuation rail — simplest to just not
+        // compete for horizontal drags at all inside that sub-panel.
+        private val horizontalSwipeEnabled: Boolean = true,
         private val onSwipe: (Int) -> Unit,
     ) : LinearLayout(context) {
         private var startX = 0f
@@ -2589,7 +2836,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     val dy = ev.y - startY
                     // Require a clearly horizontal drag so this never steals a
                     // vertical gesture meant for a nested SwipeRail.
-                    if (!interceptingHorizontal && !interceptingVertical &&
+                    if (horizontalSwipeEnabled && !interceptingHorizontal && !interceptingVertical &&
                         kotlin.math.abs(dx) > touchSlop && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.5f
                     ) {
                         interceptingHorizontal = true

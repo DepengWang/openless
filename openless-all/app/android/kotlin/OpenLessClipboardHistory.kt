@@ -6,7 +6,7 @@ import org.json.JSONObject
 import java.io.File
 
 /** One remembered clipboard entry. */
-data class ClipboardEntry(val text: String, val timestamp: Long)
+data class ClipboardEntry(val text: String, val timestamp: Long, val favorite: Boolean = false)
 
 /**
  * Persisted clipboard history for the IME's clipboard panel. Stored as a
@@ -49,7 +49,7 @@ object OpenLessClipboardHistory {
             val array = JSONArray(target.readText())
             (0 until array.length()).map { index ->
                 val obj = array.getJSONObject(index)
-                ClipboardEntry(obj.getString("text"), obj.optLong("ts"))
+                ClipboardEntry(obj.getString("text"), obj.optLong("ts"), obj.optBoolean("favorite", false))
             }
         } catch (error: Exception) {
             android.util.Log.w("OpenLessClipboardHistory", "failed to load history", error)
@@ -66,6 +66,7 @@ object OpenLessClipboardHistory {
                     JSONObject().apply {
                         put("text", entry.text)
                         put("ts", entry.timestamp)
+                        put("favorite", entry.favorite)
                     },
                 )
             }
@@ -86,9 +87,28 @@ object OpenLessClipboardHistory {
     fun recordCopy(context: Context, text: String) {
         if (text.isBlank()) return
         val current = load(context).toMutableList()
+        // Preserve an existing favorite flag rather than silently clearing
+        // it just because the same text got copied again.
+        val wasFavorite = current.any { it.text == text && it.favorite }
         current.removeAll { it.text == text }
-        current.add(0, ClipboardEntry(text, System.currentTimeMillis()))
+        current.add(0, ClipboardEntry(text, System.currentTimeMillis(), wasFavorite))
         while (current.size > MAX_ENTRIES) current.removeAt(current.lastIndex)
+        save(context, current)
+    }
+
+    /** Flips one entry's favorite flag by text — swipe-right on a clipboard history row. Preserves list order. */
+    @Synchronized
+    fun toggleFavorite(context: Context, text: String) {
+        val current = load(context).map { entry ->
+            if (entry.text == text) entry.copy(favorite = !entry.favorite) else entry
+        }
+        save(context, current)
+    }
+
+    /** Removes one entry by text — the swipe-right "delete" zone, past the favorite zone. */
+    @Synchronized
+    fun delete(context: Context, text: String) {
+        val current = load(context).filterNot { it.text == text }
         save(context, current)
     }
 }
