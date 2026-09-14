@@ -109,12 +109,11 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         // calls finish() on itself (see onBackPressed()), so onDestroy()
         // firing means the *system* reclaimed this task — e.g. memory
         // pressure, or "don't keep activities" — while the process (and
-        // this static recovery logic) is still alive. ensureBackendReady()
-        // already no-ops if the backend contract still checks out, so this
-        // is cheap when the destroy was harmless and only relaunches when
-        // it actually wasn't.
-        android.util.Log.w("OpenLessBackendWarmupActivity", "runtime activity destroyed by the system; re-checking backend")
-        ensureBackendReady(applicationContext)
+        // OpenLessRuntimeService, its supervisor) is still alive. Routed
+        // through the service rather than calling ensureBackendReady()
+        // directly here: the service is what decides whether/when to
+        // relaunch, this Activity dying is just one input to that decision.
+        OpenLessRuntimeService.notifyRuntimeActivityDestroyed(applicationContext)
         super.onDestroy()
     }
 

@@ -15,6 +15,9 @@ class OpenLessRuntimeService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_RUNTIME_ACTIVITY_DESTROYED) {
+            Log.w(TAG, "runtime host activity was destroyed by the system; re-checking backend")
+        }
         try {
             val notification = buildNotification()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -79,5 +82,21 @@ class OpenLessRuntimeService : Service() {
     companion object {
         private const val NOTIFICATION_ID = 42002
         private const val TAG = "OpenLessRuntimeService"
+        private const val ACTION_RUNTIME_ACTIVITY_DESTROYED = "com.openless.app.action.RUNTIME_ACTIVITY_DESTROYED"
+
+        /**
+         * Called from OpenLessBackendWarmupActivity.onDestroy() — this
+         * service is the supervisor that decides whether/when to relaunch
+         * the runtime host Activity (via ensureBackendReady(), already run
+         * unconditionally at the end of onStartCommand()), not the dying
+         * Activity deciding for itself. The action is only for logging here
+         * today; onStartCommand() already re-checks on every start
+         * regardless of why it was started.
+         */
+        fun notifyRuntimeActivityDestroyed(context: android.content.Context) {
+            context.startService(
+                Intent(context, OpenLessRuntimeService::class.java).setAction(ACTION_RUNTIME_ACTIVITY_DESTROYED),
+            )
+        }
     }
 }
