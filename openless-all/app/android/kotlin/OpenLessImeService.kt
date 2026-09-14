@@ -100,6 +100,19 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // or (if nothing was selected) the whole last dictation result.
     private var editingOriginalText: String? = null
     private var editingReplacesWholeResult = false
+    // True only for the clipboard swipe-left "add correction" flow: the
+    // spoken result never touches currentInputConnection, it only becomes a
+    // correction rule. False for the normal "edit dictation result" flow.
+    private var editingForClipboardCorrection = false
+    // Whether finishEditWithSpokenReplacement() should record a correction
+    // rule at all. Defaults true (matches the original always-record
+    // behavior); the edit panel's checkbox lets the user opt out per-edit
+    // for edits that are just rewording, not an actual misrecognition worth
+    // remembering — otherwise every edit silently accumulates a rule, which
+    // was the reported problem (too many unwanted rules piling up). Always
+    // true and hidden for the clipboard-correction flow, where recording the
+    // rule is the entire point of the action.
+    private var addCorrectionRuleForEdit = true
     private var undoRedoButton: TextView? = null
     private var editResultButton: TextView? = null
     // The row holding undoRedoButton/editResultButton, toggled as a whole so
@@ -324,10 +337,18 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     override fun onCreateInputView(): View {
         refreshLanguage()
         startRuntimeService()
+        // Checked before any inputMode branch: the clipboard swipe-left
+        // correction flow opens this panel while inputMode is still
+        // InputMode.CLIPBOARD (never changed), so if the CLIPBOARD branch
+        // below ran first, it would win and rebuild the clipboard history
+        // list instead — exactly the "swipe left does nothing visible" bug
+        // this ordering fixes. The original edit-result flow only ever
+        // triggered from Voice mode, so this ordering issue never showed up
+        // before the clipboard flow started reusing the same panel.
+        if (editingDictationResult) return buildEditPanel()
         if (inputMode == InputMode.ENGLISH) return buildKeyboardView()
         if (inputMode == InputMode.STROKE) return if (strokeNumberMode) buildStrokeNumberView() else buildStrokeView()
         if (inputMode == InputMode.CLIPBOARD) return if (clipboardHistoryMode) buildClipboardHistoryView() else buildClipboardView()
-        if (editingDictationResult) return buildEditPanel()
         val panel = SwipeModeContainer(this) { direction -> swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
@@ -598,6 +619,42 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         root.addView(chipRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             topMargin = dp(14)
         })
+
+        // Hidden for the clipboard swipe-left flow, where recording a
+        // correction rule is the entire point of the action, not an
+        // optional side effect of fixing dictated text in place. Shown for
+        // the normal edit flow so an edit that's just rewording (not an
+        // actual misrecognition) doesn't silently pile up an unwanted rule.
+        if (!editingForClipboardCorrection) {
+            val correctionToggleRow = LinearLayout(this).apply {
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                isClickable = true
+                setOnClickListener {
+                    addCorrectionRuleForEdit = !addCorrectionRuleForEdit
+                    refreshInputView()
+                }
+            }
+            correctionToggleRow.addView(
+                TextView(this).apply {
+                    text = if (addCorrectionRuleForEdit) "☑" else "☐"
+                    textSize = 16f
+                    setTextColor(if (addCorrectionRuleForEdit) strokeEncodeAccentColor else tone(Color.rgb(140, 140, 140), Color.rgb(150, 150, 154)))
+                },
+                LinearLayout.LayoutParams(dp(22), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) },
+            )
+            correctionToggleRow.addView(
+                TextView(this).apply {
+                    text = ui("同时加入纠错规则（下次自动改正）", "Also add as a correction rule")
+                    textSize = 12f
+                    setTextColor(tone(Color.rgb(180, 180, 180), Color.rgb(120, 120, 125)))
+                },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+            )
+            root.addView(
+                correctionToggleRow,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) },
+            )
+        }
 
         // Flexible filler mirrors the empty middle area in the reference,
         // pushing the divider + mic row down to the bottom of the panel.
@@ -1531,6 +1588,23 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
         val listContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val entries = OpenLessClipboardHistory.filter(OpenLessClipboardHistory.load(this), clipboardHistoryCategory)
+        // Correction rules live in the Rust backend (CORE_BACKEND), which is
+        // only registered once mobile_runtime::run()'s setup() has actually
+        // executed — not guaranteed just because the IME is showing. Without
+        // this, nativeCorrectionRulePatterns()/nativeAddCorrectionRule() below
+        // silently no-op against an unregistered backend: the star-like icon
+        // never appears and Save in the correction-rule Activity does nothing,
+        // with no visible error either place.
+        ensureBackendReady()
+        // Fetched once per panel build, not per row: a native round trip
+        // per row would be wasted work when a single JSON snapshot already
+        // answers "does this text have a rule" for all of them.
+        val correctionPatterns: Set<String> = try {
+            val array = org.json.JSONArray(OpenLessNative.nativeCorrectionRulePatterns())
+            (0 until array.length()).mapTo(mutableSetOf()) { array.getString(it) }
+        } catch (error: Exception) {
+            emptySet()
+        }
         if (entries.isEmpty()) {
             listContainer.addView(TextView(this).apply {
                 text = ui("暂无粘贴板记录", "No clipboard history yet")
@@ -1542,7 +1616,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         } else {
             entries.forEachIndexed { index, entry ->
                 // Two fixed-width zones behind the row, revealed left-to-right
-                // as it's dragged right: favorite first, delete beyond it.
+                // as it's dragged right: favorite first, delete beyond it. A
+                // third zone behind the row's end, revealed right-to-left as
+                // it's dragged left, toggles a correction rule for this text.
                 val entryWrapper = FrameLayout(this)
                 val zoneWidth = dp(88)
                 val revealRow = LinearLayout(this)
@@ -1566,6 +1642,18 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 revealRow.addView(favoriteZone, LinearLayout.LayoutParams(zoneWidth, ViewGroup.LayoutParams.MATCH_PARENT))
                 revealRow.addView(deleteZone, LinearLayout.LayoutParams(zoneWidth, ViewGroup.LayoutParams.MATCH_PARENT))
                 entryWrapper.addView(revealRow, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                val correctionZone = TextView(this).apply {
+                    textSize = 13f
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    gravity = android.view.Gravity.CENTER
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(Color.rgb(46, 108, 168))
+                    setPadding(dp(6), 0, dp(6), 0)
+                }
+                entryWrapper.addView(
+                    correctionZone,
+                    FrameLayout.LayoutParams(zoneWidth, ViewGroup.LayoutParams.MATCH_PARENT, android.view.Gravity.END),
+                )
 
                 val row = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
                 val star = TextView(this).apply {
@@ -1586,6 +1674,18 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     },
                     LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
                 )
+                // After the weighted text view, not before it, so this lands
+                // at the row's far right edge instead of crowding the star.
+                if (correctionPatterns.contains(entry.text)) {
+                    row.addView(
+                        TextView(this).apply {
+                            text = "✎"
+                            textSize = 13f
+                            setTextColor(Color.rgb(90, 156, 224))
+                        },
+                        LinearLayout.LayoutParams(dp(16), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(4) },
+                    )
+                }
                 // Plain flat row — no keycap-style background/press effect —
                 // but still opaque, so it fully hides the reveal zones until dragged.
                 row.setPadding(dp(12), dp(10), dp(12), dp(10))
@@ -1607,9 +1707,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     row = row,
                     zoneWidth = zoneWidth,
                     favoriteZone = favoriteZone,
+                    correctionZone = correctionZone,
                     isFavorite = { entry.favorite },
+                    hasCorrectionRule = { correctionPatterns.contains(entry.text) },
                     addLabel = ui("加入收藏", "Add"),
                     removeLabel = ui("取消收藏", "Remove"),
+                    addCorrectionLabel = ui("加入纠错规则", "Add correction"),
+                    removeCorrectionLabel = ui("移除纠错规则", "Remove correction"),
                     onSuppressClick = { suppressRowClick = true },
                     onToggleFavorite = {
                         OpenLessClipboardHistory.toggleFavorite(this, entry.text)
@@ -1619,7 +1723,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                         OpenLessClipboardHistory.delete(this, entry.text)
                         refreshInputView()
                     },
-                    onSwipeLeft = { showCorrectionRulePrompt(row, entry.text) },
+                    onAddCorrection = { openCorrectionRuleViaVoice(entry.text) },
+                    onRemoveCorrection = {
+                        OpenLessNative.nativeRemoveCorrectionRule(entry.text)
+                        refreshInputView()
+                    },
                 )
                 listContainer.addView(entryWrapper, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
                 if (index < entries.lastIndex) {
@@ -1637,14 +1745,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     /**
-     * Right swipe on one clipboard history row: the row itself tracks the
-     * finger 1:1 via translationX, revealing two fixed-width zones behind it
-     * — favorite first, delete beyond it — clamped so the drag can't pull
-     * the row past both zones' combined width. Releasing inside a zone
-     * commits that zone's action; releasing short of the favorite zone just
-     * springs the row back with no effect. Left swipe (add correction rule)
-     * keeps the old fixed-distance instant trigger for now — no reveal
-     * animation on that side yet.
+     * Left/right swipe on one clipboard history row: the row itself tracks
+     * the finger 1:1 via translationX, revealing fixed-width zones behind it
+     * — favorite then delete to the right as it's dragged right, a single
+     * correction-rule zone to the left as it's dragged left — each clamped
+     * so the drag can't pull the row past its own side's zone width(s).
+     * Releasing inside a zone commits that zone's action; releasing short
+     * of it just springs the row back with no effect, on either side.
      *
      * Uses rawX/rawY, not the view-local x/y: once translationX starts
      * moving the row mid-gesture, view-local coordinates from the same
@@ -1660,9 +1767,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * callback) let that stale click fire first: it pasted the row's text,
      * reordered it to the front via recordCopy(), and closed back to the
      * main clipboard view — exactly the "jumps back / reorders" symptom.
-     * onToggleFavorite/onDelete/onSwipeLeft can still be posted, since only
-     * *those* (which rebuild the whole panel) need to avoid the panel
-     * flickering mid-gesture.
+     * onToggleFavorite/onDelete/onAddCorrection/onRemoveCorrection can still
+     * be posted, since only *those* (which rebuild the whole panel) need to
+     * avoid the panel flickering mid-gesture.
      *
      * The panel's own SwipeModeContainer has `horizontalSwipeEnabled = false`
      * for this sub-panel specifically, so there is no competing ancestor
@@ -1674,17 +1781,22 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         row: View,
         zoneWidth: Int,
         favoriteZone: TextView,
+        correctionZone: TextView,
         isFavorite: () -> Boolean,
+        hasCorrectionRule: () -> Boolean,
         addLabel: String,
         removeLabel: String,
+        addCorrectionLabel: String,
+        removeCorrectionLabel: String,
         onSuppressClick: () -> Unit,
         onToggleFavorite: () -> Unit,
         onDelete: () -> Unit,
-        onSwipeLeft: () -> Unit,
+        onAddCorrection: () -> Unit,
+        onRemoveCorrection: () -> Unit,
     ) {
         val touchSlop = android.view.ViewConfiguration.get(this).scaledTouchSlop
-        val leftCommitThreshold = dp(56)
-        val maxDrag = zoneWidth * 2f
+        val maxDragRight = zoneWidth * 2f
+        val maxDragLeft = zoneWidth.toFloat()
         var startRawX = 0f
         var startRawY = 0f
         var horizontalDrag = false
@@ -1695,6 +1807,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     startRawY = event.rawY
                     horizontalDrag = false
                     favoriteZone.text = if (isFavorite()) removeLabel else addLabel
+                    correctionZone.text = if (hasCorrectionRule()) removeCorrectionLabel else addCorrectionLabel
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.rawX - startRawX
@@ -1703,15 +1816,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                         horizontalDrag = true
                         view.parent?.requestDisallowInterceptTouchEvent(true)
                     }
-                    if (horizontalDrag && dx > 0f) view.translationX = dx.coerceIn(0f, maxDrag)
+                    if (horizontalDrag) view.translationX = dx.coerceIn(-maxDragLeft, maxDragRight)
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (horizontalDrag) {
                         val dx = event.rawX - startRawX
                         if (dx > 0f) {
-                            val clamped = dx.coerceIn(0f, maxDrag)
+                            val clamped = dx.coerceIn(0f, maxDragRight)
                             when {
-                                clamped >= maxDrag -> {
+                                clamped >= maxDragRight -> {
                                     onSuppressClick()
                                     view.post { onDelete() }
                                 }
@@ -1720,11 +1833,21 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                                     view.post { onToggleFavorite() }
                                 }
                             }
-                            view.animate().translationX(0f).setDuration(150L).start()
-                        } else if (dx < -leftCommitThreshold) {
-                            onSuppressClick()
-                            view.post { onSwipeLeft() }
+                        } else if (dx < 0f) {
+                            val clamped = dx.coerceIn(-maxDragLeft, 0f)
+                            // Only past the full zone width — the label is
+                            // fully revealed by then — does releasing commit
+                            // anything; short of that just springs back.
+                            if (clamped <= -zoneWidth) {
+                                onSuppressClick()
+                                if (hasCorrectionRule()) {
+                                    view.post { onRemoveCorrection() }
+                                } else {
+                                    view.post { onAddCorrection() }
+                                }
+                            }
                         }
+                        view.animate().translationX(0f).setDuration(150L).start()
                     }
                     horizontalDrag = false
                 }
@@ -1736,75 +1859,39 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     /**
-     * Swipe-left action: the clipboard text is treated as the wrong result,
-     * and this prompts for what it should have said — same
-     * nativeAddCorrectionRule bridge the dictation "edit result" flow uses,
-     * so future dictations correct it automatically.
+     * Clipboard swipe-left "add correction" action, only reached when this
+     * text has no rule yet (once one exists, the same swipe instead removes
+     * it directly via onRemoveCorrection, no prompt). Reuses the dictation
+     * "edit result" mechanism's speak-to-replace mic (openEditDictationResult
+     * / finishEditWithSpokenReplacement) instead of any separate window.
+     *
+     * A dedicated Activity was tried for the "type the correct wording" step
+     * first. On a real device it reproduced a native crash: SIGSEGV in
+     * HWUI's RenderThread (WebViewFunctorManager::destroyFunctor, abort
+     * message "FORTIFY: pthread_mutex_lock called on a destroyed mutex"),
+     * whenever that Activity's window appeared while
+     * OpenLessBackendWarmupActivity's WebView-hosting window was mid
+     * teardown in the background — confirmed via on-device tombstones on two
+     * different phones, not timing-tunable away since Android decides when
+     * to reclaim a backgrounded WebView's hardware layer, not app code. This
+     * panel never opens a second window at all, so that whole crash class
+     * does not apply, and it reuses machinery already proven here for
+     * exactly this purpose (recording a correction rule from spoken text).
+     *
+     * editingReplacesWholeResult stays false and editingForClipboardCorrection
+     * is set so finishEditWithSpokenReplacement() skips touching
+     * currentInputConnection entirely — wrongText is an arbitrary clipboard
+     * entry, not necessarily anything currently focused in any app.
      */
-    private fun showCorrectionRulePrompt(anchor: View, wrongText: String) {
-        var activePopup: android.widget.PopupWindow? = null
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(14), dp(14), dp(14))
-        }
-        content.addView(
-            TextView(this).apply {
-                text = ui("把这句话加入纠错规则：", "Add this text as a correction rule:")
-                textSize = 13f
-                setTextColor(tone(Color.rgb(200, 200, 200), Color.rgb(90, 90, 95)))
-            },
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(6) },
-        )
-        content.addView(
-            TextView(this).apply {
-                text = wrongText
-                textSize = 14f
-                maxLines = 2
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                setTextColor(Color.rgb(153, 26, 40))
-            },
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) },
-        )
-        val targetInput = android.widget.EditText(this).apply {
-            hint = ui("正确的写法", "Correct wording")
-            textSize = 14f
-            setTextColor(tone(Color.rgb(230, 230, 230), Color.rgb(30, 30, 34)))
-            setHintTextColor(tone(Color.rgb(140, 140, 140), Color.rgb(150, 150, 154)))
-            isSingleLine = true
-        }
-        content.addView(targetInput, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(12) })
-        content.addView(
-            TextView(this).apply {
-                text = ui("保存", "Save")
-                textSize = 14f
-                gravity = android.view.Gravity.CENTER
-                setTextColor(strokeEncodeAccentColor)
-                setOnClickListener {
-                    val target = targetInput.text?.toString()?.trim().orEmpty()
-                    if (target.isNotEmpty() && target != wrongText) {
-                        OpenLessNative.nativeAddCorrectionRule(wrongText, target)
-                    }
-                    activePopup?.dismiss()
-                }
-            },
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
-        )
-        val card = LinearLayout(this).apply {
-            addView(content)
-            background = roundedButton(tone(Color.rgb(45, 45, 45), Color.rgb(238, 238, 241)), dp(10))
-        }
-        val popup = android.widget.PopupWindow(card, dp(260), ViewGroup.LayoutParams.WRAP_CONTENT, true)
-        activePopup = popup
-        popup.isOutsideTouchable = true
-        popup.elevation = dp(10).toFloat()
-        popup.showAtLocation(anchor, android.view.Gravity.CENTER, 0, 0)
-        // Best-effort: this EditText is hosted inside the IME's own window,
-        // so soft-input focus routing here is untested territory — this is
-        // the one part of the feature that needs an on-device check.
-        targetInput.post {
-            targetInput.requestFocus()
-            (getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)?.showSoftInput(targetInput, InputMethodManager.SHOW_IMPLICIT)
-        }
+    private fun openCorrectionRuleViaVoice(wrongText: String) {
+        editingOriginalText = wrongText
+        editingReplacesWholeResult = false
+        editingForClipboardCorrection = true
+        addCorrectionRuleForEdit = true
+        editingDictationResult = true
+        awaitingEditReplacement = true
+        refreshInputView()
+        toggleDictation()
     }
 
     /** Commits the current character together with any segments already marked via 分词. */
@@ -2455,6 +2542,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             editingOriginalText = whole
             editingReplacesWholeResult = true
         }
+        editingForClipboardCorrection = false
+        addCorrectionRuleForEdit = true
         editingDictationResult = true
         awaitingEditReplacement = true
         refreshInputView()
@@ -2474,28 +2563,52 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         editingDictationResult = false
         awaitingEditReplacement = false
         editingOriginalText = null
+        editingForClipboardCorrection = false
         setState("done", "已上屏")
         refreshInputView()
     }
 
     /**
-     * Applies the freshly spoken replacement for editingOriginalText: swaps
-     * it into the input field (relying on InputConnection.commitText's
-     * standard "replace the active selection" behavior when there is a real
-     * OS selection, or an explicit delete+insert when we fell back to the
-     * whole last result), and records the change as a correction rule so
-     * future dictation recognizes it correctly next time.
+     * Applies the freshly spoken replacement for editingOriginalText.
+     *
+     * Normal "edit dictation result" flow: swaps it into the input field
+     * (relying on InputConnection.commitText's standard "replace the active
+     * selection" behavior when there is a real OS selection, or an explicit
+     * delete+insert when we fell back to the whole last result). Clipboard
+     * swipe-left "add correction" flow (editingForClipboardCorrection):
+     * never touches currentInputConnection at all, since editingOriginalText
+     * there is an arbitrary clipboard entry, not necessarily anything
+     * currently focused anywhere — only recording a correction rule applies.
+     *
+     * Either way, recording the change as a correction rule is gated on
+     * addCorrectionRuleForEdit — unconditional for the clipboard flow (that
+     * is the entire point of swiping), opt-out via the edit panel's checkbox
+     * for the normal flow (every edit used to silently add one, which piled
+     * up rules for edits that were just rewording, not misrecognitions).
      */
     private fun finishEditWithSpokenReplacement(text: String) {
         recording = false
         processing = false
         val original = editingOriginalText
         val replacesWhole = editingReplacesWholeResult
+        val forClipboardCorrection = editingForClipboardCorrection
+        val shouldAddRule = addCorrectionRuleForEdit
         editingDictationResult = false
         awaitingEditReplacement = false
         editingOriginalText = null
+        editingForClipboardCorrection = false
         if (text.isBlank() || original == null) {
             setState("done", "已上屏")
+            refreshInputView()
+            return
+        }
+        if (forClipboardCorrection) {
+            if (shouldAddRule && text != original) {
+                runNativeAction("记录纠错") {
+                    OpenLessNative.nativeAddCorrectionRule(original, text)
+                }
+            }
+            setState("done", ui("已加入纠错规则", "Correction rule added"))
             refreshInputView()
             return
         }
@@ -2504,7 +2617,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             if (replacesWhole) connection.deleteSurroundingText(original.length, 0)
             connection.commitText(text, 1)
         }
-        if (text != original) {
+        if (shouldAddRule && text != original) {
             runNativeAction("记录纠错") {
                 OpenLessNative.nativeAddCorrectionRule(original, text)
             }
