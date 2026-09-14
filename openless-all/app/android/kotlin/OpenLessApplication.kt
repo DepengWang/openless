@@ -149,10 +149,15 @@ class OpenLessApplication : Application() {
     }
 
     // The keyboard's light/dark palette follows the app's own theme setting
-    // (Settings > Appearance), not the raw OS setting — reading the resolved
-    // `data-ol-theme` attribute the WebView already computes (it handles the
-    // "system" preference itself) means this never needs to duplicate that
-    // resolution logic natively.
+    // (Settings > Appearance), not the raw OS setting. Read directly from
+    // the same two sources themeMode.ts's resolveTheme() uses (the stored
+    // 'ol.theme' preference, falling back to prefers-color-scheme for
+    // "system") instead of the `data-ol-theme` DOM attribute it derives
+    // from: the attribute only reflects reality once applyThemeMode() has
+    // actually run in this tick, and a poll landing mid-render/mid-navigation
+    // could read it before that — which showed up as the keyboard flashing
+    // the wrong theme until the next rebuild "self-corrected" it. localStorage
+    // and matchMedia are queryable immediately regardless of render timing.
     private fun readInterfaceTheme(activity: Activity) {
         fun findWebView(view: android.view.View): android.webkit.WebView? {
             if (view is android.webkit.WebView) return view
@@ -165,7 +170,19 @@ class OpenLessApplication : Application() {
         }
         val webView = findWebView(activity.window.decorView) ?: return
         webView.evaluateJavascript(
-            "(function(){return document.documentElement.dataset.olTheme === 'dark' ? 'dark' : 'light';})()",
+            """
+            (function(){
+                try {
+                    var pref = window.localStorage.getItem('ol.theme');
+                    if (pref !== 'light' && pref !== 'dark' && pref !== 'system') pref = 'system';
+                    if (pref === 'light') return 'light';
+                    if (pref === 'dark') return 'dark';
+                    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+                } catch (e) {
+                    return 'unknown';
+                }
+            })()
+            """.trimIndent(),
         ) { result ->
             val theme = result.trim('"')
             if (theme != "dark" && theme != "light") return@evaluateJavascript
