@@ -29,6 +29,12 @@ object OpenLessNative {
     /** Records a hand-corrected span from the IME's "edit result" flow into the shared correction dictionary. */
     @JvmStatic external fun nativeAddCorrectionRule(pattern: String, replacement: String)
 
+    /** JSON array of every existing correction rule's pattern — lets the clipboard swipe-left gesture show "add" vs. "remove" before the drag finishes. */
+    @JvmStatic external fun nativeCorrectionRulePatterns(): String
+
+    /** Removes every correction rule whose pattern exactly matches — the clipboard swipe-left "remove" action. */
+    @JvmStatic external fun nativeRemoveCorrectionRule(pattern: String)
+
     @JvmStatic external fun nativeBackendSnapshot(): String
 
     @JvmStatic
