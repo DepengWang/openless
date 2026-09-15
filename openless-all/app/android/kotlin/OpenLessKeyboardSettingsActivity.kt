@@ -134,6 +134,37 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             ),
         )
 
+        content.addView(sectionLabel(ui("进程重启统计（近 3 天）", "Process restarts (last 3 days)")))
+        // Split by actual OS process, not lumped together: the crash/kill
+        // debugging that motivated this counter treats the main process
+        // (IME + Tauri backend) and the separate ":accessibility" process as
+        // two independently-restartable things, so a combined number would
+        // hide which one is actually the problem.
+        for ((processKey, processLabel) in listOf(
+            OpenLessProcessRestartStats.MAIN to ui("主进程（输入法 / 后端）", "Main process (IME / backend)"),
+            OpenLessProcessRestartStats.ACCESSIBILITY to ui("无障碍进程", "Accessibility process"),
+        )) {
+            content.addView(
+                TextView(this).apply {
+                    text = processLabel
+                    textSize = 13f
+                    setTextColor(Color.rgb(170, 170, 170))
+                },
+            )
+            content.addView(
+                TextView(this).apply {
+                    text = OpenLessProcessRestartStats(this@OpenLessKeyboardSettingsActivity, processKey)
+                        .recentDays()
+                        .joinToString("\n") { (date, count) -> ui("$date：$count 次", "$date: $count") }
+                    textSize = 14f
+                    setTextColor(Color.rgb(200, 200, 200))
+                },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(14)
+                },
+            )
+        }
+
         content.addView(sectionLabel(ui("个人偏好数据", "Personal preference data")))
         val personalFrequency = StrokeUserFrequency(this)
         content.addView(
