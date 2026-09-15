@@ -2404,9 +2404,16 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         runNativeAction("取消听写") { OpenLessNative.nativeCancelDictation() }
     }
 
+    // Also requires a registered Activity Context (see
+    // OpenLessNative.nativeHasRegisteredActivityContext()'s doc comment),
+    // not just a running backend: the Rust backend can stay healthy long
+    // after its last Activity is destroyed, but every dictation/waveform
+    // status notification silently fails without one — recording would
+    // otherwise start with zero visible feedback (no waveform, no red
+    // warning, nothing), looking exactly like the mic tap did nothing.
     private fun isBackendReady(): Boolean = try {
         OpenLessNative.requireBackendContract()
-        true
+        OpenLessNative.nativeHasRegisteredActivityContext()
     } catch (error: Throwable) {
         false
     }
