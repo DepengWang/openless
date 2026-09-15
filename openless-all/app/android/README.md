@@ -64,6 +64,14 @@ Manifest 合并脚本：
 | 语言同步修复 | `OpenLessApplication` 原来按精确类型判断 `MainActivity`，实际设置页跑在子类 `OpenLessBackendWarmupActivity` 上从未触发，改成 `is` 判断 |
 | 剪贴板 | 新增历史持久化 `OpenLessClipboardHistory.kt`，按钮配色与笔画面板统一 |
 | 语音纠错联动 | `native_bridge.rs` 新增 `nativeAddCorrectionRule`，手动改过的听写结果自动写入纠错词典 |
+| Activity Context 生命周期 | JNI 侧改用显式 `GlobalRef` 注册表（`nativeRegisterActivityContext`/`nativeUnregisterActivityContext`），由 `OpenLessApplication` 的 `ActivityLifecycleCallbacks`（`is MainActivity` 匹配，覆盖子类 `OpenLessBackendWarmupActivity`）驱动注册/注销；之前先后用过 `ndk_context::android_context()`（Activity 重建后失效）和 `tao::main_android_context()`（仅追踪前台 Activity，后台时为空）都出过问题 |
+| 启动图标黑屏修复 | 直接点应用图标会启动裸 `MainActivity`，触发第二次、未被追踪的 Tauri host 初始化（WebView 拿不到内容）；改用 `merge-android-overlay-manifest.mjs` 把 LAUNCHER `intent-filter` 挪到 `OpenLessBackendWarmupActivity` 上解决 |
+| 构建版本追踪 | 新增 `OpenLessBuildInfo.VERSION`（每次调试构建手动 +0.01），键盘设置页底部显示；版本变化时 `OpenLessApplication.resetRestartStatsOnVersionBump()` 把全部重启计数清零，避免跨构建对比无意义的历史值 |
+| 进程重启统计改为"仅今天" | `OpenLessProcessRestartStats` 去掉原来的 3 天滚动窗口，只保留 `todayKey()`；设置页对应表格去掉多日列，改成单行 `key + 计数 + 中文说明`（如"sticky 系统杀后恢复"） |
+| 键盘设置页主题跟随 | `OpenLessKeyboardSettingsActivity` 原来背景/文字颜色是写死的深色，从未跟随应用自己的浅色/深色设置；改用与 `OpenLessImeService.isDarkTheme` 相同的 `theme_mode` 读取逻辑 |
+| 震动滑块 UX | 滑块标签实时显示 `Max n Set:当前值`；时长上限从 500ms 逐步减半到 125ms，便于精细调节 |
+| 听写生命周期触觉反馈 | `onCapsuleStateChanged()` 在开始录音、录音结束进入整理、整理完成三个节点各触发一次 `performKeyHaptic()` |
+| 悬浮窗跟随输入法面板（已回退） | 曾尝试给悬浮窗加"跟随面板显示/隐藏 + 固定在 Logo 旁"的开关，目的是保活；后确认 `OpenLessOverlayService` 的显示/隐藏与保活完全无关（保活由 `OpenLessRuntimeService` 独立的常驻前台服务负责，文档注释原话是"without showing an overlay"），且该指示器与面板自身的话筒动画信息重复，价值有限，遂整批回退（含设置页开关） |
 
 开发流程：每次改动后用 `npm run copy:android-scaffolding` 同步 → `gradlew app:assembleArm64Debug -x app:rustBuildArm64Debug`（Kotlin-only 改动跳过 Rust 重编译）→ `adb install -r` 装机 → 通过 `adb exec-out screencap` 或用户反馈截图核对真机效果；涉及尺寸争议时用 `adb shell wm density` + 实测 px 反推 dp，避免凭空猜测布局问题。
 
