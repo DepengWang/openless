@@ -64,8 +64,53 @@ Manifest 合并脚本：
 | 语言同步修复 | `OpenLessApplication` 原来按精确类型判断 `MainActivity`，实际设置页跑在子类 `OpenLessBackendWarmupActivity` 上从未触发，改成 `is` 判断 |
 | 剪贴板 | 新增历史持久化 `OpenLessClipboardHistory.kt`，按钮配色与笔画面板统一 |
 | 语音纠错联动 | `native_bridge.rs` 新增 `nativeAddCorrectionRule`，手动改过的听写结果自动写入纠错词典 |
+| Activity Context 生命周期 | JNI 侧改用显式 `GlobalRef` 注册表（`nativeRegisterActivityContext`/`nativeUnregisterActivityContext`），由 `OpenLessApplication` 的 `ActivityLifecycleCallbacks`（`is MainActivity` 匹配，覆盖子类 `OpenLessBackendWarmupActivity`）驱动注册/注销；之前先后用过 `ndk_context::android_context()`（Activity 重建后失效）和 `tao::main_android_context()`（仅追踪前台 Activity，后台时为空）都出过问题 |
+| 启动图标黑屏修复 | 直接点应用图标会启动裸 `MainActivity`，触发第二次、未被追踪的 Tauri host 初始化（WebView 拿不到内容）；改用 `merge-android-overlay-manifest.mjs` 把 LAUNCHER `intent-filter` 挪到 `OpenLessBackendWarmupActivity` 上解决 |
+| 构建版本追踪 | 新增 `OpenLessBuildInfo.VERSION`（每次调试构建手动 +0.01），键盘设置页底部显示；版本变化时 `OpenLessApplication.resetRestartStatsOnVersionBump()` 把全部重启计数清零，避免跨构建对比无意义的历史值 |
+| 进程重启统计改为"仅今天" | `OpenLessProcessRestartStats` 去掉原来的 3 天滚动窗口，只保留 `todayKey()`；设置页对应表格去掉多日列，改成单行 `key + 计数 + 中文说明`（如"sticky 系统杀后恢复"） |
+| 键盘设置页主题跟随 | `OpenLessKeyboardSettingsActivity` 原来背景/文字颜色是写死的深色，从未跟随应用自己的浅色/深色设置；改用与 `OpenLessImeService.isDarkTheme` 相同的 `theme_mode` 读取逻辑 |
+| 震动滑块 UX | 滑块标签实时显示 `Max n Set:当前值`；时长上限从 500ms 逐步减半到 125ms，便于精细调节 |
+| 听写生命周期触觉反馈 | `onCapsuleStateChanged()` 在开始录音、录音结束进入整理、整理完成三个节点各触发一次 `performKeyHaptic()` |
+| 悬浮窗跟随输入法面板（已回退） | 曾尝试给悬浮窗加"跟随面板显示/隐藏 + 固定在 Logo 旁"的开关，目的是保活；后确认 `OpenLessOverlayService` 的显示/隐藏与保活完全无关（保活由 `OpenLessRuntimeService` 独立的常驻前台服务负责，文档注释原话是"without showing an overlay"），且该指示器与面板自身的话筒动画信息重复，价值有限，遂整批回退（含设置页开关） |
+| 设置页黑屏问题（两层原因，均已修复） | 见下方独立章节《设置页黑屏排查记录》 |
+| 撤销/重做/编辑控件退格保留 | `OpenLessImeService` 通过输入法自己的退格键（含全选后退格，统一走 `deleteBackward()`）删空听写内容后，不再让 `lastDictationText` 失效——新增 `selfInitiatedTextChange` 标记，由 `deleteBackward()` 置位、`invalidateDictationResultIfTextChanged()`（`onUpdateSelection()` 触发）消费并跳过失效判断；只有非退格触发的清空（如宿主 App 发送后自动清空）才会让控件消失；另外开始新一轮听写（非编辑/纠正分支）时主动隐藏 |
+| 编辑弹窗 checkbox 调整 | "同时加入纠错规则"checkbox 从紧跟文字预览下方挪到面板下部（贴底部分隔线上方），字体和勾选框都放大 1.5 倍；全选/未选中（回退到编辑整句）时默认不勾选，只有选中部分内容时才默认勾选（`editingOriginalText != lastDictationText` 判断） |
+| 安装时间显示 | `OpenLessApplication.resetRestartStatsOnVersionBump()` 每次清零重启计数时，同时把 `System.currentTimeMillis()` 写入 `openless_runtime` 的 `build_first_seen_wall_time`；键盘设置页版本号行后面追加"安装于 yyyy-MM-dd HH:mm"，方便截图时知道这些计数是从什么时候开始累计的 |
 
 开发流程：每次改动后用 `npm run copy:android-scaffolding` 同步 → `gradlew app:assembleArm64Debug -x app:rustBuildArm64Debug`（Kotlin-only 改动跳过 Rust 重编译）→ `adb install -r` 装机 → 通过 `adb exec-out screencap` 或用户反馈截图核对真机效果；涉及尺寸争议时用 `adb shell wm density` + 实测 px 反推 dp，避免凭空猜测布局问题。
+
+## 设置页黑屏排查记录（供交叉验证）
+
+**现象**：长按 Logo 或点击应用图标打开设置页，`OpenLessBackendWarmupActivity` 窗口本身能弹出、获得焦点，但内容区域是纯黑，没有任何 UI、没有加载动画。期间语音听写、笔画输入完全正常，说明 Rust 后端和 IME 进程本身健康，问题局限在这一个 Activity 的 WebView 内容渲染上。
+
+排查过程中确认了两层互相独立的原因，都已修复：
+
+**原因一：`settingsRequested` 时序竞争**（commit 待提交，见 `OpenLessBackendWarmupActivity.kt`）。这个 Activity 平时绝大多数时候是"静默唤醒"用途——`onCreate()` 里 `warmupHandler.postDelayed(sendToBackground, 180L)` 会在 180ms 后自动 `moveTaskToBack()`，除非 `settingsRequested` 为 true。`ensureBackendReady()` 的自动静默唤醒和用户主动打开设置（图标/Logo）有概率在几毫秒内先后对同一个 `singleTask` Activity 发起 `startActivity()`；`settingsRequested` 原来完全依赖 `onCreate()`/`onNewIntent()` 收到的 Intent 内容判断，如果静默唤醒先创建了实例（`settingsRequested=false`）并挂上 180ms 定时器，用户的真实打开请求的 `onNewIntent()` 没能足够快地取消这个定时器，窗口就会"一闪而过"被收回后台——真机 logcat 里能看到 `onSurfaceShowChange show=true` 之后约 200ms 出现 `show=false`，与 180ms 定时器耗时吻合。
+
+修复：新增 `settingsOpenPending`（`companion object` 里的 `@Volatile` 标记），由 `openSettings()`/`openSettingsIfRunning()` 在调用 `startActivity()` **之前**同步置位；`openSettingsIfRunning()` 还直接对已存活的 `activity` 实例同步设置 `settingsRequested = true` 并 `removeCallbacks(sendToBackground)`，不依赖 Intent 投递时序。同时给 `launchWarmup()` 内部 120ms 延迟后的 `startActivity()` 调用加了 `isRunning()` 复查，避免延迟期间已经有别的入口把 Activity 启动起来后仍旧重复发起静默唤醒。修复后 logcat 确认窗口能稳定停在 `RESUMED`/`isVisibleRequested=true`，不再自动隐藏。
+
+**原因二：WebView 渲染进程在后台被系统冻结，恢复前台后没有重新合成画面**。上面这层修复只解决了"窗口是否留在前台"，窗口留住之后用户反馈仍然是黑屏，用 `adb exec-out screencap` 截图确认是纯黑（不是白屏/异常颜色/局部渲染），排除了布局或主题配色问题。由于这个 Activity 设计上几乎全部时间都处于 `moveTaskToBack()` 之后的后台状态，其宿主的 WebView 渲染子进程（`com.google.android.webview:sandboxed_process0`，运行在本应用 UID 下）是安卓"后台进程冻结"省电机制（Android 12+ App Freezer，各 OEM 定制系统通常更激进）的典型目标；真机 logcat 里能看到该子进程被 `Async freezing`/`received async transactions while frozen` 又 `sync unfroze`。冻结解除时 Chromium 合成器没有必然重新提交一帧画面，窗口本身可以正常获得焦点、绘制，但内部 WebView 表面停留在最后一次（或从未）合成的空白/黑色状态。
+
+修复：`OpenLessBackendWarmupActivity` 新增 `onWebViewCreate(webView)` 覆写（`WryActivity` 已有的钩子，此前未使用）保存 WebView 引用，新增 `reloadWebViewForSettings()`，在 `onCreate()`/`onNewIntent()` 两处 `settingsRequested` 变为 true（即真正为用户打开设置，而非静默唤醒）时调用 `webViewRef?.post { webViewRef?.reload() }`，强制 Chromium 从头重新加载并合成一次画面，不依赖冻结/解冻这套系统机制自己恢复。
+
+**注意**：排查早期还发现过一次 `adb install -r` 重装导致的一次性黑屏（`ActivityThread: Package [com.openless.app] reported as REPLACED, but missing application info. Assuming REMOVED.`），这是重装时旧 WebView 渲染进程还没被系统完全回收造成的开发流程副作用，`adb shell am force-stop com.openless.app` 可以清掉，不是代码问题，真实用户走应用商店/App 内更新不会遇到。
+
+## 重启原因统计代码位置一览（`OpenLessProcessRestartStats`，供交叉验证）
+
+8 个分类，`recordStart()` 调用点：
+
+| key | 文件:行 | 触发条件 |
+|-----|---------|---------|
+| `main` | `OpenLessApplication.kt:290`（`OpenLessProcessRestartStats.MAIN`，动态 processKey 判断） | 主进程 `Application.onCreate()` 或等价路径执行 |
+| `accessibility` | `OpenLessApplication.kt:290`（同上，`processKey == ":accessibility"` 时） | `:accessibility` 子进程启动 |
+| `unclean` | `OpenLessApplication.kt:306` | 上一次主进程会话没有正常走到 `OpenLessImeService.onDestroy()`（尽力而为的异常退出信号） |
+| `warmup` | `OpenLessBackendWarmupActivity.kt:316`（`launchWarmup()`） | `ensureBackendReady()` 发现后端未就绪或 Activity Context 未注册，发起静默唤醒 |
+| `mictap` | `OpenLessImeService.kt:2416`（`toggleDictation()`） | 用户点麦克风时 `isBackendReady()` 为 false（用户可见的"服务未就绪"症状） |
+| `sticky` | `OpenLessRuntimeService.kt:24` | `onStartCommand()` 收到 null Intent —— `START_STICKY` 服务被系统杀死后自动重启的官方信号，是"进程真的被杀过"最强的证据 |
+| `actkill` | `OpenLessRuntimeService.kt:28` | 收到 `ACTION_RUNTIME_ACTIVITY_DESTROYED`（`OpenLessBackendWarmupActivity.onDestroy()` 发出）——系统回收了宿主 Activity 的窗口，不一定代表进程本身也被杀 |
+| `rtexit` | `OpenLessRuntimeService.kt:32` | 收到 `ACTION_RUNTIME_EXITED`——Tauri 的 `RunEvent::Exit` 实际触发了，理论上应该始终为 0（`mobile_runtime.rs` 的 `RunEvent::ExitRequested` + `prevent_exit()` 修复如果还生效的话） |
+
+所有计数每次 `OpenLessBuildInfo.VERSION` 变化时清零（见上方"安装时间显示"），键盘设置页只展示"今天"的累计值。
 
 ## 构建与 CI
 

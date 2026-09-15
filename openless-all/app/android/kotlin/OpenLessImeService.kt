@@ -28,6 +28,7 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 
 /** Minimal system IME surface. Voice transport is intentionally added in a later phase. */
 class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlayStateListener {
@@ -87,6 +88,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private var lastDictationEpoch: Long = -1
     private var dictationTextUndone = false
     private var editingDictationResult = false
+    // Set right before deleteBackward() edits the field, consumed by the
+    // very next invalidateDictationResultIfTextChanged() call — see
+    // deleteBackward()'s comment.
+    private var selfInitiatedTextChange = false
     // True from the moment the edit mic starts recording until its result
     // (or a cancel) resolves — independent of editingDictationResult, which
     // only tracks which PANEL is currently shown. Stopping the edit mic
@@ -144,6 +149,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private var confirmedText = ""
     private var phraseQueryEpoch = 0L
     private var strokePreview: TextView? = null
+    private var clearStrokeButton: TextView? = null
     private var strokeCandidates: LinearLayout? = null
 
     // Single source of truth for the encode row's blue text, reused as-is
@@ -230,15 +236,25 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         return object : android.graphics.drawable.Drawable() {
             override fun draw(canvas: Canvas) {
-                val unit = minOf(bounds.width(), bounds.height()) / 100f
+                // The path's ink only ever spanned y=[34.67, 68] of its
+                // original 100-unit design space (a bare third of the box).
+                // Rescaled + repositioned here so the ink fills the box with
+                // a small, even margin top and bottom — matching how a
+                // plain character glyph (e.g. the "丨" stroke's own) sits
+                // within its line — instead of either that ~33%-tall island
+                // or (an earlier attempt) flush against the bottom edge with
+                // all the blank space pushed to the top.
+                val inkTop = 34.67f
+                val inkBottom = 68f
+                val marginFraction = 0.12f
+                val boxHeight = bounds.height().toFloat()
+                val unit = (boxHeight * (1f - 2f * marginFraction)) / (inkBottom - inkTop)
+                val topPixels = bounds.top + boxHeight * marginFraction
                 val cx = bounds.left + bounds.width() / 2f
-                val top = bounds.top.toFloat()
-                // Mirrors the "5" key's own icon shape, including its top
-                // trimmed by 1/6 (bottom unchanged): 28 + (68-28)/6 ≈ 34.67.
                 val path = Path().apply {
-                    moveTo(cx + 1f * unit, top + 34.67f * unit)
-                    lineTo(cx - 14f * unit, top + 68f * unit)
-                    lineTo(cx + 16f * unit, top + 68f * unit)
+                    moveTo(cx + 1f * unit, topPixels)
+                    lineTo(cx - 14f * unit, topPixels + (inkBottom - inkTop) * unit)
+                    lineTo(cx + 16f * unit, topPixels + (inkBottom - inkTop) * unit)
                 }
                 canvas.drawPath(path, glyphPaint)
             }
@@ -324,6 +340,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         stopRuntimeService()
         strokeRepository.shutdown()
         phraseRepository.shutdown()
+        // Marks this as a clean end-of-session for
+        // OpenLessApplication.recordUncleanShutdownIfAny() — an abrupt
+        // process kill (native crash, OOM) never reaches this line, which
+        // is exactly the "unclean" case that helper is trying to detect.
+        getSharedPreferences("openless_runtime", MODE_PRIVATE).edit().putBoolean("session_alive", false).apply()
         super.onDestroy()
     }
 
@@ -484,15 +505,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val backspaceButton = keyboardKey(
             "⌫",
             1f,
-            action = {
-                currentInputConnection?.deleteSurroundingText(1, 0)
-                invalidateDictationResultIfTextChanged()
-            },
+            action = { deleteBackward() },
             repeatOnLongPress = true,
-            repeatAction = {
-                currentInputConnection?.deleteSurroundingText(1, 0)
-                invalidateDictationResultIfTextChanged()
-            },
+            repeatAction = { deleteBackward() },
         ).apply {
             textSize = 22f
             contentDescription = ui("退格", "Backspace")
@@ -620,11 +635,19 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             topMargin = dp(14)
         })
 
+        // Flexible filler mirrors the empty middle area in the reference,
+        // pushing the divider + mic row down to the bottom of the panel.
+        root.addView(View(this), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
         // Hidden for the clipboard swipe-left flow, where recording a
         // correction rule is the entire point of the action, not an
         // optional side effect of fixing dictated text in place. Shown for
         // the normal edit flow so an edit that's just rewording (not an
         // actual misrecognition) doesn't silently pile up an unwanted rule.
+        // Placed low in the panel, just above the bottom divider — not
+        // right under the text chip — and sized 1.5x (checkbox glyph and
+        // label both) so it reads as a deliberate decision, not a small
+        // afterthought easy to miss/mis-tap.
         if (!editingForClipboardCorrection) {
             val correctionToggleRow = LinearLayout(this).apply {
                 gravity = android.view.Gravity.CENTER_VERTICAL
@@ -637,28 +660,24 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             correctionToggleRow.addView(
                 TextView(this).apply {
                     text = if (addCorrectionRuleForEdit) "☑" else "☐"
-                    textSize = 16f
+                    textSize = 24f
                     setTextColor(if (addCorrectionRuleForEdit) strokeEncodeAccentColor else tone(Color.rgb(140, 140, 140), Color.rgb(150, 150, 154)))
                 },
-                LinearLayout.LayoutParams(dp(22), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) },
+                LinearLayout.LayoutParams(dp(33), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(9) },
             )
             correctionToggleRow.addView(
                 TextView(this).apply {
                     text = ui("同时加入纠错规则（下次自动改正）", "Also add as a correction rule")
-                    textSize = 12f
+                    textSize = 18f
                     setTextColor(tone(Color.rgb(180, 180, 180), Color.rgb(120, 120, 125)))
                 },
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
             )
             root.addView(
                 correctionToggleRow,
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) },
             )
         }
-
-        // Flexible filler mirrors the empty middle area in the reference,
-        // pushing the divider + mic row down to the bottom of the panel.
-        root.addView(View(this), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
         root.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
             bottomMargin = dp(10)
@@ -899,17 +918,16 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // Clear-code button: a 40x30dp hit target with a small glyph, not a
         // heavy independent button — tapping it is the same clearStrokes()
         // already wired to the action rail's "清除" key.
-        strokeRow.addView(
-            TextView(this).apply {
-                text = "✕"
-                textSize = 13f
-                gravity = android.view.Gravity.CENTER
-                setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(130, 130, 135)))
-                contentDescription = ui("清除笔画编码", "Clear stroke code")
-                setOnClickListener { clearStrokes() }
-            },
-            LinearLayout.LayoutParams(dp(40), ViewGroup.LayoutParams.MATCH_PARENT),
-        )
+        clearStrokeButton = TextView(this).apply {
+            text = "✕"
+            textSize = 13f
+            gravity = android.view.Gravity.CENTER
+            setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(130, 130, 135)))
+            contentDescription = ui("清除笔画编码", "Clear stroke code")
+            setOnClickListener { clearStrokes() }
+        }
+        strokeRow.addView(clearStrokeButton, LinearLayout.LayoutParams(dp(40), ViewGroup.LayoutParams.MATCH_PARENT))
+        updateClearStrokeButtonVisibility()
         top.addView(strokeRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(24)))
 
         val candidateRow = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
@@ -939,15 +957,29 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         candidateRow.addView(candidatesScroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
         // "Show more" — opens the full candidate/association list in a
         // floating overlay instead of growing this row or the panel height.
-        val expandCandidatesButton = TextView(this).apply {
-            text = "▾"
-            textSize = 14f
-            gravity = android.view.Gravity.CENTER
-            setTextColor(tone(Color.rgb(180, 180, 180), Color.rgb(130, 130, 135)))
+        val expandCandidatesButton = StrokeActionView(
+            this,
+            "triangle-down",
+            iconColor = tone(Color.rgb(180, 180, 180), Color.rgb(130, 130, 135)),
+        ).apply {
             contentDescription = ui("展开更多候选", "Show more candidates")
         }
+        expandCandidatesButton.visibility = View.GONE
         expandCandidatesButton.setOnClickListener { showCandidateOverlay(expandCandidatesButton) }
         candidateRow.addView(expandCandidatesButton, LinearLayout.LayoutParams(dp(28), ViewGroup.LayoutParams.MATCH_PARENT))
+        // Only shown once the candidates actually overflow the visible
+        // scroll width — otherwise it sat there whether or not there was
+        // anything more to show, which read as an odd stray control.
+        // renderCandidateRow()/refreshAssociations() both just repopulate
+        // strokeCandidates and let layout happen, so a global layout
+        // listener (fires after every layout pass, including the one
+        // triggered by add/removeAllViews) is what re-checks this instead
+        // of hooking every candidate-population call site individually.
+        candidatesScroll.viewTreeObserver.addOnGlobalLayoutListener {
+            val candidates = strokeCandidates
+            expandCandidatesButton.visibility =
+                if (candidates != null && candidates.width > candidatesScroll.width) View.VISIBLE else View.GONE
+        }
         top.addView(candidateRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36)))
         root.addView(top, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(60)))
 
@@ -1129,7 +1161,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             rowItems.forEachIndexed { index, label ->
                 val isAction = index == rowItems.lastIndex
                 val action: () -> Unit = when {
-                    rowIndex == 0 && isAction -> ({ currentInputConnection?.deleteSurroundingText(1, 0) })
+                    rowIndex == 0 && isAction -> ({ deleteBackward() })
                     rowIndex == 1 && isAction -> ({ sendEnterKey() })
                     rowIndex == 2 && isAction -> ({
                         inputMode = InputMode.VOICE
@@ -1204,6 +1236,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // drop the ImageSpan the 5th stroke relies on — TextUtils.concat()
         // preserves spans across both pieces.
         strokePreview?.text = android.text.TextUtils.concat(wordSegments.joinToString(""), displayStrokeCode(strokeCode))
+        updateClearStrokeButtonVisibility()
+    }
+
+    /** Only shows the encode row's "✕" once there's actually something to clear — otherwise it just sat there doing nothing. */
+    private fun updateClearStrokeButtonVisibility() {
+        clearStrokeButton?.visibility = if (strokeCode.isEmpty() && wordSegments.isEmpty()) View.GONE else View.VISIBLE
     }
 
     private fun refreshStrokeCandidates(code: String) {
@@ -1346,7 +1384,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             updateStrokePreview()
             renderCandidateRow(emptyList())
         } else {
-            currentInputConnection?.deleteSurroundingText(1, 0)
+            deleteBackward()
             if (confirmedText.isNotEmpty()) {
                 confirmedText = confirmedText.dropLast(1)
                 phraseQueryEpoch++
@@ -1364,6 +1402,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         lastStrokeCandidates = emptyList()
         strokePreview?.text = ""
         strokeCandidates?.removeAllViews()
+        updateClearStrokeButtonVisibility()
     }
 
     /**
@@ -1432,8 +1471,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // roundedButton() with the same rose highlight the stroke panel's
         // own "繁" toggle uses when active) — only the label/icon size and
         // grid spacing are new, not the button's edge style or palette.
-        fun quickActionLabel(label: String, action: () -> Unit, textSizeSp: Float, highlighted: Boolean = false) =
-            keyboardKey(label, 1f, action = action).apply {
+        fun quickActionLabel(label: String, action: () -> Unit, textSizeSp: Float, highlighted: Boolean = false, midDivider: Boolean = false) =
+            keyboardKey(label, 1f, action = action, midDivider = midDivider).apply {
                 textSize = textSizeSp
                 typeface = mediumTypeface
                 setTextColor(softWhite)
@@ -1475,7 +1514,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
         val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val row1 = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
-        val selectKey = quickActionLabel(ui("选择", "Select"), {
+        val selectKey = quickActionLabel(ui("选择", "Range"), {
             clipboardSelectionMode = !clipboardSelectionMode
             clipboardSelectionAnchor = -1
             clipboardSelectionActive = -1
@@ -1494,7 +1533,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         })
 
         val row2 = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
-        val selectAllKey = quickActionLabel(ui("全选", "Select All"), {
+        val selectAllKey = quickActionLabel(ui("全选", "Select"), {
             currentInputConnection?.performContextMenuAction(android.R.id.selectAll)
         }, 20f)
         val copyKey = quickActionLabel(ui("复制", "Copy"), {
@@ -1503,15 +1542,27 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val pasteKey = quickActionLabel(ui("粘贴", "Paste"), {
             currentInputConnection?.performContextMenuAction(android.R.id.paste)
         }, 20f)
-        // "粘贴板" is three characters where the others are two, so it gets a
-        // slightly smaller size to avoid crowding/clipping in the same cell width.
-        val clipboardKey = quickActionLabel(ui("粘贴板", "Clipboard"), {
+        // Two lines ("History" / "Correct") since this button now opens both
+        // the clipboard history browser (tap) and the voice-correction flow
+        // for whatever's selected in the real input field (long-press).
+        // quickActionLabel()->keyboardKey()'s own '\n' handling shrinks only
+        // the label's first character (built for single-char rows like
+        // "1\n!"), which would leave just one letter undersized here, so the
+        // spanned text it sets is overwritten with a plain two-line string
+        // right after construction.
+        val clipboardKey = quickActionLabel(ui("历史\n纠正", "History\nCorrect"), {
             clipboardHistoryMode = true
             refreshInputView()
-        }, 18f)
+        }, 17f, midDivider = true).apply {
+            text = ui("历史\n纠正", "History\nCorrect")
+            setOnLongClickListener {
+                openSelectedTextCorrectionViaVoice()
+                true
+            }
+        }
         val backspaceKey = quickActionIcon(
             "backspace-icon",
-            { currentInputConnection?.deleteSurroundingText(1, 0) },
+            { deleteBackward() },
             repeatOnLongPress = true,
         )
         for (key in listOf(selectAllKey, copyKey, pasteKey, clipboardKey, backspaceKey)) {
@@ -1976,7 +2027,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 1f,
                 { handleKeyboardKey(key) },
                 repeatOnLongPress = key == "⌫",
-                repeatAction = { currentInputConnection?.deleteSurroundingText(1, 0) },
+                repeatAction = { deleteBackward() },
             ))
         }
         parent.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -2004,6 +2055,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // panel's direction/undo icons — which sit on a normal or rose key,
         // not red — pass the theme-appropriate color explicitly.
         graphicIconColor: Int? = null,
+        // Draws a thin horizontal divider between the two lines of a
+        // two-line label (e.g. the clipboard panel's "History"/"Correct"
+        // key, which does two unrelated things depending on tap vs.
+        // long-press) — a plain '\n' alone read as one cramped label.
+        midDivider: Boolean = false,
     ): TextView {
         val keyView = when {
             microphoneIcon -> MicrophoneKeyView(this, isDarkTheme)
@@ -2016,6 +2072,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             }
             label == "←" || label == "↵" -> ActionSymbolView(this, label, isDarkTheme)
             label == "⇧" -> ShiftKeyView(this, shiftState, isDarkTheme)
+            midDivider -> MidDividerTextView(this, tone(Color.rgb(100, 100, 100), Color.rgb(205, 205, 209)))
             else -> TextView(this)
         }
         return keyView.apply {
@@ -2158,12 +2215,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 @Suppress("DEPRECATION")
                 vibrator.vibrate(durationMs)
             }
+        }.onFailure { error ->
+            android.util.Log.w("OpenLessImeService", "key haptic failed durationMs=$durationMs amplitude=$amplitude", error)
         }
     }
 
     private fun handleKeyboardKey(key: String) {
         when (key) {
-            "⌫" -> currentInputConnection?.deleteSurroundingText(1, 0)
+            "⌫" -> deleteBackward()
             "⇧" -> {
                 // Cycles lowercase -> capitalize-next -> caps-lock -> lowercase.
                 shiftState = when (shiftState) {
@@ -2188,6 +2247,30 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     refreshInputView()
                 }
             }
+        }
+    }
+
+    /**
+     * Backspace, everywhere it's wired up in this service. deleteSurroundingText()
+     * alone only ever removes characters relative to the cursor position — it does
+     * not reliably consume an active selection (behavior varies by target app), so
+     * when there's a real OS-level selection this commits an empty string instead,
+     * which every InputConnection implementation replaces the selection with.
+     */
+    private fun deleteBackward() {
+        val connection = currentInputConnection ?: return
+        val selected = connection.getSelectedText(0)
+        // Consumed by the very next invalidateDictationResultIfTextChanged()
+        // call (from onUpdateSelection(), which this delete triggers) so it
+        // skips clearing lastDictationText — deleting via our own backspace
+        // (plain or select-all-then-backspace, both land here) should stay
+        // undoable, unlike text disappearing for some other reason (e.g. the
+        // host app clearing the field itself after sending).
+        selfInitiatedTextChange = true
+        if (!selected.isNullOrEmpty()) {
+            connection.commitText("", 1)
+        } else {
+            connection.deleteSurroundingText(1, 0)
         }
     }
 
@@ -2217,6 +2300,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         strokeCode = ""
         wordSegments.clear()
         lastStrokeCandidates = emptyList()
+        updateClearStrokeButtonVisibility()
         recording = false
         processing = false
         // A dictation result belongs to the editor it was typed into; carrying
@@ -2248,13 +2332,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     /**
-     * Detects the committed dictation text getting edited or deleted some
-     * other way (backspace, selecting and typing over it, etc.) — not just
-     * through our own undo button — so the undo/redo/edit controls don't
-     * keep pointing at text that's no longer actually there. Called both
-     * from onUpdateSelection() (covers the host app's own keyboard/gestures)
-     * and directly after our own footer backspace key (some hosts, e.g.
-     * WeCom, don't report onUpdateSelection promptly per keystroke).
+     * Detects the committed dictation text getting cleared by something
+     * OTHER than our own backspace key or undo button — e.g. the host app
+     * clearing the field itself after sending — so the undo/redo/edit
+     * controls don't keep pointing at text that's no longer actually there.
+     * Deleting via our own backspace (plain or select-all-then-backspace,
+     * see deleteBackward()) is deliberately NOT treated as a reason to hide
+     * these: that deletion is itself undoable (the undo button just
+     * re-commits lastDictationText), so hiding it would strand an
+     * accidental full erase with no way back.
      *
      * Only clears once NONE of the dictated span remains — a single
      * backspace only shrinks it by one character, which should still leave
@@ -2265,6 +2351,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * still matches there, some of the utterance is still present.
      */
     private fun invalidateDictationResultIfTextChanged() {
+        if (selfInitiatedTextChange) {
+            selfInitiatedTextChange = false
+            return
+        }
         val text = lastDictationText ?: return
         if (dictationTextUndone) return
         val connection = currentInputConnection ?: return
@@ -2311,17 +2401,49 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             setState("thinking", "正在思考")
             runNativeAction("停止听写") { OpenLessNative.nativeStopDictationForIme() }
         } else {
+            // nativeStartDictationForIme() itself never throws when the
+            // Rust backend isn't registered yet — that side just logs a
+            // warning and no-ops — so runNativeAction()'s catch never fired
+            // for this case either: tapping the mic on a cold backend
+            // silently did nothing while the UI still claimed "recording".
+            // Checking readiness first, before touching any UI state, means
+            // a cold tap now honestly says so and kicks off warmup, instead
+            // of pretending to record.
+            if (!isBackendReady()) {
+                if (!awaitingBackendReadyRecheck) {
+                    backendRecheckStartedAtMs = android.os.SystemClock.elapsedRealtime()
+                    android.util.Log.w("OpenLessImeService", "backend not ready at mic tap; starting recovery watch")
+                    OpenLessProcessRestartStats(this, "mictap").recordStart()
+                }
+                setState("error", ui("服务尚未就绪", "Service not ready yet"))
+                voiceLinkWarning?.text = ui("服务尚未就绪，点击重启应用", "Service not ready — tap to restart the app")
+                voiceLinkWarning?.visibility = View.VISIBLE
+                ensureBackendReady()
+                scheduleBackendReadyRecheck()
+                return
+            }
             recording = true
             processing = false
             // The actual start of a new recording attempt — reset the
-            // silence watch here, not in onCapsuleStateChanged's "recording"
-            // branch: that branch only reset it when `recording` was still
-            // false at the time, but this line already flips it true before
-            // the native "recording" callback ever arrives, so that reset
-            // was structurally unreachable on every normal tap-to-start.
+            // silence watch and fire the start haptic here, not in
+            // onCapsuleStateChanged's "recording" branch: that branch only
+            // acted when `recording` was still false at the time, but this
+            // line already flips it true before the native "recording"
+            // callback ever arrives, so both were structurally unreachable
+            // on every normal tap-to-start (silently never firing).
             recordingStartedAtMs = android.os.SystemClock.elapsedRealtime()
             maxObservedLevelThisSession = 0f
             voiceLinkWarning?.visibility = View.GONE
+            performKeyHaptic()
+            // A genuinely new utterance (not the correction/edit sub-flow,
+            // which already hides these via editingDictationResult) makes
+            // the previous result's undo/redo/edit controls stale the
+            // moment recording starts, not just once the new result
+            // replaces them — leaving them up mid-recording risked an undo
+            // tap acting on the wrong utterance.
+            if (!editingDictationResult) {
+                lastDictationText = null
+            }
             setState("speaking", "再次点击结束")
             runNativeAction("开始听写") { OpenLessNative.nativeStartDictationForIme() }
         }
@@ -2332,6 +2454,65 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         processing = false
         invalidateSession("已取消")
         runNativeAction("取消听写") { OpenLessNative.nativeCancelDictation() }
+    }
+
+    // Also requires a registered Activity Context (see
+    // OpenLessNative.nativeHasRegisteredActivityContext()'s doc comment),
+    // not just a running backend: the Rust backend can stay healthy long
+    // after its last Activity is destroyed, but every dictation/waveform
+    // status notification silently fails without one — recording would
+    // otherwise start with zero visible feedback (no waveform, no red
+    // warning, nothing), looking exactly like the mic tap did nothing.
+    private fun isBackendReady(): Boolean = try {
+        OpenLessNative.requireBackendContract()
+        OpenLessNative.nativeHasRegisteredActivityContext()
+    } catch (error: Throwable) {
+        false
+    }
+
+    // Guards scheduleBackendReadyRecheck() so a second mic tap while a
+    // recheck loop is already running doesn't stack a duplicate one.
+    private var awaitingBackendReadyRecheck = false
+
+    // elapsedRealtime() at the moment "not ready" was first detected, so the
+    // eventual recovery (or timeout) log can report how long it actually took.
+    private var backendRecheckStartedAtMs = 0L
+
+    /**
+     * Polls isBackendReady() roughly once a second after showing the
+     * "service not ready" warning, since nothing else pushes a "the
+     * backend just finished warming up" event into this service — without
+     * this, the warning stayed stuck until some unrelated action (another
+     * mic tap, switching panels) happened to rebuild/reset it, even though
+     * the backend may have become ready seconds earlier in the background.
+     * Capped at ~60s of retries rather than polling forever if the backend
+     * genuinely never recovers. Raised from an earlier 20s cap after a real
+     * device recovery was observed taking ~31s (a double cold-start: the
+     * warmup Activity got destroyed once mid-warmup, then succeeded on a
+     * second attempt), which exceeded that cap and left the warning stuck.
+     */
+    private fun scheduleBackendReadyRecheck(attempt: Int = 0) {
+        if (attempt == 0) {
+            if (awaitingBackendReadyRecheck) return
+            awaitingBackendReadyRecheck = true
+        }
+        if (isBackendReady()) {
+            awaitingBackendReadyRecheck = false
+            val elapsedMs = android.os.SystemClock.elapsedRealtime() - backendRecheckStartedAtMs
+            android.util.Log.i("OpenLessImeService", "backend recovered after ${elapsedMs}ms (attempt=$attempt)")
+            voiceLinkWarning?.visibility = View.GONE
+            setState("idle", ui("点击开始说话", "Tap to speak"))
+            return
+        }
+        if (attempt >= 60) {
+            awaitingBackendReadyRecheck = false
+            val elapsedMs = android.os.SystemClock.elapsedRealtime() - backendRecheckStartedAtMs
+            android.util.Log.w("OpenLessImeService", "backend still not ready after ${elapsedMs}ms; giving up recheck loop")
+            return
+        }
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            scheduleBackendReadyRecheck(attempt + 1)
+        }, 1000L)
     }
 
     private fun runNativeAction(action: String, call: () -> Unit) {
@@ -2354,6 +2535,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     recordingStartedAtMs = android.os.SystemClock.elapsedRealtime()
                     maxObservedLevelThisSession = 0f
                     voiceLinkWarning?.visibility = View.GONE
+                    performKeyHaptic()
                 }
                 recording = true
                 processing = false
@@ -2362,16 +2544,29 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 if (maxObservedLevelThisSession >= SILENCE_LEVEL_THRESHOLD) {
                     voiceLinkWarning?.visibility = View.GONE
                 } else if (elapsedMs > SILENCE_CHECK_DELAY_MS) {
+                    // This only runs once an actual recording session is
+                    // underway, so it can't overlap with the "backend not
+                    // ready" case in toggleDictation() (that one returns
+                    // before a session ever starts) — but set this widget's
+                    // own text explicitly anyway rather than trusting
+                    // whatever the other case last left it as.
+                    voiceLinkWarning?.text = ui("检测到麦克风无声音，点击重启应用", "No mic audio detected — tap to restart the app")
                     voiceLinkWarning?.visibility = View.VISIBLE
                 }
                 setState("speaking", "再次点击结束")
             }
             "transcribing" -> {
+                // Guarded by the same "was still recording" check as
+                // "polishing" below, since either one can be the first to
+                // fire after recording actually stops — only whichever
+                // gets there first should vibrate.
+                if (recording) performKeyHaptic()
                 recording = false
                 processing = true
                 setState("thinking", "正在思考")
             }
             "polishing" -> {
+                if (recording) performKeyHaptic()
                 recording = false
                 processing = true
                 setState("thinking", "正在思考")
@@ -2380,6 +2575,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 recording = false
                 processing = false
                 setState("done", message ?: "已完成")
+                performKeyHaptic()
             }
             "cancelled" -> {
                 recording = false
@@ -2543,13 +2739,44 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             editingReplacesWholeResult = true
         }
         editingForClipboardCorrection = false
-        addCorrectionRuleForEdit = true
+        // Selecting the *whole* dictated span (either by not selecting
+        // anything at all — the fallback above — or by explicitly
+        // select-all-ing exactly that span) reads more like "redo this
+        // utterance" than "this specific word was wrong", so it starts
+        // unchecked; selecting only part of it starts checked, since that's
+        // the classic "fix this one word" correction. Either way the user
+        // can still flip the checkbox themselves before finishing.
+        addCorrectionRuleForEdit = editingOriginalText != lastDictationText
         editingDictationResult = true
         awaitingEditReplacement = true
         refreshInputView()
         // Recording starts immediately when the edit panel opens — the user
         // only has to tap the mic once, to finish, matching "Tap again to
         // finish" rather than requiring a tap to start too.
+        toggleDictation()
+    }
+
+    /**
+     * Long-press "History"/"历史" in the clipboard panel: same mechanism as
+     * openEditDictationResult()'s selected-text branch (replaces the
+     * selection in the real input field with the spoken correction, and
+     * records a correction rule) — but with no whole-last-result fallback.
+     * Without an actual selection there's nothing this gesture can
+     * reasonably act on, so it surfaces a hint instead of guessing.
+     */
+    private fun openSelectedTextCorrectionViaVoice() {
+        val selected = currentInputConnection?.getSelectedText(0)?.toString()?.takeIf { it.isNotEmpty() }
+        if (selected == null) {
+            Toast.makeText(this, ui("请先选中字词", "Please select word"), Toast.LENGTH_SHORT).show()
+            return
+        }
+        editingOriginalText = selected
+        editingReplacesWholeResult = false
+        editingForClipboardCorrection = false
+        addCorrectionRuleForEdit = true
+        editingDictationResult = true
+        awaitingEditReplacement = true
+        refreshInputView()
         toggleDictation()
     }
 
@@ -3207,6 +3434,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             textAlign = Paint.Align.CENTER
             typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL)
         }
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = iconColor
+            style = Paint.Style.FILL
+        }
 
         override fun onDraw(canvas: Canvas) {
             val u = minOf(width, height).coerceAtLeast(1) / 100f
@@ -3214,6 +3445,22 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             val cy = height / 2f
             paint.strokeWidth = 5.2f * u
             when (actionCode) {
+                "triangle-down" -> {
+                    // Fixed absolute size, independent of this button's own
+                    // (roughly 28x36dp, non-square) cell — about the same
+                    // visual footprint as a single candidate glyph
+                    // (candidateItemView's 20sp text), not scaled to the
+                    // fixed-100-unit icon canvas the other cases share.
+                    val triangleSize = 16f * resources.displayMetrics.density
+                    val topY = cy - triangleSize / 2f
+                    val path = Path().apply {
+                        moveTo(cx - triangleSize / 2f, topY)
+                        lineTo(cx + triangleSize / 2f, topY)
+                        lineTo(cx, topY + triangleSize)
+                        close()
+                    }
+                    canvas.drawPath(path, fillPaint)
+                }
                 "←" -> {
                     canvas.drawLine(cx - 23f * u, cy, cx + 23f * u, cy, paint)
                     canvas.drawLine(cx - 23f * u, cy, cx - 8f * u, cy - 12f * u, paint)
@@ -3352,6 +3599,26 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 }
             }
             canvas.drawPath(stroke, strokePaint)
+        }
+    }
+
+    /**
+     * Two-line label (via a plain "\n") with a thin horizontal divider
+     * drawn between the lines — the divider just needs the vertical
+     * midpoint of the view, which lands between the two centered lines of
+     * text closely enough without measuring actual text layout bounds.
+     */
+    private class MidDividerTextView(
+        context: android.content.Context,
+        private val dividerColor: Int,
+    ) : TextView(context) {
+        private val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1.5f }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            dividerPaint.color = dividerColor
+            val marginX = width * 0.22f
+            canvas.drawLine(marginX, height / 2f, width - marginX, height / 2f, dividerPaint)
         }
     }
 

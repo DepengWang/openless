@@ -1,9 +1,11 @@
 package com.openless.app
 
+import android.Manifest
 import android.app.Activity
 import android.app.ActivityManager
 import android.app.Application
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
@@ -19,14 +21,29 @@ class OpenLessApplication : Application() {
         if (isMainProcess()) {
             OpenLessShizukuBridge.initialize()
         }
+        recordProcessRestart()
         registerActivityLifecycleCallbacks(
             object : ActivityLifecycleCallbacks {
-                override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) =
-                    Unit
+                override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
+                    // Registers whichever MainActivity-family instance
+                    // (bare MainActivity from a launcher tap, or its
+                    // subclass OpenLessBackendWarmupActivity from IME/
+                    // Service-triggered warmup) as the Context
+                    // with_android_env() uses for every Rust->Kotlin JNI
+                    // call, including dictation/waveform capsule updates —
+                    // see OpenLessNative.nativeRegisterActivityContext()'s
+                    // doc comment for why this can't be hooked from just
+                    // one of those classes' own onCreate().
+                    if (activity is MainActivity) {
+                        runCatching { OpenLessNative.nativeRegisterActivityContext(activity) }
+                            .onFailure { error -> Log.w(TAG, "register activity context failed", error) }
+                    }
+                }
 
                 override fun onActivityStarted(activity: Activity) {
                     if (activity.javaClass.name.endsWith("MainActivity")) {
                         maybeRequestBatteryOptimizationExemption(activity)
+                        maybeRequestNotificationPermission(activity)
                         maybeHideOverlayOnForeground()
                     }
                 }
@@ -61,7 +78,16 @@ class OpenLessApplication : Application() {
                 override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) =
                     Unit
 
-                override fun onActivityDestroyed(activity: Activity) = Unit
+                override fun onActivityDestroyed(activity: Activity) {
+                    // Leaves a brief, safe "no context registered" gap
+                    // until the next MainActivity-family instance's
+                    // onActivityCreated() re-registers, rather than
+                    // leaving a soon-to-be-invalid GlobalRef around for
+                    // something to crash on.
+                    if (activity is MainActivity) {
+                        runCatching { OpenLessNative.nativeUnregisterActivityContext(activity) }
+                    }
+                }
             }
         )
     }
@@ -196,10 +222,17 @@ class OpenLessApplication : Application() {
     private fun maybeRequestBatteryOptimizationExemption(activity: Activity) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
         val power = getSystemService(POWER_SERVICE) as? PowerManager ?: return
+        // Re-checked against live system state every time, not gated by a
+        // one-shot "already prompted" flag: some OEMs (OnePlus/ColorOS
+        // observed) silently revert this exemption back to "optimized" on
+        // their own, and a one-time flag would then never prompt again even
+        // though the app is no longer actually exempt.
         if (power.isIgnoringBatteryOptimizations(packageName)) return
         val prefs = getSharedPreferences("openless_runtime", MODE_PRIVATE)
-        if (prefs.getBoolean("battery_optimization_prompted", false)) return
-        prefs.edit().putBoolean("battery_optimization_prompted", true).apply()
+        val now = System.currentTimeMillis()
+        val lastPrompt = prefs.getLong("battery_optimization_prompted_at", 0L)
+        if (now >= lastPrompt && now - lastPrompt < BATTERY_PROMPT_COOLDOWN_MS) return
+        prefs.edit().putLong("battery_optimization_prompted_at", now).apply()
         runCatching {
             activity.startActivity(
                 Intent(
@@ -212,9 +245,92 @@ class OpenLessApplication : Application() {
         }
     }
 
+    // POST_NOTIFICATIONS (API 33+) is never auto-granted, and
+    // OpenLessBackendWarmupActivity only asks for it when the settings UI is
+    // opened explicitly — a user who only ever invokes the IME via the
+    // keyboard switcher, without ever tapping the launcher icon, could go
+    // through that path forever without the request ever firing. Asking
+    // here too, on any real (launcher) app open, catches that case.
+    private fun maybeRequestNotificationPermission(activity: Activity) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        runCatching {
+            activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_POST_NOTIFICATIONS)
+        }.onFailure { error ->
+            Log.w(TAG, "notification permission request failed", error)
+        }
+    }
+
     private fun isMainProcess(): Boolean {
         val processName = currentProcessName() ?: return true
         return processName == packageName
+    }
+
+    // OpenLessApplication.onCreate() runs once per OS process this
+    // application object is forked into — not just the main one — so this
+    // is the one place both the main process (IME + Tauri backend) and the
+    // separate ":accessibility" process (OpenLessAccessibilityService) can
+    // each be counted under their own key. Any other/unexpected process
+    // name is intentionally left unrecorded rather than guessed at.
+    private fun recordProcessRestart() {
+        val processKey = when (currentProcessName() ?: packageName) {
+            packageName -> OpenLessProcessRestartStats.MAIN
+            "$packageName:accessibility" -> OpenLessProcessRestartStats.ACCESSIBILITY
+            else -> return
+        }
+        // Runs before this run's own recordStart() below, so a fresh
+        // build's first start isn't immediately wiped by its own reset.
+        if (processKey == OpenLessProcessRestartStats.MAIN) {
+            resetRestartStatsOnVersionBump()
+        }
+        OpenLessProcessRestartStats(this, processKey).recordStart()
+        if (processKey == OpenLessProcessRestartStats.MAIN) {
+            recordUncleanShutdownIfAny()
+        }
+    }
+
+    // Best-effort "did the previous main-process session end cleanly"
+    // check: OpenLessImeService.onDestroy() clears "session_alive" on any
+    // ordinary teardown (keyboard switched away from, app force-stopped).
+    // An abrupt process kill — native crash, OOM — skips onDestroy()
+    // entirely and leaves it set, so finding it still set here means the
+    // previous run did not end cleanly. Can't tell a crash apart from a
+    // deliberate force-stop this way, but both are worth surfacing.
+    private fun recordUncleanShutdownIfAny() {
+        val prefs = getSharedPreferences("openless_runtime", MODE_PRIVATE)
+        if (prefs.getBoolean("session_alive", false)) {
+            OpenLessProcessRestartStats(this, "unclean").recordStart()
+        }
+        prefs.edit().putBoolean("session_alive", true).apply()
+    }
+
+    // A fresh install/build makes every one of these counts so far
+    // meaningless to keep — they're tracking whether *this* build has been
+    // getting killed/crashing, not history from whatever was installed
+    // before. Compares against OpenLessBuildInfo.VERSION (bumped by hand
+    // before each debug build during this testing cycle) rather than the
+    // real app version, since that's what actually changes between the
+    // installs being compared.
+    private fun resetRestartStatsOnVersionBump() {
+        val prefs = getSharedPreferences("openless_runtime", MODE_PRIVATE)
+        val lastVersion = prefs.getString("last_seen_build_version", null)
+        if (lastVersion != OpenLessBuildInfo.VERSION) {
+            for (category in ALL_RESTART_CATEGORIES) {
+                OpenLessProcessRestartStats(this, category).resetToday()
+            }
+            // Wall-clock timestamp of the moment this build's counters were
+            // last zeroed — shown on the keyboard settings screen so a
+            // screenshot of the restart-cause counts also carries "counting
+            // since when", not just the raw totals.
+            prefs.edit()
+                .putString("last_seen_build_version", OpenLessBuildInfo.VERSION)
+                .putLong("build_first_seen_wall_time", System.currentTimeMillis())
+                .apply()
+        }
     }
 
     private fun currentProcessName(): String? {
@@ -228,5 +344,24 @@ class OpenLessApplication : Application() {
 
     companion object {
         private const val TAG = "OpenLessApplication"
+        private const val BATTERY_PROMPT_COOLDOWN_MS = 3L * 24 * 60 * 60 * 1000
+        private const val REQUEST_POST_NOTIFICATIONS = 9103
+
+        // Kept in sync by hand with every restart-cause key actually used
+        // across the app (OpenLessRuntimeService's "sticky"/"actkill"/
+        // "rtexit", OpenLessBackendWarmupActivity's "warmup",
+        // OpenLessImeService's "mictap", and this file's own MAIN/
+        // ACCESSIBILITY/"unclean") — resetRestartStatsOnVersionBump() needs
+        // the full list to zero everything out on a fresh build.
+        private val ALL_RESTART_CATEGORIES = listOf(
+            OpenLessProcessRestartStats.MAIN,
+            OpenLessProcessRestartStats.ACCESSIBILITY,
+            "sticky",
+            "warmup",
+            "mictap",
+            "actkill",
+            "rtexit",
+            "unclean",
+        )
     }
 }
