@@ -12,15 +12,22 @@ pub fn open_external_url(url: &str) -> Result<(), String> {
 fn platform_open_external_url(url: &str) -> Result<(), String> {
     use jni::objects::{JObject, JValue};
 
-    let android_context = ndk_context::android_context();
+    // Live lookup into tao's own tracked-Activity map, not the separate
+    // ndk_context registry this crate only ever populates once (see
+    // android::jni::android::with_android_env()'s doc comment) — that
+    // registry can point at an already-destroyed Activity after an
+    // in-process recycle, and Android's CheckJNI hard-aborts the whole
+    // process on a dangling global ref.
+    let android_context = tao::platform::android::prelude::main_android_context()
+        .ok_or_else(|| "no live Android Activity context available".to_string())?;
     let vm = unsafe {
-        jni::JavaVM::from_raw(android_context.vm().cast())
+        jni::JavaVM::from_raw(android_context.java_vm.cast())
             .map_err(|error| format!("attach Android JVM: {error}"))?
     };
     let mut env = vm
         .attach_current_thread()
         .map_err(|error| format!("attach Android thread: {error}"))?;
-    let context = unsafe { JObject::from_raw(android_context.context() as jni::sys::jobject) };
+    let context = unsafe { JObject::from_raw(android_context.context_jobject as jni::sys::jobject) };
 
     let action = env
         .new_string("android.intent.action.VIEW")
