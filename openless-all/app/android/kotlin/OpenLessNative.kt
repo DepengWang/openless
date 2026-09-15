@@ -35,6 +35,20 @@ object OpenLessNative {
     /** Removes every correction rule whose pattern exactly matches — the clipboard swipe-left "remove" action. */
     @JvmStatic external fun nativeRemoveCorrectionRule(pattern: String)
 
+    /**
+     * Registers this Activity as the one with_android_env() (every
+     * Rust->Kotlin JNI call, including dictation/waveform capsule updates)
+     * routes through — replaces whatever was registered before, since a
+     * GlobalRef stays valid for its Activity's whole lifecycle (unlike a
+     * once-per-process cached context, or tao's own live-but-resumed-only
+     * tracked Activity). Call from onCreate(); pair with
+     * nativeUnregisterActivityContext() in onDestroy().
+     */
+    @JvmStatic external fun nativeRegisterActivityContext(activity: android.app.Activity)
+
+    /** Clears the registration from nativeRegisterActivityContext() — only takes effect if `activity` is still the currently-registered one. */
+    @JvmStatic external fun nativeUnregisterActivityContext(activity: android.app.Activity)
+
     @JvmStatic external fun nativeBackendSnapshot(): String
 
     @JvmStatic
