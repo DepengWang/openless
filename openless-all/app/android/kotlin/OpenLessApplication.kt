@@ -261,6 +261,24 @@ class OpenLessApplication : Application() {
             else -> return
         }
         OpenLessProcessRestartStats(this, processKey).recordStart()
+        if (processKey == OpenLessProcessRestartStats.MAIN) {
+            recordUncleanShutdownIfAny()
+        }
+    }
+
+    // Best-effort "did the previous main-process session end cleanly"
+    // check: OpenLessImeService.onDestroy() clears "session_alive" on any
+    // ordinary teardown (keyboard switched away from, app force-stopped).
+    // An abrupt process kill — native crash, OOM — skips onDestroy()
+    // entirely and leaves it set, so finding it still set here means the
+    // previous run did not end cleanly. Can't tell a crash apart from a
+    // deliberate force-stop this way, but both are worth surfacing.
+    private fun recordUncleanShutdownIfAny() {
+        val prefs = getSharedPreferences("openless_runtime", MODE_PRIVATE)
+        if (prefs.getBoolean("session_alive", false)) {
+            OpenLessProcessRestartStats(this, "unclean").recordStart()
+        }
+        prefs.edit().putBoolean("session_alive", true).apply()
     }
 
     private fun currentProcessName(): String? {

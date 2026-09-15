@@ -197,6 +197,7 @@ class OpenLessBackendWarmupActivity : MainActivity() {
                 lastWarmupAttemptElapsed = now
                 runtimePrefs.edit().putLong(BACKEND_WARMUP_ATTEMPT_KEY, wallNow).apply()
                 android.util.Log.i("OpenLessBackendWarmupActivity", "backend is not ready; launching warmup", error)
+                OpenLessProcessRestartStats(context, "warmup").recordStart()
                 Handler(Looper.getMainLooper()).postDelayed({
                     runCatching {
                         context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {

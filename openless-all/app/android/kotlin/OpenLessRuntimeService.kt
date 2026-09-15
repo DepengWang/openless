@@ -15,8 +15,21 @@ class OpenLessRuntimeService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // A null intent here is the OS's own restart-after-death signal for
+        // a START_STICKY service (documented Service.onStartCommand()
+        // contract) — the strongest available evidence that the whole
+        // process was actually killed, as opposed to any of the other
+        // signals below which can also fire while the process survives.
+        if (intent == null) {
+            OpenLessProcessRestartStats(this, "sticky").recordStart()
+        }
         if (intent?.action == ACTION_RUNTIME_ACTIVITY_DESTROYED) {
             Log.w(TAG, "runtime host activity was destroyed by the system; re-checking backend")
+            OpenLessProcessRestartStats(this, "actkill").recordStart()
+        }
+        if (intent?.action == ACTION_RUNTIME_EXITED) {
+            Log.w(TAG, "Tauri RunEvent::Exit fired; recording and re-checking backend")
+            OpenLessProcessRestartStats(this, "rtexit").recordStart()
         }
         try {
             val notification = buildNotification()
@@ -83,6 +96,13 @@ class OpenLessRuntimeService : Service() {
         private const val NOTIFICATION_ID = 42002
         private const val TAG = "OpenLessRuntimeService"
         private const val ACTION_RUNTIME_ACTIVITY_DESTROYED = "com.openless.app.action.RUNTIME_ACTIVITY_DESTROYED"
+
+        // String literal duplicated on the Rust side (mobile_runtime.rs's
+        // RunEvent::Exit handler) rather than shared as a constant — Rust
+        // calls this Service by fully-qualified class/action name through
+        // the generic start_service_action() JNI helper, the same way
+        // native_bridge.rs already targets OpenLessOverlayService.
+        private const val ACTION_RUNTIME_EXITED = "com.openless.app.action.RUNTIME_EXITED"
 
         /**
          * Called from OpenLessBackendWarmupActivity.onDestroy() — this

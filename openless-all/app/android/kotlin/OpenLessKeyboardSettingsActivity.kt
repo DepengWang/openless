@@ -135,35 +135,62 @@ class OpenLessKeyboardSettingsActivity : Activity() {
         )
 
         content.addView(sectionLabel(ui("进程重启统计（近 3 天）", "Process restarts (last 3 days)")))
-        // Split by actual OS process, not lumped together: the crash/kill
-        // debugging that motivated this counter treats the main process
-        // (IME + Tauri backend) and the separate ":accessibility" process as
-        // two independently-restartable things, so a combined number would
-        // hide which one is actually the problem.
-        for ((processKey, processLabel) in listOf(
-            OpenLessProcessRestartStats.MAIN to ui("主进程（输入法 / 后端）", "Main process (IME / backend)"),
-            OpenLessProcessRestartStats.ACCESSIBILITY to ui("无障碍进程", "Accessibility process"),
-        )) {
+        // Short, purposefully un-translated keys (not meant to be pretty —
+        // meant to be pasted into a screenshot and read back verbatim):
+        //   main/access  - raw restarts of the main / :accessibility process
+        //   sticky       - OpenLessRuntimeService.onStartCommand() got a
+        //                  null Intent: Android's own restart-after-death
+        //                  signal for a START_STICKY service, the strongest
+        //                  evidence the whole process was actually killed
+        //   warmup       - OpenLessBackendWarmupActivity.ensureBackendReady()
+        //                  found the backend not registered and launched
+        //                  the warmup Activity
+        //   mictap       - user tapped the mic and toggleDictation() found
+        //                  the backend not ready (the user-visible symptom)
+        //   actkill      - OpenLessBackendWarmupActivity.onDestroy() fired
+        //                  (system reclaimed the host Activity's window;
+        //                  doesn't necessarily mean the process itself died)
+        //   rtexit       - Tauri's RunEvent::Exit actually fired despite
+        //                  ExitRequested being prevented (see
+        //                  mobile_runtime.rs) — should stay at 0 if that fix
+        //                  is holding
+        //   unclean      - previous main-process session never reached
+        //                  OpenLessImeService.onDestroy() (best-effort
+        //                  crash/force-stop signal, can't tell those apart)
+        val restartCategories = listOf(
+            OpenLessProcessRestartStats.MAIN to "main",
+            OpenLessProcessRestartStats.ACCESSIBILITY to "access",
+            "sticky" to "sticky",
+            "warmup" to "warmup",
+            "mictap" to "mictap",
+            "actkill" to "actkill",
+            "rtexit" to "rtexit",
+            "unclean" to "unclean",
+        )
+        val dates = OpenLessProcessRestartStats(this, restartCategories.first().first).recentDays().map { it.first }
+        val monospace = android.graphics.Typeface.MONOSPACE
+        content.addView(
+            TextView(this).apply {
+                text = "        " + dates.joinToString("  ") { it.takeLast(5) }
+                textSize = 12f
+                typeface = monospace
+                setTextColor(Color.rgb(140, 140, 140))
+            },
+        )
+        for ((key, label) in restartCategories) {
             content.addView(
                 TextView(this).apply {
-                    text = processLabel
-                    textSize = 13f
-                    setTextColor(Color.rgb(170, 170, 170))
-                },
-            )
-            content.addView(
-                TextView(this).apply {
-                    text = OpenLessProcessRestartStats(this@OpenLessKeyboardSettingsActivity, processKey)
+                    val counts = OpenLessProcessRestartStats(this@OpenLessKeyboardSettingsActivity, key)
                         .recentDays()
-                        .joinToString("\n") { (date, count) -> ui("$date：$count 次", "$date: $count") }
-                    textSize = 14f
+                        .joinToString("      ") { (_, count) -> count.toString() }
+                    text = label.padEnd(8) + counts
+                    textSize = 13f
+                    typeface = monospace
                     setTextColor(Color.rgb(200, 200, 200))
-                },
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    bottomMargin = dp(14)
                 },
             )
         }
+        content.addView(View(this), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(14)))
 
         content.addView(sectionLabel(ui("个人偏好数据", "Personal preference data")))
         val personalFrequency = StrokeUserFrequency(this)
