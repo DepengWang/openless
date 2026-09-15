@@ -12,63 +12,55 @@ pub fn open_external_url(url: &str) -> Result<(), String> {
 fn platform_open_external_url(url: &str) -> Result<(), String> {
     use jni::objects::{JObject, JValue};
 
-    // Live lookup into tao's own tracked-Activity map, not the separate
-    // ndk_context registry this crate only ever populates once (see
-    // android::jni::android::with_android_env()'s doc comment) — that
-    // registry can point at an already-destroyed Activity after an
-    // in-process recycle, and Android's CheckJNI hard-aborts the whole
-    // process on a dangling global ref.
-    let android_context = tao::platform::android::prelude::main_android_context()
-        .ok_or_else(|| "no live Android Activity context available".to_string())?;
-    let vm = unsafe {
-        jni::JavaVM::from_raw(android_context.java_vm.cast())
-            .map_err(|error| format!("attach Android JVM: {error}"))?
-    };
-    let mut env = vm
-        .attach_current_thread()
-        .map_err(|error| format!("attach Android thread: {error}"))?;
-    let context = unsafe { JObject::from_raw(android_context.context_jobject as jni::sys::jobject) };
+    // Routed through the shared registered-Activity Context (see
+    // android::jni::android::ACTIVE_CONTEXT's doc comment) rather than
+    // deriving a Context here directly — both alternatives tried for that
+    // (a once-only cached ndk_context registry, and tao's live-but-
+    // resumed-only tracked-Activity map) have real failure modes for a
+    // Context used outside the exact moment an Activity is both alive and
+    // foregrounded.
+    crate::android::jni::android::with_android_env(|env, context| {
+        let action = env
+            .new_string("android.intent.action.VIEW")
+            .map_err(|error| format!("create Intent action: {error}"))?;
+        let url = env
+            .new_string(url)
+            .map_err(|error| format!("create URL string: {error}"))?;
+        let uri = env
+            .call_static_method(
+                "android/net/Uri",
+                "parse",
+                "(Ljava/lang/String;)Landroid/net/Uri;",
+                &[JValue::Object(&JObject::from(url))],
+            )
+            .and_then(|value| value.l())
+            .map_err(|error| format!("parse URL into Android Uri: {error}"))?;
+        let intent = env
+            .new_object(
+                "android/content/Intent",
+                "(Ljava/lang/String;Landroid/net/Uri;)V",
+                &[JValue::Object(&JObject::from(action)), JValue::Object(&uri)],
+            )
+            .map_err(|error| format!("create Android Intent: {error}"))?;
 
-    let action = env
-        .new_string("android.intent.action.VIEW")
-        .map_err(|error| format!("create Intent action: {error}"))?;
-    let url = env
-        .new_string(url)
-        .map_err(|error| format!("create URL string: {error}"))?;
-    let uri = env
-        .call_static_method(
-            "android/net/Uri",
-            "parse",
-            "(Ljava/lang/String;)Landroid/net/Uri;",
-            &[JValue::Object(&JObject::from(url))],
+        // Context may be an application context; NEW_TASK keeps startActivity valid there.
+        env.call_method(
+            &intent,
+            "addFlags",
+            "(I)Landroid/content/Intent;",
+            &[JValue::Int(0x10000000)],
         )
-        .and_then(|value| value.l())
-        .map_err(|error| format!("parse URL into Android Uri: {error}"))?;
-    let intent = env
-        .new_object(
-            "android/content/Intent",
-            "(Ljava/lang/String;Landroid/net/Uri;)V",
-            &[JValue::Object(&JObject::from(action)), JValue::Object(&uri)],
+        .map_err(|error| format!("set Android Intent flags: {error}"))?;
+        env.call_method(
+            context,
+            "startActivity",
+            "(Landroid/content/Intent;)V",
+            &[JValue::Object(&intent)],
         )
-        .map_err(|error| format!("create Android Intent: {error}"))?;
+        .map_err(|error| format!("start Android URL activity: {error}"))?;
 
-    // Context may be an application context; NEW_TASK keeps startActivity valid there.
-    env.call_method(
-        &intent,
-        "addFlags",
-        "(I)Landroid/content/Intent;",
-        &[JValue::Int(0x10000000)],
-    )
-    .map_err(|error| format!("set Android Intent flags: {error}"))?;
-    env.call_method(
-        &context,
-        "startActivity",
-        "(Landroid/content/Intent;)V",
-        &[JValue::Object(&intent)],
-    )
-    .map_err(|error| format!("start Android URL activity: {error}"))?;
-
-    Ok(())
+        Ok(())
+    })
 }
 
 #[cfg(not(target_os = "android"))]

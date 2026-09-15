@@ -32,6 +32,14 @@ class OpenLessBackendWarmupActivity : MainActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         activeInstance = java.lang.ref.WeakReference(this)
+        // with_android_env()'s Activity Context registration (see
+        // OpenLessNative.nativeRegisterActivityContext()'s doc comment)
+        // happens from OpenLessApplication's app-wide ActivityLifecycleCallbacks
+        // (matched via `is MainActivity`, which this class extends), not
+        // here — this class isn't the only Activity that can be the one to
+        // first bootstrap Tauri (a direct launcher tap opens plain
+        // MainActivity instead), so a single hook covering the whole
+        // MainActivity family is what's actually correct.
         settingsRequested = intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false)
         // Only when visibly opened for settings: a permission dialog here
         // during the invisible warmup path would get dragged to the

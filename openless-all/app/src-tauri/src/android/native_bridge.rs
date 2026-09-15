@@ -666,6 +666,39 @@ mod jni_exports {
         });
     }
 
+    // Registered from OpenLessBackendWarmupActivity.onCreate()/onDestroy()
+    // so with_android_env() (every Rust->Kotlin JNI call, including the
+    // dictation/waveform capsule notifications) always has a Context valid
+    // for that Activity's *whole* lifecycle, including while it sits
+    // backgrounded via moveTaskToBack() — see
+    // android::jni::android::ACTIVE_CONTEXT's doc comment for why neither
+    // of the two things tried before this held up.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeRegisterActivityContext(
+        env: *mut JNIEnv,
+        _class: JClass,
+        activity: JObject,
+    ) {
+        let result = with_jni_context(env, activity, |env, activity| {
+            crate::android::jni::android::register_active_activity(env, activity)
+        });
+        if let Err(error) = result {
+            log::warn!("[android-native] register activity context failed: {error}");
+        }
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeUnregisterActivityContext(
+        env: *mut JNIEnv,
+        _class: JClass,
+        activity: JObject,
+    ) {
+        let _ = with_jni_context(env, activity, |env, activity| {
+            crate::android::jni::android::unregister_active_activity(env, activity);
+            Ok(())
+        });
+    }
+
     #[no_mangle]
     pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeCanDrawOverlays(
         env: *mut JNIEnv,

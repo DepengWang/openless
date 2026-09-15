@@ -24,8 +24,21 @@ class OpenLessApplication : Application() {
         recordProcessRestart()
         registerActivityLifecycleCallbacks(
             object : ActivityLifecycleCallbacks {
-                override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) =
-                    Unit
+                override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
+                    // Registers whichever MainActivity-family instance
+                    // (bare MainActivity from a launcher tap, or its
+                    // subclass OpenLessBackendWarmupActivity from IME/
+                    // Service-triggered warmup) as the Context
+                    // with_android_env() uses for every Rust->Kotlin JNI
+                    // call, including dictation/waveform capsule updates —
+                    // see OpenLessNative.nativeRegisterActivityContext()'s
+                    // doc comment for why this can't be hooked from just
+                    // one of those classes' own onCreate().
+                    if (activity is MainActivity) {
+                        runCatching { OpenLessNative.nativeRegisterActivityContext(activity) }
+                            .onFailure { error -> Log.w(TAG, "register activity context failed", error) }
+                    }
+                }
 
                 override fun onActivityStarted(activity: Activity) {
                     if (activity.javaClass.name.endsWith("MainActivity")) {
@@ -65,7 +78,16 @@ class OpenLessApplication : Application() {
                 override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) =
                     Unit
 
-                override fun onActivityDestroyed(activity: Activity) = Unit
+                override fun onActivityDestroyed(activity: Activity) {
+                    // Leaves a brief, safe "no context registered" gap
+                    // until the next MainActivity-family instance's
+                    // onActivityCreated() re-registers, rather than
+                    // leaving a soon-to-be-invalid GlobalRef around for
+                    // something to crash on.
+                    if (activity is MainActivity) {
+                        runCatching { OpenLessNative.nativeUnregisterActivityContext(activity) }
+                    }
+                }
             }
         )
     }

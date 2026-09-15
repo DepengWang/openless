@@ -2,48 +2,70 @@
 
 #[cfg(target_os = "android")]
 pub mod android {
-    use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
+    use std::sync::Mutex;
+
+    use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString, JValue};
     use jni::JNIEnv;
     use jni::JavaVM;
+
+    // Registered from OpenLessBackendWarmupActivity.onCreate() (replaced,
+    // not just set-once) and cleared from its onDestroy(). A GlobalRef
+    // stays valid for its Activity's *entire* lifecycle — including while
+    // backgrounded via moveTaskToBack(), which is where this Activity
+    // spends nearly all its time by design — unlike either alternative
+    // tried before it:
+    //   - ndk_context::android_context() is populated exactly once per
+    //     process (see mobile_runtime::initialize_android_ndk_context_for_audio(),
+    //     needed only so cpal can find *a* context) and goes stale once
+    //     that first Activity is destroyed and a new one takes over in the
+    //     same process, causing Android's CheckJNI to hard-abort the whole
+    //     process on the next JNI call through it ("invalid global
+    //     reference") — confirmed via an on-device tombstone.
+    //   - tao::platform::android::prelude::main_android_context() is a
+    //     *live* lookup, but tao only keeps an Activity in that map while
+    //     it's resumed/foregrounded — empty the moment this Activity
+    //     backgrounds itself, which made every notify_capsule_state() call
+    //     fail (silently dropping dictation/waveform status updates)
+    //     during completely ordinary, crash-free operation.
+    static ACTIVE_CONTEXT: Mutex<Option<(JavaVM, GlobalRef)>> = Mutex::new(None);
+
+    pub fn register_active_activity(env: &mut JNIEnv, activity: &JObject) -> Result<(), String> {
+        let global = env
+            .new_global_ref(activity)
+            .map_err(|error| format!("new_global_ref for Activity: {error}"))?;
+        let vm = env
+            .get_java_vm()
+            .map_err(|error| format!("get_java_vm: {error}"))?;
+        *ACTIVE_CONTEXT.lock().unwrap() = Some((vm, global));
+        Ok(())
+    }
+
+    /// Only clears the slot if it still holds `activity` — guards against a
+    /// stray/late onDestroy() (e.g. from a superseded instance) wiping out
+    /// a newer Activity's just-registered context.
+    pub fn unregister_active_activity(env: &mut JNIEnv, activity: &JObject) {
+        let mut guard = ACTIVE_CONTEXT.lock().unwrap();
+        let same = guard
+            .as_ref()
+            .map(|(_, global)| env.is_same_object(global.as_obj(), activity).unwrap_or(true))
+            .unwrap_or(false);
+        if same {
+            *guard = None;
+        }
+    }
 
     pub fn with_android_env<R>(
         f: impl for<'local> FnOnce(&mut JNIEnv<'local>, &JObject<'local>) -> Result<R, String>,
     ) -> Result<R, String> {
-        // main_android_context() is a *live* lookup into tao's own
-        // tracked-Activity map (tao::platform_impl::android::ndk_glue::
-        // CONTEXTS), refreshed on every Activity create/destroy.
-        // ndk_context::android_context() (used here previously) is a
-        // separate, unrelated global that this crate only ever populates
-        // once — see mobile_runtime::initialize_android_ndk_context_for_audio()'s
-        // Once guard, which exists purely so cpal's Android backend can find
-        // *a* context, not to track the currently-live one. Reading that
-        // stale registry here meant any JNI call made after an in-process
-        // Activity recycle (OpenLessBackendWarmupActivity destroyed by the
-        // system while the process survives — exactly what the Phase 1/2
-        // recovery flow relies on) used a dangling global ref to the
-        // already-destroyed Activity. Android's CheckJNI hard-aborts the
-        // *entire process* for that ("jobject is an invalid global
-        // reference"), confirmed on-device via a tombstone whose crashing
-        // thread was mid notify_capsule_state() -> with_android_env() while
-        // a prior warmup Activity had already been torn down.
-        let android_context = tao::platform::android::prelude::main_android_context()
-            .ok_or_else(|| "no live Android Activity context available".to_string())?;
-        let vm = unsafe {
-            JavaVM::from_raw(android_context.java_vm.cast())
-                .map_err(|error| format!("attach Android JVM: {error}"))?
-        };
+        let guard = ACTIVE_CONTEXT.lock().unwrap();
+        let (vm, global) = guard
+            .as_ref()
+            .ok_or_else(|| "no live Android Activity context registered".to_string())?;
         let mut env = vm
             .attach_current_thread()
             .map_err(|error| format!("attach Android thread: {error}"))?;
-        let raw_context = android_context.context_jobject as jni::sys::jobject;
-        if raw_context.is_null() {
-            return Err("Android context not yet initialized".to_string());
-        }
-        // SAFETY: raw_context is non-null and comes from tao's live
-        // CONTEXTS map for the currently-alive Activity; the reference
-        // lifetime is valid for the duration of `f`.
-        let context = unsafe { JObject::from_raw(raw_context) };
-        f(&mut env, &context)
+        let context = global.as_obj();
+        f(&mut env, context)
     }
 
     pub fn call_static_void(
