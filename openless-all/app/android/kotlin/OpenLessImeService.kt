@@ -28,6 +28,7 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 
 /** Minimal system IME surface. Voice transport is intentionally added in a later phase. */
 class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlayStateListener {
@@ -485,12 +486,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             "⌫",
             1f,
             action = {
-                currentInputConnection?.deleteSurroundingText(1, 0)
+                deleteBackward()
                 invalidateDictationResultIfTextChanged()
             },
             repeatOnLongPress = true,
             repeatAction = {
-                currentInputConnection?.deleteSurroundingText(1, 0)
+                deleteBackward()
                 invalidateDictationResultIfTextChanged()
             },
         ).apply {
@@ -939,11 +940,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         candidateRow.addView(candidatesScroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
         // "Show more" — opens the full candidate/association list in a
         // floating overlay instead of growing this row or the panel height.
-        val expandCandidatesButton = TextView(this).apply {
-            text = "▾"
-            textSize = 14f
-            gravity = android.view.Gravity.CENTER
-            setTextColor(tone(Color.rgb(180, 180, 180), Color.rgb(130, 130, 135)))
+        val expandCandidatesButton = StrokeActionView(
+            this,
+            "triangle-down",
+            iconColor = tone(Color.rgb(180, 180, 180), Color.rgb(130, 130, 135)),
+        ).apply {
             contentDescription = ui("展开更多候选", "Show more candidates")
         }
         expandCandidatesButton.setOnClickListener { showCandidateOverlay(expandCandidatesButton) }
@@ -1129,7 +1130,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             rowItems.forEachIndexed { index, label ->
                 val isAction = index == rowItems.lastIndex
                 val action: () -> Unit = when {
-                    rowIndex == 0 && isAction -> ({ currentInputConnection?.deleteSurroundingText(1, 0) })
+                    rowIndex == 0 && isAction -> ({ deleteBackward() })
                     rowIndex == 1 && isAction -> ({ sendEnterKey() })
                     rowIndex == 2 && isAction -> ({
                         inputMode = InputMode.VOICE
@@ -1346,7 +1347,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             updateStrokePreview()
             renderCandidateRow(emptyList())
         } else {
-            currentInputConnection?.deleteSurroundingText(1, 0)
+            deleteBackward()
             if (confirmedText.isNotEmpty()) {
                 confirmedText = confirmedText.dropLast(1)
                 phraseQueryEpoch++
@@ -1475,7 +1476,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
         val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val row1 = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
-        val selectKey = quickActionLabel(ui("选择", "Select"), {
+        val selectKey = quickActionLabel(ui("选择", "Range"), {
             clipboardSelectionMode = !clipboardSelectionMode
             clipboardSelectionAnchor = -1
             clipboardSelectionActive = -1
@@ -1494,7 +1495,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         })
 
         val row2 = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
-        val selectAllKey = quickActionLabel(ui("全选", "Select All"), {
+        val selectAllKey = quickActionLabel(ui("全选", "Select"), {
             currentInputConnection?.performContextMenuAction(android.R.id.selectAll)
         }, 20f)
         val copyKey = quickActionLabel(ui("复制", "Copy"), {
@@ -1503,15 +1504,27 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val pasteKey = quickActionLabel(ui("粘贴", "Paste"), {
             currentInputConnection?.performContextMenuAction(android.R.id.paste)
         }, 20f)
-        // "粘贴板" is three characters where the others are two, so it gets a
-        // slightly smaller size to avoid crowding/clipping in the same cell width.
-        val clipboardKey = quickActionLabel(ui("粘贴板", "Clipboard"), {
+        // Two lines ("History" / "Correct") since this button now opens both
+        // the clipboard history browser (tap) and the voice-correction flow
+        // for whatever's selected in the real input field (long-press).
+        // quickActionLabel()->keyboardKey()'s own '\n' handling shrinks only
+        // the label's first character (built for single-char rows like
+        // "1\n!"), which would leave just one letter undersized here, so the
+        // spanned text it sets is overwritten with a plain two-line string
+        // right after construction.
+        val clipboardKey = quickActionLabel(ui("历史\n纠正", "History\nCorrect"), {
             clipboardHistoryMode = true
             refreshInputView()
-        }, 18f)
+        }, 15f).apply {
+            text = ui("历史\n纠正", "History\nCorrect")
+            setOnLongClickListener {
+                openSelectedTextCorrectionViaVoice()
+                true
+            }
+        }
         val backspaceKey = quickActionIcon(
             "backspace-icon",
-            { currentInputConnection?.deleteSurroundingText(1, 0) },
+            { deleteBackward() },
             repeatOnLongPress = true,
         )
         for (key in listOf(selectAllKey, copyKey, pasteKey, clipboardKey, backspaceKey)) {
@@ -1976,7 +1989,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 1f,
                 { handleKeyboardKey(key) },
                 repeatOnLongPress = key == "⌫",
-                repeatAction = { currentInputConnection?.deleteSurroundingText(1, 0) },
+                repeatAction = { deleteBackward() },
             ))
         }
         parent.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -2163,7 +2176,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
     private fun handleKeyboardKey(key: String) {
         when (key) {
-            "⌫" -> currentInputConnection?.deleteSurroundingText(1, 0)
+            "⌫" -> deleteBackward()
             "⇧" -> {
                 // Cycles lowercase -> capitalize-next -> caps-lock -> lowercase.
                 shiftState = when (shiftState) {
@@ -2188,6 +2201,23 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     refreshInputView()
                 }
             }
+        }
+    }
+
+    /**
+     * Backspace, everywhere it's wired up in this service. deleteSurroundingText()
+     * alone only ever removes characters relative to the cursor position — it does
+     * not reliably consume an active selection (behavior varies by target app), so
+     * when there's a real OS-level selection this commits an empty string instead,
+     * which every InputConnection implementation replaces the selection with.
+     */
+    private fun deleteBackward() {
+        val connection = currentInputConnection ?: return
+        val selected = connection.getSelectedText(0)
+        if (!selected.isNullOrEmpty()) {
+            connection.commitText("", 1)
+        } else {
+            connection.deleteSurroundingText(1, 0)
         }
     }
 
@@ -2629,6 +2659,30 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // Recording starts immediately when the edit panel opens — the user
         // only has to tap the mic once, to finish, matching "Tap again to
         // finish" rather than requiring a tap to start too.
+        toggleDictation()
+    }
+
+    /**
+     * Long-press "History"/"历史" in the clipboard panel: same mechanism as
+     * openEditDictationResult()'s selected-text branch (replaces the
+     * selection in the real input field with the spoken correction, and
+     * records a correction rule) — but with no whole-last-result fallback.
+     * Without an actual selection there's nothing this gesture can
+     * reasonably act on, so it surfaces a hint instead of guessing.
+     */
+    private fun openSelectedTextCorrectionViaVoice() {
+        val selected = currentInputConnection?.getSelectedText(0)?.toString()?.takeIf { it.isNotEmpty() }
+        if (selected == null) {
+            Toast.makeText(this, ui("请先选中字词", "Please select word"), Toast.LENGTH_SHORT).show()
+            return
+        }
+        editingOriginalText = selected
+        editingReplacesWholeResult = false
+        editingForClipboardCorrection = false
+        addCorrectionRuleForEdit = true
+        editingDictationResult = true
+        awaitingEditReplacement = true
+        refreshInputView()
         toggleDictation()
     }
 
@@ -3286,6 +3340,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             textAlign = Paint.Align.CENTER
             typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL)
         }
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = iconColor
+            style = Paint.Style.FILL
+        }
 
         override fun onDraw(canvas: Canvas) {
             val u = minOf(width, height).coerceAtLeast(1) / 100f
@@ -3293,6 +3351,22 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             val cy = height / 2f
             paint.strokeWidth = 5.2f * u
             when (actionCode) {
+                "triangle-down" -> {
+                    // Fixed absolute size, independent of this button's own
+                    // (roughly 28x36dp, non-square) cell — about the same
+                    // visual footprint as a single candidate glyph
+                    // (candidateItemView's 20sp text), not scaled to the
+                    // fixed-100-unit icon canvas the other cases share.
+                    val triangleSize = 16f * resources.displayMetrics.density
+                    val topY = cy - triangleSize / 2f
+                    val path = Path().apply {
+                        moveTo(cx - triangleSize / 2f, topY)
+                        lineTo(cx + triangleSize / 2f, topY)
+                        lineTo(cx, topY + triangleSize)
+                        close()
+                    }
+                    canvas.drawPath(path, fillPaint)
+                }
                 "←" -> {
                     canvas.drawLine(cx - 23f * u, cy, cx + 23f * u, cy, paint)
                     canvas.drawLine(cx - 23f * u, cy, cx - 8f * u, cy - 12f * u, paint)
