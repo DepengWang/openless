@@ -53,7 +53,18 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         // 180ms later.
         val launchedFromLauncher = intent.action == Intent.ACTION_MAIN &&
             intent.hasCategory(Intent.CATEGORY_LAUNCHER)
-        settingsRequested = launchedFromLauncher || intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false)
+        // settingsOpenPending covers a cold-start race: openSettings()/
+        // openSettingsIfRunning() set it synchronously before ever calling
+        // startActivity(), so it is already true here even if this onCreate()
+        // actually happened to be triggered by a concurrent, unrelated
+        // ensureBackendReady() warmup racing to create the same singleTask
+        // instance first (observed on-device: a silent warmup and a
+        // launcher-icon tap landing within ~10ms of each other after the
+        // OS killed the process in the background) — the alternative,
+        // reading only this Intent's own extras, depends on onNewIntent()
+        // winning that race, which is not guaranteed.
+        settingsRequested = launchedFromLauncher || intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false) || settingsOpenPending
+        settingsOpenPending = false
         // Only when visibly opened for settings: a permission dialog here
         // during the invisible warmup path would get dragged to the
         // background along with this Activity by sendToBackground() 180ms
@@ -95,8 +106,9 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         setIntent(intent)
         val launchedFromLauncher = intent.action == Intent.ACTION_MAIN &&
             intent.hasCategory(Intent.CATEGORY_LAUNCHER)
-        if (launchedFromLauncher || intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false)) {
+        if (launchedFromLauncher || intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false) || settingsOpenPending) {
             settingsRequested = true
+            settingsOpenPending = false
             warmupHandler.removeCallbacks(sendToBackground)
             // Covers openSettingsIfRunning() bringing an already-alive
             // instance forward, and the launcher icon being tapped again
@@ -149,6 +161,22 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         private const val EXTRA_SHOW_SETTINGS = "com.openless.app.extra.SHOW_SETTINGS"
         private const val REQUEST_POST_NOTIFICATIONS = 9102
 
+        // Set synchronously by openSettings()/openSettingsIfRunning() BEFORE
+        // startActivity() is ever called, and consumed by onCreate()/
+        // onNewIntent() — a settings request is "in flight" the instant one
+        // of those functions is called, not only once its Intent happens to
+        // be delivered. Closes a race observed on-device: a concurrent,
+        // unrelated ensureBackendReady() warmup can create/reuse this same
+        // singleTask instance a few milliseconds earlier (e.g. right after
+        // the OS killed the process in the background and the user's tap
+        // triggers a cold start), and depending purely on whose Intent
+        // reaches onCreate()/onNewIntent() first left the 180ms
+        // sendToBackground() timer free to fire before the real settings
+        // request ever got a chance to cancel it — the window would flash
+        // and vanish instead of staying open.
+        @Volatile
+        private var settingsOpenPending = false
+
         /** The single Tauri host is still alive even while its task is in the background. */
         fun isRunning(): Boolean {
             val activity = activeInstance?.get() ?: return false
@@ -159,6 +187,14 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         fun openSettingsIfRunning(context: Context): Boolean {
             val activity = activeInstance?.get() ?: return false
             if (activity.isFinishing || activity.isDestroyed) return false
+            settingsOpenPending = true
+            // Also applied directly to the live instance right here, not
+            // left to onNewIntent() delivery timing: this is the common
+            // case (host already running) and the one most exposed to the
+            // race described above, since the instance — and its pending
+            // sendToBackground() timer — already exist by the time this runs.
+            activity.settingsRequested = true
+            activity.warmupHandler.removeCallbacks(activity.sendToBackground)
             context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {
                 putExtra(EXTRA_SHOW_SETTINGS, true)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -178,6 +214,7 @@ class OpenLessBackendWarmupActivity : MainActivity() {
          * an untracked second host and re-run Tauri/Rust setup from scratch.
          */
         fun openSettings(context: Context) {
+            settingsOpenPending = true
             if (openSettingsIfRunning(context)) return
             context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {
                 putExtra(EXTRA_SHOW_SETTINGS, true)
@@ -246,6 +283,17 @@ class OpenLessBackendWarmupActivity : MainActivity() {
             android.util.Log.i("OpenLessBackendWarmupActivity", "backend is not ready; launching warmup", cause)
             OpenLessProcessRestartStats(context, "warmup").recordStart()
             Handler(Looper.getMainLooper()).postDelayed({
+                // Re-checked here, not just by the caller 120ms ago: something
+                // else (a launcher-icon tap, a Logo tap) can have already
+                // created/resumed the host in the meantime. Without this,
+                // this launch still fires and delivers a no-extras Intent to
+                // that same singleTask instance — harmless by itself, but it
+                // was one of the two ingredients (together with imprecise
+                // settingsRequested timing) behind an on-device black-screen
+                // race: a genuine settings-open request and this silent
+                // warmup landing within milliseconds of each other right
+                // after the OS killed the process in the background.
+                if (isRunning()) return@postDelayed
                 runCatching {
                     context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
