@@ -145,6 +145,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private var confirmedText = ""
     private var phraseQueryEpoch = 0L
     private var strokePreview: TextView? = null
+    private var clearStrokeButton: TextView? = null
     private var strokeCandidates: LinearLayout? = null
 
     // Single source of truth for the encode row's blue text, reused as-is
@@ -231,15 +232,25 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         return object : android.graphics.drawable.Drawable() {
             override fun draw(canvas: Canvas) {
-                val unit = minOf(bounds.width(), bounds.height()) / 100f
+                // The path's ink only ever spanned y=[34.67, 68] of its
+                // original 100-unit design space (a bare third of the box).
+                // Rescaled + repositioned here so the ink fills the box with
+                // a small, even margin top and bottom — matching how a
+                // plain character glyph (e.g. the "丨" stroke's own) sits
+                // within its line — instead of either that ~33%-tall island
+                // or (an earlier attempt) flush against the bottom edge with
+                // all the blank space pushed to the top.
+                val inkTop = 34.67f
+                val inkBottom = 68f
+                val marginFraction = 0.12f
+                val boxHeight = bounds.height().toFloat()
+                val unit = (boxHeight * (1f - 2f * marginFraction)) / (inkBottom - inkTop)
+                val topPixels = bounds.top + boxHeight * marginFraction
                 val cx = bounds.left + bounds.width() / 2f
-                val top = bounds.top.toFloat()
-                // Mirrors the "5" key's own icon shape, including its top
-                // trimmed by 1/6 (bottom unchanged): 28 + (68-28)/6 ≈ 34.67.
                 val path = Path().apply {
-                    moveTo(cx + 1f * unit, top + 34.67f * unit)
-                    lineTo(cx - 14f * unit, top + 68f * unit)
-                    lineTo(cx + 16f * unit, top + 68f * unit)
+                    moveTo(cx + 1f * unit, topPixels)
+                    lineTo(cx - 14f * unit, topPixels + (inkBottom - inkTop) * unit)
+                    lineTo(cx + 16f * unit, topPixels + (inkBottom - inkTop) * unit)
                 }
                 canvas.drawPath(path, glyphPaint)
             }
@@ -905,17 +916,16 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // Clear-code button: a 40x30dp hit target with a small glyph, not a
         // heavy independent button — tapping it is the same clearStrokes()
         // already wired to the action rail's "清除" key.
-        strokeRow.addView(
-            TextView(this).apply {
-                text = "✕"
-                textSize = 13f
-                gravity = android.view.Gravity.CENTER
-                setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(130, 130, 135)))
-                contentDescription = ui("清除笔画编码", "Clear stroke code")
-                setOnClickListener { clearStrokes() }
-            },
-            LinearLayout.LayoutParams(dp(40), ViewGroup.LayoutParams.MATCH_PARENT),
-        )
+        clearStrokeButton = TextView(this).apply {
+            text = "✕"
+            textSize = 13f
+            gravity = android.view.Gravity.CENTER
+            setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(130, 130, 135)))
+            contentDescription = ui("清除笔画编码", "Clear stroke code")
+            setOnClickListener { clearStrokes() }
+        }
+        strokeRow.addView(clearStrokeButton, LinearLayout.LayoutParams(dp(40), ViewGroup.LayoutParams.MATCH_PARENT))
+        updateClearStrokeButtonVisibility()
         top.addView(strokeRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(24)))
 
         val candidateRow = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
@@ -1224,6 +1234,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // drop the ImageSpan the 5th stroke relies on — TextUtils.concat()
         // preserves spans across both pieces.
         strokePreview?.text = android.text.TextUtils.concat(wordSegments.joinToString(""), displayStrokeCode(strokeCode))
+        updateClearStrokeButtonVisibility()
+    }
+
+    /** Only shows the encode row's "✕" once there's actually something to clear — otherwise it just sat there doing nothing. */
+    private fun updateClearStrokeButtonVisibility() {
+        clearStrokeButton?.visibility = if (strokeCode.isEmpty() && wordSegments.isEmpty()) View.GONE else View.VISIBLE
     }
 
     private fun refreshStrokeCandidates(code: String) {
@@ -1384,6 +1400,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         lastStrokeCandidates = emptyList()
         strokePreview?.text = ""
         strokeCandidates?.removeAllViews()
+        updateClearStrokeButtonVisibility()
     }
 
     /**
@@ -1452,8 +1469,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // roundedButton() with the same rose highlight the stroke panel's
         // own "繁" toggle uses when active) — only the label/icon size and
         // grid spacing are new, not the button's edge style or palette.
-        fun quickActionLabel(label: String, action: () -> Unit, textSizeSp: Float, highlighted: Boolean = false) =
-            keyboardKey(label, 1f, action = action).apply {
+        fun quickActionLabel(label: String, action: () -> Unit, textSizeSp: Float, highlighted: Boolean = false, midDivider: Boolean = false) =
+            keyboardKey(label, 1f, action = action, midDivider = midDivider).apply {
                 textSize = textSizeSp
                 typeface = mediumTypeface
                 setTextColor(softWhite)
@@ -1534,7 +1551,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val clipboardKey = quickActionLabel(ui("历史\n纠正", "History\nCorrect"), {
             clipboardHistoryMode = true
             refreshInputView()
-        }, 15f).apply {
+        }, 17f, midDivider = true).apply {
             text = ui("历史\n纠正", "History\nCorrect")
             setOnLongClickListener {
                 openSelectedTextCorrectionViaVoice()
@@ -2036,6 +2053,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // panel's direction/undo icons — which sit on a normal or rose key,
         // not red — pass the theme-appropriate color explicitly.
         graphicIconColor: Int? = null,
+        // Draws a thin horizontal divider between the two lines of a
+        // two-line label (e.g. the clipboard panel's "History"/"Correct"
+        // key, which does two unrelated things depending on tap vs.
+        // long-press) — a plain '\n' alone read as one cramped label.
+        midDivider: Boolean = false,
     ): TextView {
         val keyView = when {
             microphoneIcon -> MicrophoneKeyView(this, isDarkTheme)
@@ -2048,6 +2070,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             }
             label == "←" || label == "↵" -> ActionSymbolView(this, label, isDarkTheme)
             label == "⇧" -> ShiftKeyView(this, shiftState, isDarkTheme)
+            midDivider -> MidDividerTextView(this, tone(Color.rgb(100, 100, 100), Color.rgb(205, 205, 209)))
             else -> TextView(this)
         }
         return keyView.apply {
@@ -2266,6 +2289,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         strokeCode = ""
         wordSegments.clear()
         lastStrokeCandidates = emptyList()
+        updateClearStrokeButtonVisibility()
         recording = false
         processing = false
         // A dictation result belongs to the editor it was typed into; carrying
@@ -2483,6 +2507,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     recordingStartedAtMs = android.os.SystemClock.elapsedRealtime()
                     maxObservedLevelThisSession = 0f
                     voiceLinkWarning?.visibility = View.GONE
+                    performKeyHaptic()
                 }
                 recording = true
                 processing = false
@@ -2503,11 +2528,17 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 setState("speaking", "再次点击结束")
             }
             "transcribing" -> {
+                // Guarded by the same "was still recording" check as
+                // "polishing" below, since either one can be the first to
+                // fire after recording actually stops — only whichever
+                // gets there first should vibrate.
+                if (recording) performKeyHaptic()
                 recording = false
                 processing = true
                 setState("thinking", "正在思考")
             }
             "polishing" -> {
+                if (recording) performKeyHaptic()
                 recording = false
                 processing = true
                 setState("thinking", "正在思考")
@@ -2516,6 +2547,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 recording = false
                 processing = false
                 setState("done", message ?: "已完成")
+                performKeyHaptic()
             }
             "cancelled" -> {
                 recording = false
@@ -3532,6 +3564,26 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 }
             }
             canvas.drawPath(stroke, strokePaint)
+        }
+    }
+
+    /**
+     * Two-line label (via a plain "\n") with a thin horizontal divider
+     * drawn between the lines — the divider just needs the vertical
+     * midpoint of the view, which lands between the two centered lines of
+     * text closely enough without measuring actual text layout bounds.
+     */
+    private class MidDividerTextView(
+        context: android.content.Context,
+        private val dividerColor: Int,
+    ) : TextView(context) {
+        private val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1.5f }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            dividerPaint.color = dividerColor
+            val marginX = width * 0.22f
+            canvas.drawLine(marginX, height / 2f, width - marginX, height / 2f, dividerPaint)
         }
     }
 

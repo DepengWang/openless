@@ -66,6 +66,7 @@ const KOTLIN_FILES = [
   'OpenLessClipboardHistory.kt',
   'OpenLessKeyboardSettingsActivity.kt',
   'OpenLessProcessRestartStats.kt',
+  'OpenLessBuildInfo.kt',
 ];
 
 const KOTLIN_TEST_FILES = [

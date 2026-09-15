@@ -282,6 +282,11 @@ class OpenLessApplication : Application() {
             "$packageName:accessibility" -> OpenLessProcessRestartStats.ACCESSIBILITY
             else -> return
         }
+        // Runs before this run's own recordStart() below, so a fresh
+        // build's first start isn't immediately wiped by its own reset.
+        if (processKey == OpenLessProcessRestartStats.MAIN) {
+            resetRestartStatsOnVersionBump()
+        }
         OpenLessProcessRestartStats(this, processKey).recordStart()
         if (processKey == OpenLessProcessRestartStats.MAIN) {
             recordUncleanShutdownIfAny()
@@ -303,6 +308,24 @@ class OpenLessApplication : Application() {
         prefs.edit().putBoolean("session_alive", true).apply()
     }
 
+    // A fresh install/build makes every one of these counts so far
+    // meaningless to keep — they're tracking whether *this* build has been
+    // getting killed/crashing, not history from whatever was installed
+    // before. Compares against OpenLessBuildInfo.VERSION (bumped by hand
+    // before each debug build during this testing cycle) rather than the
+    // real app version, since that's what actually changes between the
+    // installs being compared.
+    private fun resetRestartStatsOnVersionBump() {
+        val prefs = getSharedPreferences("openless_runtime", MODE_PRIVATE)
+        val lastVersion = prefs.getString("last_seen_build_version", null)
+        if (lastVersion != OpenLessBuildInfo.VERSION) {
+            for (category in ALL_RESTART_CATEGORIES) {
+                OpenLessProcessRestartStats(this, category).resetToday()
+            }
+            prefs.edit().putString("last_seen_build_version", OpenLessBuildInfo.VERSION).apply()
+        }
+    }
+
     private fun currentProcessName(): String? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             return Application.getProcessName()
@@ -316,5 +339,22 @@ class OpenLessApplication : Application() {
         private const val TAG = "OpenLessApplication"
         private const val BATTERY_PROMPT_COOLDOWN_MS = 3L * 24 * 60 * 60 * 1000
         private const val REQUEST_POST_NOTIFICATIONS = 9103
+
+        // Kept in sync by hand with every restart-cause key actually used
+        // across the app (OpenLessRuntimeService's "sticky"/"actkill"/
+        // "rtexit", OpenLessBackendWarmupActivity's "warmup",
+        // OpenLessImeService's "mictap", and this file's own MAIN/
+        // ACCESSIBILITY/"unclean") — resetRestartStatsOnVersionBump() needs
+        // the full list to zero everything out on a fresh build.
+        private val ALL_RESTART_CATEGORIES = listOf(
+            OpenLessProcessRestartStats.MAIN,
+            OpenLessProcessRestartStats.ACCESSIBILITY,
+            "sticky",
+            "warmup",
+            "mictap",
+            "actkill",
+            "rtexit",
+            "unclean",
+        )
     }
 }
