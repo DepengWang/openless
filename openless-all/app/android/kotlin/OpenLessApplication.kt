@@ -21,6 +21,7 @@ class OpenLessApplication : Application() {
         if (isMainProcess()) {
             OpenLessShizukuBridge.initialize()
         }
+        recordProcessRestart()
         registerActivityLifecycleCallbacks(
             object : ActivityLifecycleCallbacks {
                 override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) =
@@ -245,6 +246,21 @@ class OpenLessApplication : Application() {
     private fun isMainProcess(): Boolean {
         val processName = currentProcessName() ?: return true
         return processName == packageName
+    }
+
+    // OpenLessApplication.onCreate() runs once per OS process this
+    // application object is forked into — not just the main one — so this
+    // is the one place both the main process (IME + Tauri backend) and the
+    // separate ":accessibility" process (OpenLessAccessibilityService) can
+    // each be counted under their own key. Any other/unexpected process
+    // name is intentionally left unrecorded rather than guessed at.
+    private fun recordProcessRestart() {
+        val processKey = when (currentProcessName() ?: packageName) {
+            packageName -> OpenLessProcessRestartStats.MAIN
+            "$packageName:accessibility" -> OpenLessProcessRestartStats.ACCESSIBILITY
+            else -> return
+        }
+        OpenLessProcessRestartStats(this, processKey).recordStart()
     }
 
     private fun currentProcessName(): String? {
