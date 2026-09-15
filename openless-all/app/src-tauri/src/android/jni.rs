@@ -9,20 +9,39 @@ pub mod android {
     pub fn with_android_env<R>(
         f: impl for<'local> FnOnce(&mut JNIEnv<'local>, &JObject<'local>) -> Result<R, String>,
     ) -> Result<R, String> {
-        let android_context = ndk_context::android_context();
+        // main_android_context() is a *live* lookup into tao's own
+        // tracked-Activity map (tao::platform_impl::android::ndk_glue::
+        // CONTEXTS), refreshed on every Activity create/destroy.
+        // ndk_context::android_context() (used here previously) is a
+        // separate, unrelated global that this crate only ever populates
+        // once — see mobile_runtime::initialize_android_ndk_context_for_audio()'s
+        // Once guard, which exists purely so cpal's Android backend can find
+        // *a* context, not to track the currently-live one. Reading that
+        // stale registry here meant any JNI call made after an in-process
+        // Activity recycle (OpenLessBackendWarmupActivity destroyed by the
+        // system while the process survives — exactly what the Phase 1/2
+        // recovery flow relies on) used a dangling global ref to the
+        // already-destroyed Activity. Android's CheckJNI hard-aborts the
+        // *entire process* for that ("jobject is an invalid global
+        // reference"), confirmed on-device via a tombstone whose crashing
+        // thread was mid notify_capsule_state() -> with_android_env() while
+        // a prior warmup Activity had already been torn down.
+        let android_context = tao::platform::android::prelude::main_android_context()
+            .ok_or_else(|| "no live Android Activity context available".to_string())?;
         let vm = unsafe {
-            JavaVM::from_raw(android_context.vm().cast())
+            JavaVM::from_raw(android_context.java_vm.cast())
                 .map_err(|error| format!("attach Android JVM: {error}"))?
         };
         let mut env = vm
             .attach_current_thread()
             .map_err(|error| format!("attach Android thread: {error}"))?;
-        let raw_context = android_context.context() as jni::sys::jobject;
+        let raw_context = android_context.context_jobject as jni::sys::jobject;
         if raw_context.is_null() {
             return Err("Android context not yet initialized".to_string());
         }
-        // SAFETY: raw_context is non-null and points to a valid Android Context object
-        // provided by tao/Tauri; the reference lifetime is valid for the duration of `f`.
+        // SAFETY: raw_context is non-null and comes from tao's live
+        // CONTEXTS map for the currently-alive Activity; the reference
+        // lifetime is valid for the duration of `f`.
         let context = unsafe { JObject::from_raw(raw_context) };
         f(&mut env, &context)
     }
