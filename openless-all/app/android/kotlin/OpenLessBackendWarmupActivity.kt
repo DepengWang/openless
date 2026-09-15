@@ -35,6 +35,32 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         }
     }
     private var settingsRequested = false
+    private var webViewRef: android.webkit.WebView? = null
+
+    // WryActivity's own hook, fired once when the WebView is first created
+    // for this Activity instance — kept for reloadWebViewForSettings().
+    override fun onWebViewCreate(webView: android.webkit.WebView) {
+        super.onWebViewCreate(webView)
+        webViewRef = webView
+    }
+
+    /**
+     * Forces the WebView to repaint from scratch. On-device logs showed the
+     * OS freezing this Activity's WebView renderer process (a normal
+     * cached/background-process power-saving mechanism) while it sits
+     * backgrounded — which is true almost all the time, since
+     * sendToBackground() moves it behind other apps 180ms after every
+     * warmup launch. Unfreezing that renderer when the Activity comes back
+     * to the foreground does not always resume compositing, leaving a
+     * solid black surface even though the Activity itself and the Rust
+     * backend are both healthy (dictation/stroke input worked the whole
+     * time). Only called for a genuine settings-open, not for silent
+     * warmup — no one is looking at the window then, so there's nothing to
+     * fix and no reason to pay for a reload.
+     */
+    private fun reloadWebViewForSettings() {
+        webViewRef?.post { webViewRef?.reload() }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -76,6 +102,7 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         // since there is nothing granted to manage.
         if (settingsRequested) {
             requestNotificationPermissionIfNeeded()
+            reloadWebViewForSettings()
         }
 
         // 不再修改窗口透明度或触摸属性。主 Activity 必须以正常窗口完成
@@ -117,6 +144,11 @@ class OpenLessBackendWarmupActivity : MainActivity() {
             // onCreate()'s own call to this never runs again for those
             // cases, so this is the only other place a visible moment happens.
             requestNotificationPermissionIfNeeded()
+            // The common case in practice: this Activity's WebView renderer
+            // has likely been sitting frozen in the background since
+            // whenever it was last silently warmed up — see
+            // reloadWebViewForSettings()'s doc comment.
+            reloadWebViewForSettings()
         }
     }
 

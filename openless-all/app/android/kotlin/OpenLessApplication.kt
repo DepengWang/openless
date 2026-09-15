@@ -322,7 +322,14 @@ class OpenLessApplication : Application() {
             for (category in ALL_RESTART_CATEGORIES) {
                 OpenLessProcessRestartStats(this, category).resetToday()
             }
-            prefs.edit().putString("last_seen_build_version", OpenLessBuildInfo.VERSION).apply()
+            // Wall-clock timestamp of the moment this build's counters were
+            // last zeroed — shown on the keyboard settings screen so a
+            // screenshot of the restart-cause counts also carries "counting
+            // since when", not just the raw totals.
+            prefs.edit()
+                .putString("last_seen_build_version", OpenLessBuildInfo.VERSION)
+                .putLong("build_first_seen_wall_time", System.currentTimeMillis())
+                .apply()
         }
     }
 
