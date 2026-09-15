@@ -88,6 +88,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private var lastDictationEpoch: Long = -1
     private var dictationTextUndone = false
     private var editingDictationResult = false
+    // Set right before deleteBackward() edits the field, consumed by the
+    // very next invalidateDictationResultIfTextChanged() call — see
+    // deleteBackward()'s comment.
+    private var selfInitiatedTextChange = false
     // True from the moment the edit mic starts recording until its result
     // (or a cancel) resolves — independent of editingDictationResult, which
     // only tracks which PANEL is currently shown. Stopping the edit mic
@@ -501,15 +505,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val backspaceButton = keyboardKey(
             "⌫",
             1f,
-            action = {
-                deleteBackward()
-                invalidateDictationResultIfTextChanged()
-            },
+            action = { deleteBackward() },
             repeatOnLongPress = true,
-            repeatAction = {
-                deleteBackward()
-                invalidateDictationResultIfTextChanged()
-            },
+            repeatAction = { deleteBackward() },
         ).apply {
             textSize = 22f
             contentDescription = ui("退格", "Backspace")
@@ -637,11 +635,19 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             topMargin = dp(14)
         })
 
+        // Flexible filler mirrors the empty middle area in the reference,
+        // pushing the divider + mic row down to the bottom of the panel.
+        root.addView(View(this), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
         // Hidden for the clipboard swipe-left flow, where recording a
         // correction rule is the entire point of the action, not an
         // optional side effect of fixing dictated text in place. Shown for
         // the normal edit flow so an edit that's just rewording (not an
         // actual misrecognition) doesn't silently pile up an unwanted rule.
+        // Placed low in the panel, just above the bottom divider — not
+        // right under the text chip — and sized 1.5x (checkbox glyph and
+        // label both) so it reads as a deliberate decision, not a small
+        // afterthought easy to miss/mis-tap.
         if (!editingForClipboardCorrection) {
             val correctionToggleRow = LinearLayout(this).apply {
                 gravity = android.view.Gravity.CENTER_VERTICAL
@@ -654,28 +660,24 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             correctionToggleRow.addView(
                 TextView(this).apply {
                     text = if (addCorrectionRuleForEdit) "☑" else "☐"
-                    textSize = 16f
+                    textSize = 24f
                     setTextColor(if (addCorrectionRuleForEdit) strokeEncodeAccentColor else tone(Color.rgb(140, 140, 140), Color.rgb(150, 150, 154)))
                 },
-                LinearLayout.LayoutParams(dp(22), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) },
+                LinearLayout.LayoutParams(dp(33), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(9) },
             )
             correctionToggleRow.addView(
                 TextView(this).apply {
                     text = ui("同时加入纠错规则（下次自动改正）", "Also add as a correction rule")
-                    textSize = 12f
+                    textSize = 18f
                     setTextColor(tone(Color.rgb(180, 180, 180), Color.rgb(120, 120, 125)))
                 },
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
             )
             root.addView(
                 correctionToggleRow,
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) },
             )
         }
-
-        // Flexible filler mirrors the empty middle area in the reference,
-        // pushing the divider + mic row down to the bottom of the panel.
-        root.addView(View(this), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
         root.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
             bottomMargin = dp(10)
@@ -2213,6 +2215,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 @Suppress("DEPRECATION")
                 vibrator.vibrate(durationMs)
             }
+        }.onFailure { error ->
+            android.util.Log.w("OpenLessImeService", "key haptic failed durationMs=$durationMs amplitude=$amplitude", error)
         }
     }
 
@@ -2256,6 +2260,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private fun deleteBackward() {
         val connection = currentInputConnection ?: return
         val selected = connection.getSelectedText(0)
+        // Consumed by the very next invalidateDictationResultIfTextChanged()
+        // call (from onUpdateSelection(), which this delete triggers) so it
+        // skips clearing lastDictationText — deleting via our own backspace
+        // (plain or select-all-then-backspace, both land here) should stay
+        // undoable, unlike text disappearing for some other reason (e.g. the
+        // host app clearing the field itself after sending).
+        selfInitiatedTextChange = true
         if (!selected.isNullOrEmpty()) {
             connection.commitText("", 1)
         } else {
@@ -2321,13 +2332,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     /**
-     * Detects the committed dictation text getting edited or deleted some
-     * other way (backspace, selecting and typing over it, etc.) — not just
-     * through our own undo button — so the undo/redo/edit controls don't
-     * keep pointing at text that's no longer actually there. Called both
-     * from onUpdateSelection() (covers the host app's own keyboard/gestures)
-     * and directly after our own footer backspace key (some hosts, e.g.
-     * WeCom, don't report onUpdateSelection promptly per keystroke).
+     * Detects the committed dictation text getting cleared by something
+     * OTHER than our own backspace key or undo button — e.g. the host app
+     * clearing the field itself after sending — so the undo/redo/edit
+     * controls don't keep pointing at text that's no longer actually there.
+     * Deleting via our own backspace (plain or select-all-then-backspace,
+     * see deleteBackward()) is deliberately NOT treated as a reason to hide
+     * these: that deletion is itself undoable (the undo button just
+     * re-commits lastDictationText), so hiding it would strand an
+     * accidental full erase with no way back.
      *
      * Only clears once NONE of the dictated span remains — a single
      * backspace only shrinks it by one character, which should still leave
@@ -2338,6 +2351,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * still matches there, some of the utterance is still present.
      */
     private fun invalidateDictationResultIfTextChanged() {
+        if (selfInitiatedTextChange) {
+            selfInitiatedTextChange = false
+            return
+        }
         val text = lastDictationText ?: return
         if (dictationTextUndone) return
         val connection = currentInputConnection ?: return
@@ -2408,14 +2425,25 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             recording = true
             processing = false
             // The actual start of a new recording attempt — reset the
-            // silence watch here, not in onCapsuleStateChanged's "recording"
-            // branch: that branch only reset it when `recording` was still
-            // false at the time, but this line already flips it true before
-            // the native "recording" callback ever arrives, so that reset
-            // was structurally unreachable on every normal tap-to-start.
+            // silence watch and fire the start haptic here, not in
+            // onCapsuleStateChanged's "recording" branch: that branch only
+            // acted when `recording` was still false at the time, but this
+            // line already flips it true before the native "recording"
+            // callback ever arrives, so both were structurally unreachable
+            // on every normal tap-to-start (silently never firing).
             recordingStartedAtMs = android.os.SystemClock.elapsedRealtime()
             maxObservedLevelThisSession = 0f
             voiceLinkWarning?.visibility = View.GONE
+            performKeyHaptic()
+            // A genuinely new utterance (not the correction/edit sub-flow,
+            // which already hides these via editingDictationResult) makes
+            // the previous result's undo/redo/edit controls stale the
+            // moment recording starts, not just once the new result
+            // replaces them — leaving them up mid-recording risked an undo
+            // tap acting on the wrong utterance.
+            if (!editingDictationResult) {
+                lastDictationText = null
+            }
             setState("speaking", "再次点击结束")
             runNativeAction("开始听写") { OpenLessNative.nativeStartDictationForIme() }
         }
@@ -2711,7 +2739,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             editingReplacesWholeResult = true
         }
         editingForClipboardCorrection = false
-        addCorrectionRuleForEdit = true
+        // Selecting the *whole* dictated span (either by not selecting
+        // anything at all — the fallback above — or by explicitly
+        // select-all-ing exactly that span) reads more like "redo this
+        // utterance" than "this specific word was wrong", so it starts
+        // unchecked; selecting only part of it starts checked, since that's
+        // the classic "fix this one word" correction. Either way the user
+        // can still flip the checkbox themselves before finishing.
+        addCorrectionRuleForEdit = editingOriginalText != lastDictationText
         editingDictationResult = true
         awaitingEditReplacement = true
         refreshInputView()

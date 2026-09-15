@@ -212,9 +212,21 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             },
         )
 
+        // build_first_seen_wall_time is written by OpenLessApplication's
+        // resetRestartStatsOnVersionBump() at the exact moment it last
+        // zeroed the restart-cause counters below — i.e. "counting since
+        // when" for whatever counts are on screen right now, so a
+        // screenshot of this page carries both together.
+        val buildFirstSeenAt = getSharedPreferences("openless_runtime", Context.MODE_PRIVATE)
+            .getLong("build_first_seen_wall_time", 0L)
+        val installedAtText = if (buildFirstSeenAt > 0L) {
+            android.text.format.DateFormat.format("yyyy-MM-dd HH:mm", buildFirstSeenAt)
+        } else {
+            "?"
+        }
         content.addView(
             TextView(this).apply {
-                text = "${ui("构建版本", "Build")} ${OpenLessBuildInfo.VERSION}"
+                text = "${ui("构建版本", "Build")} ${OpenLessBuildInfo.VERSION}  ${ui("安装于", "installed")} $installedAtText"
                 textSize = 11f
                 typeface = monospace
                 setTextColor(tone(Color.rgb(120, 120, 120), Color.rgb(150, 150, 155)))
