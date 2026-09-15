@@ -72,6 +72,23 @@ pub fn run() {
                 api.prevent_exit();
             }
             RunEvent::Exit => {
+                // With ExitRequested now always prevented above, reaching
+                // this point at all means something forced the exit despite
+                // that (or a future code path calls AppHandle::exit()/
+                // restart() directly) — worth recording as its own distinct
+                // restart-cause bucket, separate from an OS-level process
+                // kill, since it means Tauri itself decided to tear down.
+                #[cfg(target_os = "android")]
+                {
+                    let _ = crate::android::jni::android::with_android_env(|env, context| {
+                        crate::android::jni::android::start_service_action(
+                            env,
+                            context,
+                            "com.openless.app.OpenLessRuntimeService",
+                            "com.openless.app.action.RUNTIME_EXITED",
+                        )
+                    });
+                }
                 if let Some(coordinator) = app.try_state::<Arc<Coordinator>>() {
                     coordinator.stop_hotkey_listener();
                     let backend = coordinator.backend();

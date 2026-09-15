@@ -325,6 +325,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         stopRuntimeService()
         strokeRepository.shutdown()
         phraseRepository.shutdown()
+        // Marks this as a clean end-of-session for
+        // OpenLessApplication.recordUncleanShutdownIfAny() — an abrupt
+        // process kill (native crash, OOM) never reaches this line, which
+        // is exactly the "unclean" case that helper is trying to detect.
+        getSharedPreferences("openless_runtime", MODE_PRIVATE).edit().putBoolean("session_alive", false).apply()
         super.onDestroy()
     }
 
@@ -947,8 +952,22 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         ).apply {
             contentDescription = ui("展开更多候选", "Show more candidates")
         }
+        expandCandidatesButton.visibility = View.GONE
         expandCandidatesButton.setOnClickListener { showCandidateOverlay(expandCandidatesButton) }
         candidateRow.addView(expandCandidatesButton, LinearLayout.LayoutParams(dp(28), ViewGroup.LayoutParams.MATCH_PARENT))
+        // Only shown once the candidates actually overflow the visible
+        // scroll width — otherwise it sat there whether or not there was
+        // anything more to show, which read as an odd stray control.
+        // renderCandidateRow()/refreshAssociations() both just repopulate
+        // strokeCandidates and let layout happen, so a global layout
+        // listener (fires after every layout pass, including the one
+        // triggered by add/removeAllViews) is what re-checks this instead
+        // of hooking every candidate-population call site individually.
+        candidatesScroll.viewTreeObserver.addOnGlobalLayoutListener {
+            val candidates = strokeCandidates
+            expandCandidatesButton.visibility =
+                if (candidates != null && candidates.width > candidatesScroll.width) View.VISIBLE else View.GONE
+        }
         top.addView(candidateRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36)))
         root.addView(top, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(60)))
 
@@ -2353,6 +2372,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 if (!awaitingBackendReadyRecheck) {
                     backendRecheckStartedAtMs = android.os.SystemClock.elapsedRealtime()
                     android.util.Log.w("OpenLessImeService", "backend not ready at mic tap; starting recovery watch")
+                    OpenLessProcessRestartStats(this, "mictap").recordStart()
                 }
                 setState("error", ui("服务尚未就绪", "Service not ready yet"))
                 voiceLinkWarning?.text = ui("服务尚未就绪，点击重启应用", "Service not ready — tap to restart the app")
