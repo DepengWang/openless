@@ -2,6 +2,7 @@ package com.openless.app
 
 import android.app.Activity
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
@@ -30,6 +31,16 @@ class OpenLessKeyboardSettingsActivity : Activity() {
     private fun ui(zh: String, en: String) = if (englishUi) en else zh
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
+    /** Same "which theme is the keyboard actually showing" logic as OpenLessImeService.isDarkTheme, so this screen matches whatever the user is looking at when they long-press the Logo to get here. */
+    private val isDarkTheme: Boolean
+        get() = when (prefs.getString("theme_mode", null)) {
+            "light" -> false
+            "dark" -> true
+            else -> (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) != Configuration.UI_MODE_NIGHT_NO
+        }
+
+    private fun tone(dark: Int, light: Int): Int = if (isDarkTheme) dark else light
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(buildContent())
@@ -38,7 +49,7 @@ class OpenLessKeyboardSettingsActivity : Activity() {
     private fun buildContent(): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(30, 30, 30))
+            setBackgroundColor(tone(Color.rgb(30, 30, 30), Color.rgb(245, 245, 247)))
         }
 
         val header = LinearLayout(this).apply {
@@ -49,7 +60,7 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             TextView(this).apply {
                 text = "←"
                 textSize = 22f
-                setTextColor(Color.WHITE)
+                setTextColor(tone(Color.WHITE, Color.rgb(30, 30, 34)))
                 gravity = Gravity.CENTER
                 setPadding(dp(16), dp(8), dp(16), dp(8))
                 isClickable = true
@@ -61,7 +72,7 @@ class OpenLessKeyboardSettingsActivity : Activity() {
                 text = ui("键盘设置", "Keyboard settings")
                 textSize = 18f
                 setTypeface(typeface, android.graphics.Typeface.BOLD)
-                setTextColor(Color.WHITE)
+                setTextColor(tone(Color.WHITE, Color.rgb(30, 30, 34)))
             },
         )
         root.addView(header, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -81,7 +92,7 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             TextView(this).apply {
                 text = ui("按键震动", "Key vibration")
                 textSize = 15f
-                setTextColor(Color.rgb(220, 220, 220))
+                setTextColor(tone(Color.rgb(220, 220, 220), Color.rgb(40, 40, 44)))
             },
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
         )
@@ -100,16 +111,18 @@ class OpenLessKeyboardSettingsActivity : Activity() {
 
         // Amplitude's 255 ceiling is Android's own VibrationEffect max, not a
         // choice made here — the hardware/API can't go any stronger than
-        // that regardless of what this slider allows. Duration's ceiling is
-        // ours, so it's the one raised for a more noticeable pulse.
+        // that regardless of what this slider allows. Duration's ceiling
+        // started at 500ms, halved to 250, then halved again to 125 so the
+        // same slider width covers a quarter of the original range, for
+        // finer-grained adjustment.
         var currentAmplitude = prefs.getInt("key_haptic_amplitude", 55).coerceIn(1, 255)
-        var currentDurationMs = prefs.getLong("key_haptic_duration_ms", 12L).toInt().coerceIn(1, 500)
+        var currentDurationMs = prefs.getLong("key_haptic_duration_ms", 12L).toInt().coerceIn(1, 125)
         // No separate test button — letting go of either slider fires one
         // vibration with the values as they now stand, so adjusting and
         // feeling the result is a single motion.
         content.addView(
             sliderRow(
-                label = ui("震动强度（255 已是系统上限）", "Intensity (255 is the platform max)"),
+                label = ui("震动强度（系统上限）", "Intensity (platform ceiling)"),
                 min = 1,
                 max = 255,
                 current = currentAmplitude,
@@ -124,7 +137,7 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             sliderRow(
                 label = ui("震动时长", "Duration"),
                 min = 1,
-                max = 500,
+                max = 125,
                 current = currentDurationMs,
                 onChange = { value ->
                     currentDurationMs = value
@@ -134,9 +147,12 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             ),
         )
 
-        content.addView(sectionLabel(ui("进程重启统计（近 3 天）", "Process restarts (last 3 days)")))
+        content.addView(sectionLabel(ui("进程重启统计（今天）", "Process restarts (today)")))
         // Short, purposefully un-translated keys (not meant to be pretty —
-        // meant to be pasted into a screenshot and read back verbatim):
+        // meant to be pasted into a screenshot and read back verbatim).
+        // All reset to 0 whenever OpenLessBuildInfo.VERSION changes (see
+        // OpenLessApplication.resetRestartStatsOnVersionBump()), so these
+        // are always "since this build was installed", not lifetime totals:
         //   main/access  - raw restarts of the main / :accessibility process
         //   sticky       - OpenLessRuntimeService.onStartCommand() got a
         //                  null Intent: Android's own restart-after-death
@@ -157,36 +173,27 @@ class OpenLessKeyboardSettingsActivity : Activity() {
         //   unclean      - previous main-process session never reached
         //                  OpenLessImeService.onDestroy() (best-effort
         //                  crash/force-stop signal, can't tell those apart)
+        // Chinese gloss for each key — just enough to read at a glance
+        // without cross-referencing the doc comment above.
         val restartCategories = listOf(
-            OpenLessProcessRestartStats.MAIN to "main",
-            OpenLessProcessRestartStats.ACCESSIBILITY to "access",
-            "sticky" to "sticky",
-            "warmup" to "warmup",
-            "mictap" to "mictap",
-            "actkill" to "actkill",
-            "rtexit" to "rtexit",
-            "unclean" to "unclean",
+            Triple(OpenLessProcessRestartStats.MAIN, "main", "主进程"),
+            Triple(OpenLessProcessRestartStats.ACCESSIBILITY, "access", "无障碍进程"),
+            Triple("sticky", "sticky", "系统杀后恢复"),
+            Triple("warmup", "warmup", "后端唤醒"),
+            Triple("mictap", "mictap", "点击时未就绪"),
+            Triple("actkill", "actkill", "界面被系统回收"),
+            Triple("rtexit", "rtexit", "后端异常退出"),
+            Triple("unclean", "unclean", "上次异常退出"),
         )
-        val dates = OpenLessProcessRestartStats(this, restartCategories.first().first).recentDays().map { it.first }
         val monospace = android.graphics.Typeface.MONOSPACE
-        content.addView(
-            TextView(this).apply {
-                text = "        " + dates.joinToString("  ") { it.takeLast(5) }
-                textSize = 12f
-                typeface = monospace
-                setTextColor(Color.rgb(140, 140, 140))
-            },
-        )
-        for ((key, label) in restartCategories) {
+        for ((key, label, gloss) in restartCategories) {
             content.addView(
                 TextView(this).apply {
-                    val counts = OpenLessProcessRestartStats(this@OpenLessKeyboardSettingsActivity, key)
-                        .recentDays()
-                        .joinToString("      ") { (_, count) -> count.toString() }
-                    text = label.padEnd(8) + counts
+                    val count = OpenLessProcessRestartStats(this@OpenLessKeyboardSettingsActivity, key).today()
+                    text = label.padEnd(10) + count.toString().padEnd(4) + gloss
                     textSize = 13f
                     typeface = monospace
-                    setTextColor(Color.rgb(200, 200, 200))
+                    setTextColor(tone(Color.rgb(200, 200, 200), Color.rgb(70, 70, 75)))
                 },
             )
         }
@@ -201,7 +208,19 @@ class OpenLessKeyboardSettingsActivity : Activity() {
                     "${personalFrequency.size()} / ${personalFrequency.capacity()} entries recorded",
                 )
                 textSize = 14f
-                setTextColor(Color.rgb(200, 200, 200))
+                setTextColor(tone(Color.rgb(200, 200, 200), Color.rgb(70, 70, 75)))
+            },
+        )
+
+        content.addView(
+            TextView(this).apply {
+                text = "${ui("构建版本", "Build")} ${OpenLessBuildInfo.VERSION}"
+                textSize = 11f
+                typeface = monospace
+                setTextColor(tone(Color.rgb(120, 120, 120), Color.rgb(150, 150, 155)))
+            },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(16)
             },
         )
 
@@ -229,7 +248,7 @@ class OpenLessKeyboardSettingsActivity : Activity() {
     private fun sectionLabel(text: String): View = TextView(this).apply {
         this.text = text
         textSize = 12f
-        setTextColor(Color.rgb(150, 150, 150))
+        setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(110, 110, 115)))
         setPadding(0, 0, 0, dp(8))
     }
 
@@ -247,20 +266,23 @@ class OpenLessKeyboardSettingsActivity : Activity() {
                 bottomMargin = dp(14)
             }
         }
-        row.addView(
-            TextView(this).apply {
-                text = label
-                textSize = 14f
-                setTextColor(Color.rgb(200, 200, 200))
-            },
-        )
+        val labelView = TextView(this).apply {
+            text = "$label · Max $max Set:$current"
+            textSize = 14f
+            setTextColor(tone(Color.rgb(200, 200, 200), Color.rgb(70, 70, 75)))
+        }
+        row.addView(labelView)
         row.addView(
             SeekBar(this).apply {
                 this.max = range
                 this.progress = initialProgress
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                        if (fromUser) onChange(progress + min)
+                        if (fromUser) {
+                            val value = progress + min
+                            labelView.text = "$label · Max $max Set:$value"
+                            onChange(value)
+                        }
                     }
                     override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
                     override fun onStopTrackingTouch(seekBar: SeekBar?) {
