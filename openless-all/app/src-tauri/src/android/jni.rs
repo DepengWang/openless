@@ -68,6 +68,18 @@ pub mod android {
         f(&mut env, context)
     }
 
+    /// Whether an Activity Context is currently registered. Exposed to
+    /// Kotlin so ensureBackendReady() can tell "backend running but no
+    /// Activity left to notify" apart from "backend actually cold" — the
+    /// former survives a long time on its own once the backend has started
+    /// once (this Activity backgrounding/dying doesn't stop the Rust side
+    /// running), but leaves every notify_capsule_state() call permanently
+    /// failing (dictation/waveform status updates silently dropped) until
+    /// something relaunches this Activity again.
+    pub fn has_active_activity() -> bool {
+        ACTIVE_CONTEXT.lock().unwrap().is_some()
+    }
+
     pub fn call_static_void(
         env: &mut JNIEnv,
         class_name: &str,

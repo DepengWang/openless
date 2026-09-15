@@ -9,7 +9,14 @@ import android.os.Looper
 import android.content.Context
 import android.content.Intent
 
-/** Starts the Tauri/Rust runtime without presenting the settings UI. */
+/**
+ * Starts the Tauri/Rust runtime — usually invisibly (warmup/recovery), but
+ * also the app's actual launcher target (the manifest's LAUNCHER
+ * intent-filter lives here, not on bare MainActivity — see
+ * merge-android-overlay-manifest.mjs's moveLauncherIntentFilterToWarmupActivity()
+ * for why: a direct launcher tap used to open untracked plain MainActivity,
+ * a second Tauri host whose WebView never got anything attached).
+ */
 class OpenLessBackendWarmupActivity : MainActivity() {
     // Activity 实例化阶段尚未 attach Context，不能访问 Activity.mainLooper。
     private val warmupHandler = Handler(Looper.getMainLooper())
@@ -35,12 +42,18 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         // with_android_env()'s Activity Context registration (see
         // OpenLessNative.nativeRegisterActivityContext()'s doc comment)
         // happens from OpenLessApplication's app-wide ActivityLifecycleCallbacks
-        // (matched via `is MainActivity`, which this class extends), not
-        // here — this class isn't the only Activity that can be the one to
-        // first bootstrap Tauri (a direct launcher tap opens plain
-        // MainActivity instead), so a single hook covering the whole
-        // MainActivity family is what's actually correct.
-        settingsRequested = intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false)
+        // (matched via `is MainActivity`, which this class extends) rather
+        // than here, so it also covers plain MainActivity if anything ever
+        // instantiates that directly again.
+        //
+        // A direct launcher-icon tap arrives here as a plain ACTION_MAIN/
+        // CATEGORY_LAUNCHER intent (no EXTRA_SHOW_SETTINGS) — treated the
+        // same as an explicit settings request: the user tapped the icon
+        // expecting to see the app, not an invisible warmup that vanishes
+        // 180ms later.
+        val launchedFromLauncher = intent.action == Intent.ACTION_MAIN &&
+            intent.hasCategory(Intent.CATEGORY_LAUNCHER)
+        settingsRequested = launchedFromLauncher || intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false)
         // Only when visibly opened for settings: a permission dialog here
         // during the invisible warmup path would get dragged to the
         // background along with this Activity by sendToBackground() 180ms
@@ -80,13 +93,17 @@ class OpenLessBackendWarmupActivity : MainActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false)) {
+        val launchedFromLauncher = intent.action == Intent.ACTION_MAIN &&
+            intent.hasCategory(Intent.CATEGORY_LAUNCHER)
+        if (launchedFromLauncher || intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false)) {
             settingsRequested = true
             warmupHandler.removeCallbacks(sendToBackground)
             // Covers openSettingsIfRunning() bringing an already-alive
-            // instance forward — onCreate() (and its own call to this) never
-            // runs again for that case, so this is the only other place a
-            // settings-visible moment happens.
+            // instance forward, and the launcher icon being tapped again
+            // while this Activity is already alive (singleTask redelivers
+            // via onNewIntent instead of a fresh onCreate) — either way,
+            // onCreate()'s own call to this never runs again for those
+            // cases, so this is the only other place a visible moment happens.
             requestNotificationPermissionIfNeeded()
         }
     }
@@ -195,29 +212,50 @@ class OpenLessBackendWarmupActivity : MainActivity() {
             val now = android.os.SystemClock.elapsedRealtime()
             if (now - lastWarmupAttemptElapsed < 5_000L) return
             if (isRunning()) return
-            try {
+            val backendError = try {
                 OpenLessNative.requireBackendContract()
+                null
             } catch (error: Throwable) {
-                val runtimePrefs = context.getSharedPreferences("openless_runtime", Context.MODE_PRIVATE)
-                val wallNow = System.currentTimeMillis()
-                val lastAttempt = runtimePrefs.getLong(BACKEND_WARMUP_ATTEMPT_KEY, 0L)
-                if (wallNow >= lastAttempt && wallNow - lastAttempt < BACKEND_WARMUP_RETRY_DELAY_MS) return
-                lastWarmupAttemptElapsed = now
-                runtimePrefs.edit().putLong(BACKEND_WARMUP_ATTEMPT_KEY, wallNow).apply()
-                android.util.Log.i("OpenLessBackendWarmupActivity", "backend is not ready; launching warmup", error)
-                OpenLessProcessRestartStats(context, "warmup").recordStart()
-                Handler(Looper.getMainLooper()).postDelayed({
-                    runCatching {
-                        context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
-                            addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
-                        })
-                    }.onFailure { launchError ->
-                        android.util.Log.w("OpenLessBackendWarmupActivity", "failed to launch warmup", launchError)
-                    }
-                }, 120L)
+                error
             }
+            if (backendError != null) {
+                launchWarmup(context, now, backendError)
+                return
+            }
+            // The Rust backend can stay perfectly healthy for a long time
+            // after its last registered Activity is destroyed — that
+            // Activity dying is meant to be survivable (Phase 1/2's whole
+            // point). But nothing else ever notices that gap and relaunches
+            // one, since requireBackendContract() only checks whether the
+            // backend itself is running: every notify_capsule_state() call
+            // (dictation/waveform status updates) is left permanently
+            // failing until something does. Treated the same as "backend
+            // not ready" here so it goes through the same relaunch + cooldown.
+            if (!OpenLessNative.nativeHasRegisteredActivityContext()) {
+                launchWarmup(context, now, IllegalStateException("backend healthy but no Activity registered for JNI notifications"))
+            }
+        }
+
+        private fun launchWarmup(context: Context, nowElapsed: Long, cause: Throwable) {
+            val runtimePrefs = context.getSharedPreferences("openless_runtime", Context.MODE_PRIVATE)
+            val wallNow = System.currentTimeMillis()
+            val lastAttempt = runtimePrefs.getLong(BACKEND_WARMUP_ATTEMPT_KEY, 0L)
+            if (wallNow >= lastAttempt && wallNow - lastAttempt < BACKEND_WARMUP_RETRY_DELAY_MS) return
+            lastWarmupAttemptElapsed = nowElapsed
+            runtimePrefs.edit().putLong(BACKEND_WARMUP_ATTEMPT_KEY, wallNow).apply()
+            android.util.Log.i("OpenLessBackendWarmupActivity", "backend is not ready; launching warmup", cause)
+            OpenLessProcessRestartStats(context, "warmup").recordStart()
+            Handler(Looper.getMainLooper()).postDelayed({
+                runCatching {
+                    context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+                        addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                    })
+                }.onFailure { launchError ->
+                    android.util.Log.w("OpenLessBackendWarmupActivity", "failed to launch warmup", launchError)
+                }
+            }, 120L)
         }
     }
 }

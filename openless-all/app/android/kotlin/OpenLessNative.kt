@@ -49,6 +49,18 @@ object OpenLessNative {
     /** Clears the registration from nativeRegisterActivityContext() — only takes effect if `activity` is still the currently-registered one. */
     @JvmStatic external fun nativeUnregisterActivityContext(activity: android.app.Activity)
 
+    /**
+     * True once some MainActivity-family instance has called
+     * nativeRegisterActivityContext() and nothing has unregistered it
+     * since. The Rust backend can stay perfectly healthy for a long time
+     * after its last registered Activity is destroyed (that's the whole
+     * point of Phase 1/2's recovery design) — requireBackendContract()
+     * alone can't see that gap, since it only checks whether the backend
+     * itself is running, not whether there's still an Activity around for
+     * it to notify.
+     */
+    @JvmStatic external fun nativeHasRegisteredActivityContext(): Boolean
+
     @JvmStatic external fun nativeBackendSnapshot(): String
 
     @JvmStatic

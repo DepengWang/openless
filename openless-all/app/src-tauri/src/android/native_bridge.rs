@@ -699,6 +699,17 @@ mod jni_exports {
         });
     }
 
+    /// Lets ensureBackendReady() tell "backend healthy but no Activity
+    /// left to notify" apart from "backend actually cold" — see
+    /// android::jni::android::has_active_activity()'s doc comment.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeHasRegisteredActivityContext(
+        _env: *mut JNIEnv,
+        _class: JClass,
+    ) -> jboolean {
+        crate::android::jni::android::has_active_activity() as jboolean
+    }
+
     #[no_mangle]
     pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeCanDrawOverlays(
         env: *mut JNIEnv,
