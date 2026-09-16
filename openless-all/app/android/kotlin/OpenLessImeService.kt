@@ -34,12 +34,38 @@ import android.widget.Toast
 class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlayStateListener {
     private enum class InputMode { VOICE, STROKE, CLIPBOARD, ENGLISH }
     private enum class ShiftState { OFF, SHIFT_ONCE, CAPS_LOCK }
+    // Mirrors iOS's own ABC/123/#+= three-layer model exactly (see
+    // buildKeyboardView()) instead of the old two-state symbolMode boolean,
+    // which only ever had room for one merged symbol page.
+    private enum class EnglishLayer { LETTERS, NUMBERS, SYMBOLS }
 
     private var sessionEpoch = 0L
     private var recording = false
     private var processing = false
     private var inputMode = InputMode.VOICE
-    private var symbolMode = false
+    private var englishLayer = EnglishLayer.LETTERS
+    // The word currently being typed on the English keyboard — appended to
+    // per letter, trimmed per backspace, cleared at every word boundary
+    // (space/return/punctuation/candidate tap/mode or panel switch). Never
+    // touches currentInputConnection itself: every letter is still
+    // committed immediately, same as before this feature: this buffer only
+    // tracks what to re-query/replace for candidates.
+    private val englishComposingWord = StringBuilder()
+    private var englishCandidateRow: LinearLayout? = null
+    // The row+divider bar as a whole (shown/hidden together when the
+    // suggestions setting is toggled) and its overflow "▼" button — see
+    // buildEnglishCandidateBar().
+    private var englishCandidateBarContainer: View? = null
+    private var englishExpandCandidatesButton: View? = null
+    private var englishCandidateQueryEpoch = 0L
+    // Lazy, not eager: the base dictionary/trie only gets built the first
+    // time the English keyboard is actually opened (see
+    // EnglishCandidateProvider.ensureLoaded()), so switching to English
+    // never pays for it until that mode is first used, and other modes
+    // never pay for it at all. Held as the raw Lazy (not just its .value)
+    // so onDestroy() below can skip shutdown() when it was never touched.
+    private val englishCandidateProviderLazy = lazy { EnglishCandidateProvider(this) }
+    private val englishCandidateProvider get() = englishCandidateProviderLazy.value
     private var strokeNumberMode = false
     private var numberSymbolMode = false
     private var symbolPageIndex = 0
@@ -364,6 +390,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         stopRuntimeService()
         strokeRepository.shutdown()
         phraseRepository.shutdown()
+        if (englishCandidateProviderLazy.isInitialized()) englishCandidateProviderLazy.value.shutdown()
         // Marks this as a clean end-of-session for
         // OpenLessApplication.recordUncleanShutdownIfAny() — an abrupt
         // process kill (native crash, OOM) never reaches this line, which
@@ -862,7 +889,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         editingOriginalText = null
         inputMode = selected
         saveInputMode(selected)
-        symbolMode = false
+        englishLayer = EnglishLayer.LETTERS
+        englishComposingWord.clear()
         strokeNumberMode = false
         numberSymbolMode = false
         symbolPageIndex = 0
@@ -893,6 +921,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         if (next != inputMode) selectInputMode(next, slideDirection = direction)
     }
 
+    /**
+     * English ABC/123/#+= keyboard — key relationships (rows, per-row key
+     * count, relative widths, and the 123/ABC/#+= switching logic) follow
+     * iOS 17's own English keyboard; colors, key surface, and every other
+     * visual detail are OpenLess's existing key styling (roundedButton()/
+     * tone()), matching the stroke panel. See EnglishLayer for the ABC/123/
+     * #+= state and README's "英文键盘 iOS 17 布局" entry for the full
+     * rationale.
+     */
     private fun buildKeyboardView(): View {
         val root = SwipeModeContainer(this) { direction -> swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
@@ -916,30 +953,54 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             marginEnd = dp(8)
         })
 
-        // 保持和 Typeless 类似的五排结构：数字、字母三排、底部功能排。
-        addKeyboardRow(root, listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"))
-        if (symbolMode) {
-            addKeyboardRow(root, listOf("-", "/", ":", ";", "(", ")", "$", "&", "@", "\""))
-            addKeyboardRow(root, listOf(".", ",", "?", "!", "'", "#", "%", "*", "+", "="))
-            addKeyboardRow(root, listOf("[", "]", "{", "}", "_", "\\", "|", "~", "<", ">"))
-        } else {
-            addKeyboardRow(root, listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"))
-            addKeyboardRow(root, listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"))
-            addKeyboardRow(root, listOf("⇧", "z", "x", "c", "v", "b", "n", "m", "⌫"))
+        root.addView(buildEnglishCandidateBar(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        updateEnglishCandidates()
+
+        when (englishLayer) {
+            EnglishLayer.LETTERS -> {
+                addEnglishCharRow(root, listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"))
+                // iOS insets this row by half a key on each side (9 keys
+                // spanning the same width as the 10-key rows above/below);
+                // 0.5f spacers on either side of 1f-weight letter keys
+                // reproduce that without a second, differently-measured row.
+                val row2 = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
+                row2.addView(View(this), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.5f))
+                listOf("a", "s", "d", "f", "g", "h", "j", "k", "l").forEach {
+                    row2.addView(buildEnglishCharKey(it, 1f))
+                }
+                row2.addView(View(this), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.5f))
+                root.addView(row2, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+                val row3 = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
+                row3.addView(keyboardKey("⇧", 1.5f, action = { cycleEnglishShift() }))
+                listOf("z", "x", "c", "v", "b", "n", "m").forEach { row3.addView(buildEnglishCharKey(it, 1f)) }
+                row3.addView(keyboardKey("⌫", 1.5f, action = { englishDeleteBackward() }, repeatOnLongPress = true, repeatAction = { englishDeleteBackward() }))
+                root.addView(row3, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            }
+            EnglishLayer.NUMBERS -> {
+                addEnglishCharRow(root, listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"))
+                addEnglishCharRow(root, listOf("-", "/", ":", ";", "(", ")", "$", "&", "@", "\""))
+                addEnglishSymbolActionRow(root, listOf(".", ",", "?", "!", "'"))
+            }
+            EnglishLayer.SYMBOLS -> {
+                addEnglishCharRow(root, listOf("[", "]", "{", "}", "#", "%", "^", "*", "+", "="))
+                addEnglishCharRow(root, listOf("_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"))
+                addEnglishSymbolActionRow(root, listOf(".", ",", "?", "!", "'"))
+            }
         }
 
         val bottom = LinearLayout(this).apply {
             gravity = android.view.Gravity.CENTER_VERTICAL
         }
-        val modeButton = keyboardKey(if (symbolMode) "ABC" else ui("符号", "#+="), 1f, action = {
-            symbolMode = !symbolMode
-            shiftState = ShiftState.OFF
-            refreshInputView()
+        val modeButton = keyboardKey(if (englishLayer == EnglishLayer.LETTERS) "123" else "ABC", 1.3f, action = {
+            handleEnglishBottomModeToggle()
         })
-        val spaceButton = keyboardKey("", 2.7f, action = {
+        val spaceButton = keyboardKey("", 5f, action = {
+            finalizeEnglishComposingWord()
             currentInputConnection?.commitText(" ", 1)
         })
-        val returnButton = keyboardKey("Return", 1.35f, action = {
+        val returnButton = keyboardKey("Return", 1.7f, action = {
+            finalizeEnglishComposingWord()
             sendEnterKey()
         })
         bottom.addView(modeButton)
@@ -947,6 +1008,64 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         bottom.addView(returnButton)
         root.addView(bottom, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         return root
+    }
+
+    /**
+     * A plain character row (digits/symbols, no shift-sensitivity) built
+     * from buildEnglishCharKey() — key preview, no drag-to-adjacent-key
+     * distinction from a letter row since neither cares about shift.
+     */
+    private fun addEnglishCharRow(parent: LinearLayout, keys: List<String>) {
+        val row = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
+        keys.forEach { row.addView(buildEnglishCharKey(it, 1f)) }
+        parent.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+    }
+
+    /**
+     * 123 page's row 3 (`#+=  .  ,  ?  !  '  ⌫`) and #+= page's row 3
+     * (`123  .  ,  ?  !  '  ⌫`) — same shape, only the leading toggle
+     * key's label/action differs, so both layers share this one builder.
+     */
+    private fun addEnglishSymbolActionRow(parent: LinearLayout, middleKeys: List<String>) {
+        val row = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
+        val toggleLabel = if (englishLayer == EnglishLayer.NUMBERS) "#+=" else "123"
+        row.addView(keyboardKey(toggleLabel, 1.5f, action = { handleEnglishRow3ModeToggle() }))
+        middleKeys.forEach { row.addView(buildEnglishCharKey(it, 1f)) }
+        row.addView(keyboardKey("⌫", 1.5f, action = { englishDeleteBackward() }, repeatOnLongPress = true, repeatAction = { englishDeleteBackward() }))
+        parent.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+    }
+
+    /** Bottom-row toggle: always jumps straight to/from Letters, regardless of which of Numbers/Symbols was showing (matches iOS's own "ABC" key). */
+    private fun handleEnglishBottomModeToggle() {
+        englishLayer = if (englishLayer == EnglishLayer.LETTERS) EnglishLayer.NUMBERS else EnglishLayer.LETTERS
+        shiftState = ShiftState.OFF
+        finalizeEnglishComposingWord()
+        refreshInputView()
+    }
+
+    /** Row-3 toggle: only ever switches between Numbers and Symbols, never touches Letters (matches iOS's own "#+="/"123" key). */
+    private fun handleEnglishRow3ModeToggle() {
+        englishLayer = if (englishLayer == EnglishLayer.NUMBERS) EnglishLayer.SYMBOLS else EnglishLayer.NUMBERS
+        refreshInputView()
+    }
+
+    private fun cycleEnglishShift() {
+        // Cycles lowercase -> capitalize-next -> caps-lock -> lowercase.
+        shiftState = when (shiftState) {
+            ShiftState.OFF -> ShiftState.SHIFT_ONCE
+            ShiftState.SHIFT_ONCE -> ShiftState.CAPS_LOCK
+            ShiftState.CAPS_LOCK -> ShiftState.OFF
+        }
+        refreshInputView()
+    }
+
+    /** Backspace on the English keyboard: same field edit as everywhere else, plus keeping englishComposingWord (and therefore the candidate bar) in sync. */
+    private fun englishDeleteBackward() {
+        deleteBackward()
+        if (englishComposingWord.isNotEmpty()) {
+            englishComposingWord.deleteCharAt(englishComposingWord.length - 1)
+        }
+        updateEnglishCandidates()
     }
 
     private fun buildStrokeView(): View {
@@ -2088,30 +2207,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         refreshAssociations()
     }
 
-    private fun addKeyboardRow(parent: LinearLayout, keys: List<String>) {
-        val row = LinearLayout(this).apply {
-            gravity = android.view.Gravity.CENTER
-        }
-        keys.forEach { key ->
-            // The key's identity (passed to handleKeyboardKey) always stays
-            // lowercase; only the displayed label follows shiftState, so the
-            // keyboard visibly shows what tapping it will actually type.
-            val displayLabel = if (shiftState != ShiftState.OFF && key.length == 1 && key[0].isLetter()) {
-                key.uppercase()
-            } else {
-                key
-            }
-            row.addView(keyboardKey(
-                displayLabel,
-                1f,
-                { handleKeyboardKey(key) },
-                repeatOnLongPress = key == "⌫",
-                repeatAction = { deleteBackward() },
-            ))
-        }
-        parent.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-    }
-
     private fun keyboardKey(
         label: String,
         weight: Float,
@@ -2299,34 +2394,274 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     }
 
-    private fun handleKeyboardKey(key: String) {
-        when (key) {
-            "⌫" -> deleteBackward()
-            "⇧" -> {
-                // Cycles lowercase -> capitalize-next -> caps-lock -> lowercase.
-                shiftState = when (shiftState) {
-                    ShiftState.OFF -> ShiftState.SHIFT_ONCE
-                    ShiftState.SHIFT_ONCE -> ShiftState.CAPS_LOCK
-                    ShiftState.CAPS_LOCK -> ShiftState.OFF
+    /**
+     * A single ABC/123/#+= character-emitting key with an iOS-style press
+     * preview: a bubble above the key showing the character that will
+     * actually be committed (respecting shift for letters), with an arrow
+     * pointing at the key (KeyPreviewBubbleView, plain Canvas drawing — no
+     * new dependency). Dragging onto a horizontally adjacent sibling in the
+     * same row re-targets the preview and the eventual commit to that key
+     * instead (a "sloppy key", same idea as most predictive keyboards).
+     * This is a dedicated builder, not a keyboardKey() variant, precisely
+     * so none of this touch handling can affect any other panel's keys.
+     */
+    private fun buildEnglishCharKey(baseChar: String, weight: Float): TextView {
+        fun charFor(view: View): String {
+            val base = view.tag as? String ?: return ""
+            return if (shiftState != ShiftState.OFF && base.length == 1 && base[0].isLetter()) base.uppercase() else base
+        }
+        return TextView(this).apply {
+            tag = baseChar
+            text = charFor(this)
+            textSize = 22f
+            gravity = android.view.Gravity.CENTER
+            setTextColor(tone(Color.rgb(245, 245, 245), Color.rgb(30, 30, 34)))
+            background = roundedButton(tone(Color.rgb(52, 52, 54), Color.rgb(255, 255, 255)), dp(5))
+            elevation = dp(5).toFloat()
+            translationZ = dp(1).toFloat()
+            contentDescription = charFor(this)
+            var trackedView: View = this
+            var popup: android.widget.PopupWindow? = null
+            var bubble: KeyPreviewBubbleView? = null
+
+            // Anchored via showAsDropDown()/update(anchor, ...), not
+            // showAtLocation() with a manually computed absolute (x, y):
+            // that's what showCandidateOverlay() already uses successfully
+            // for the stroke panel's own floating candidate list, and an
+            // IME's own window turns out not to reliably render a popup
+            // positioned by raw screen coordinates — the bubble silently
+            // never appeared on-device with that approach.
+            fun showBubbleFor(target: View) {
+                val bubbleView = bubble ?: KeyPreviewBubbleView(this@OpenLessImeService, isDarkTheme).also { bubble = it }
+                bubbleView.label = charFor(target)
+                val bubbleWidthPx = dp(44)
+                val bubbleHeightPx = dp(60)
+                val xoff = (target.width - bubbleWidthPx) / 2
+                val yoff = -(target.height + bubbleHeightPx)
+                val existing = popup
+                if (existing != null && existing.isShowing) {
+                    existing.update(target, xoff, yoff, bubbleWidthPx, bubbleHeightPx)
+                } else {
+                    android.widget.PopupWindow(bubbleView, bubbleWidthPx, bubbleHeightPx, false).apply {
+                        isClippingEnabled = false
+                        elevation = dp(6).toFloat()
+                        popup = this
+                        showAsDropDown(target, xoff, yoff)
+                    }
                 }
-                refreshInputView()
             }
-            "ABC" -> {
-                symbolMode = false
-                shiftState = ShiftState.OFF
-                refreshInputView()
-            }
-            else -> {
-                val text = if (shiftState != ShiftState.OFF && key.length == 1) key.uppercase() else key
-                currentInputConnection?.commitText(text, 1)
-                // Caps-lock stays on for every letter; a one-shot shift only
-                // capitalizes the single letter that was just typed.
-                if (shiftState == ShiftState.SHIFT_ONCE) {
-                    shiftState = ShiftState.OFF
-                    refreshInputView()
+
+            // Hit-tests this key's row siblings by their actual on-screen
+            // bounds (a little vertical slop added, since a real finger
+            // drifts above/below the row while sliding sideways) — every
+            // sibling in an English row is one of these tagged keys, so
+            // functional keys (shift/backspace, tag == null) are simply
+            // never matched and the original key stays tracked.
+            fun findTrackTargetAt(rawX: Float, rawY: Float): View {
+                val row = parent as? ViewGroup ?: return this
+                for (index in 0 until row.childCount) {
+                    val sibling = row.getChildAt(index)
+                    if (sibling.tag !is String) continue
+                    val loc = IntArray(2)
+                    sibling.getLocationOnScreen(loc)
+                    if (rawX >= loc[0] && rawX < loc[0] + sibling.width &&
+                        rawY >= loc[1] - dp(24) && rawY < loc[1] + sibling.height + dp(24)
+                    ) {
+                        return sibling
+                    }
                 }
+                return trackedView
+            }
+
+            setOnTouchListener { view, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        trackedView = view
+                        view.animate().scaleX(0.97f).scaleY(0.97f).translationZ(dp(3).toFloat()).alpha(0.90f).setDuration(65L).start()
+                        performKeyHaptic()
+                        showBubbleFor(view)
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val target = findTrackTargetAt(event.rawX, event.rawY)
+                        if (target !== trackedView) trackedView = target
+                        showBubbleFor(trackedView)
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        popup?.dismiss()
+                        view.animate().scaleX(1f).scaleY(1f).translationZ(0f).alpha(1f).setDuration(90L).start()
+                        commitEnglishChar(charFor(trackedView))
+                    }
+                    MotionEvent.ACTION_CANCEL -> {
+                        popup?.dismiss()
+                        view.animate().scaleX(1f).scaleY(1f).translationZ(0f).alpha(1f).setDuration(90L).start()
+                    }
+                }
+                true
+            }
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight).apply {
+                setMargins(dp(3), dp(3), dp(3), dp(3))
             }
         }
+    }
+
+    private fun commitEnglishChar(char: String) {
+        if (char.isEmpty()) return
+        currentInputConnection?.commitText(char, 1)
+        if (char.length == 1 && char[0].isLetter()) {
+            englishComposingWord.append(char.lowercase())
+            updateEnglishCandidates()
+        } else {
+            // Digits/punctuation end whatever word was being tracked, same
+            // as space/return already do — "it's" typed via the symbols
+            // page still finalizes cleanly, just with no candidate query
+            // benefit for that particular boundary.
+            finalizeEnglishComposingWord()
+        }
+        if (shiftState == ShiftState.SHIFT_ONCE) {
+            shiftState = ShiftState.OFF
+            refreshInputView()
+        }
+    }
+
+    /** Ends the current word: records it for user-frequency learning (if long enough to be a real word) and clears the tracking buffer. */
+    private fun finalizeEnglishComposingWord() {
+        if (englishComposingWord.isNotEmpty()) {
+            val word = englishComposingWord.toString()
+            if (englishSuggestionsEnabled() && word.length >= 2) {
+                englishCandidateProvider.recordCommit(word)
+            }
+            englishComposingWord.clear()
+        }
+        updateEnglishCandidates()
+    }
+
+    private fun englishSuggestionsEnabled(): Boolean =
+        getSharedPreferences("openless_ime_ui", MODE_PRIVATE).getBoolean("english_suggestions_enabled", true)
+
+    /**
+     * Same presentation as the stroke panel's own candidate row: a
+     * HorizontalScrollView (so as many words as actually exist can be
+     * scrolled through, not a fixed 3-slot row) with the same
+     * touch-intercept override and the same overflow-triggered "▼ show
+     * more" button opening showCandidateOverlay() — the exact mechanism
+     * and candidateItemView() styling the stroke panel itself uses, reused
+     * as-is rather than a parallel implementation.
+     */
+    private fun buildEnglishCandidateBar(): View {
+        // Outer vertical wrapper — divider, the actual bar, divider — so
+        // hiding it (see updateEnglishCandidates()) when suggestions are
+        // off takes both border lines with it instead of leaving two empty
+        // lines with nothing between them.
+        val wrapper = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        englishCandidateBarContainer = wrapper
+        wrapper.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
+        val container = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
+        wrapper.addView(container, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36)))
+        wrapper.addView(
+            buildDivider(),
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply { bottomMargin = dp(2) },
+        )
+        val scroll = object : android.widget.HorizontalScrollView(this) {
+            override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+                if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                }
+                return super.onInterceptTouchEvent(ev)
+            }
+        }.apply {
+            isHorizontalScrollBarEnabled = false
+            isFillViewport = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
+        val row = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
+        englishCandidateRow = row
+        scroll.addView(row, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        container.addView(scroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        val expandButton = StrokeActionView(
+            this,
+            "triangle-down",
+            iconColor = tone(Color.rgb(180, 180, 180), Color.rgb(130, 130, 135)),
+        ).apply {
+            contentDescription = ui("展开更多候选", "Show more candidates")
+            visibility = View.GONE
+            setOnClickListener { showCandidateOverlay(this) }
+        }
+        englishExpandCandidatesButton = expandButton
+        container.addView(expandButton, LinearLayout.LayoutParams(dp(28), ViewGroup.LayoutParams.MATCH_PARENT))
+        // Same idea as the stroke candidate row's own listener: only shown
+        // once the candidates actually overflow the visible scroll width.
+        scroll.viewTreeObserver.addOnGlobalLayoutListener {
+            expandButton.visibility = if (row.width > scroll.width) View.VISIBLE else View.GONE
+        }
+        return wrapper
+    }
+
+    /**
+     * Re-queries EnglishCandidateProvider for the current englishComposingWord
+     * prefix (or clears the bar if suggestions are off / nothing is being
+     * typed) — called after every letter, backspace, and word boundary.
+     * englishCandidateQueryEpoch discards a stale async result that comes
+     * back after a faster subsequent keystroke already moved the prefix on.
+     */
+    private fun updateEnglishCandidates() {
+        if (englishCandidateRow == null) return
+        if (!englishSuggestionsEnabled()) {
+            englishCandidateBarContainer?.visibility = View.GONE
+            return
+        }
+        englishCandidateBarContainer?.visibility = View.VISIBLE
+        val prefix = englishComposingWord.toString()
+        if (prefix.isEmpty()) {
+            renderEnglishCandidates(emptyList())
+            return
+        }
+        val epoch = ++englishCandidateQueryEpoch
+        englishCandidateProvider.queryTopN(prefix, ENGLISH_CANDIDATE_QUERY_LIMIT) { results ->
+            if (epoch == englishCandidateQueryEpoch) renderEnglishCandidates(results)
+        }
+    }
+
+    private fun renderEnglishCandidates(words: List<String>) {
+        val row = englishCandidateRow ?: return
+        row.removeAllViews()
+        val overlayEntries = mutableListOf<Pair<String, () -> Unit>>()
+        words.forEachIndexed { index, word ->
+            row.addView(
+                candidateItemView(word, isFirst = index == 0) { selectEnglishCandidate(word) },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT),
+            )
+            overlayEntries.add(word to { selectEnglishCandidate(word) })
+        }
+        // Shared with the stroke panel's own candidate row (only one of the
+        // two is ever visible at a time) — see showCandidateOverlay().
+        candidateOverlayEntries = overlayEntries
+        if (words.isEmpty()) englishExpandCandidatesButton?.visibility = View.GONE
+    }
+
+    /**
+     * Tapping a candidate replaces the just-typed prefix with the full word
+     * plus a trailing space. Verifies the actual field content matches
+     * englishComposingWord (trying progressively shorter suffixes, same
+     * defensive technique as invalidateDictationResultIfTextChanged())
+     * before deleting, rather than trusting the buffer's length blindly —
+     * without this, any drift between the two left the old prefix letters
+     * sitting in front of the inserted word instead of being replaced by it.
+     */
+    private fun selectEnglishCandidate(word: String) {
+        val connection = currentInputConnection ?: return
+        val typed = englishComposingWord.toString()
+        for (length in typed.length downTo 1) {
+            val actual = connection.getTextBeforeCursor(length, 0)?.toString()
+            if (actual != null && actual.equals(typed.takeLast(length), ignoreCase = true)) {
+                connection.deleteSurroundingText(length, 0)
+                break
+            }
+        }
+        connection.commitText("$word ", 1)
+        englishCandidateProvider.recordCommit(word)
+        englishComposingWord.clear()
+        updateEnglishCandidates()
+        performKeyHaptic()
     }
 
     /**
@@ -2372,6 +2707,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         strokeNumberMode = false
         numberSymbolMode = false
         symbolPageIndex = 0
+        englishLayer = EnglishLayer.LETTERS
+        englishComposingWord.clear()
         startRuntimeService()
         sessionEpoch++
         confirmedText = ""
@@ -3264,7 +3601,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // the device instead of feeling different on a small vs. large
         // screen. Computed against `width` at commit time (onTouchEvent),
         // not here at construction, since the view isn't laid out yet.
-        private val commitThresholdFraction = 0.7f
+        private val commitThresholdFraction = 1f / 3f
 
         init {
             excludeFromSystemGestures(this)
@@ -3734,6 +4071,71 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * midpoint of the view, which lands between the two centered lines of
      * text closely enough without measuring actual text layout bounds.
      */
+    /**
+     * The English keyboard's key-press preview bubble — a rounded rect
+     * showing the character about to be committed, with a downward-pointing
+     * arrow whose tip lands at the bubble's horizontal center (positioned
+     * over the pressed key by the caller). Plain Canvas drawing, matching
+     * every other custom key glyph in this file (ShiftKeyView,
+     * ActionSymbolView, etc.) — no new dependency, no separate heavyweight
+     * window beyond the single PopupWindow instance the caller already uses
+     * for the existing swipe-preview mechanic elsewhere in this file.
+     */
+    private class KeyPreviewBubbleView(
+        context: android.content.Context,
+        darkTheme: Boolean,
+    ) : View(context) {
+        var label: String = ""
+            set(value) {
+                field = value
+                invalidate()
+            }
+        private val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = if (darkTheme) Color.rgb(120, 120, 126) else Color.WHITE
+        }
+        private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+            color = if (darkTheme) Color.rgb(150, 150, 156) else Color.rgb(206, 206, 210)
+        }
+        // Same red as the stroke panel's own action rail (←/↵/清除/123
+        // keys), unconditional of theme there too — see buildStrokeView().
+        private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(153, 26, 40)
+            textAlign = Paint.Align.CENTER
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+        private val outline = Path()
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val w = width.toFloat()
+            val h = height.toFloat()
+            if (w <= 0f || h <= 0f) return
+            val arrowHeight = h * ARROW_HEIGHT_FRACTION
+            val bodyBottom = h - arrowHeight
+            val radius = bodyBottom * 0.3f
+            val cx = w / 2f
+            val arrowHalfWidth = w * 0.14f
+            outline.reset()
+            outline.addRoundRect(0f, 0f, w, bodyBottom, radius, radius, Path.Direction.CW)
+            outline.moveTo(cx - arrowHalfWidth, bodyBottom - 1f)
+            outline.lineTo(cx, h)
+            outline.lineTo(cx + arrowHalfWidth, bodyBottom - 1f)
+            outline.close()
+            canvas.drawPath(outline, bodyPaint)
+            canvas.drawPath(outline, borderPaint)
+            textPaint.textSize = bodyBottom * 0.55f
+            val metrics = textPaint.fontMetrics
+            val textY = bodyBottom / 2f - (metrics.ascent + metrics.descent) / 2f
+            canvas.drawText(label, cx, textY, textPaint)
+        }
+
+        private companion object {
+            const val ARROW_HEIGHT_FRACTION = 0.2f
+        }
+    }
+
     private class MidDividerTextView(
         context: android.content.Context,
         private val dividerColor: Int,
@@ -4065,6 +4467,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         private const val SILENCE_LEVEL_THRESHOLD = 0.02f
         private const val SILENCE_CHECK_DELAY_MS = 3000L
         private const val BACKEND_HEARTBEAT_INTERVAL_MS = 6000L
+        // Not a hard "show exactly N" cap — the candidate bar is a
+        // HorizontalScrollView (see buildEnglishCandidateBar()), so this
+        // just bounds how many the provider bothers ranking/returning per
+        // keystroke; comfortably more than can fit on screen at once so
+        // scrolling actually reveals more real options.
+        private const val ENGLISH_CANDIDATE_QUERY_LIMIT = 10
         // Same hue family as OpenLessOverlayService's OverlayVisualState
         // (recording/processing), plus a light-green "ready" and an amber
         // "link issue" that overlay doesn't have.

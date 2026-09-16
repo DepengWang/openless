@@ -61,6 +61,8 @@ const KOTLIN_FILES = [
   'StrokeInput.kt',
   'StrokePhraseRepository.kt',
   'StrokeUserFrequency.kt',
+  'EnglishCandidateProvider.kt',
+  'EnglishUserFrequency.kt',
   'OpenLessRuntimeService.kt',
   'OpenLessBackendWarmupActivity.kt',
   'OpenLessClipboardHistory.kt',
