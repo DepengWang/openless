@@ -80,6 +80,27 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // audio link is probably broken upstream (muted mic, dead capture
     // session, etc.) even though the UI otherwise looks like it's recording.
     private var voiceLinkWarning: TextView? = null
+    // Small always-on status dot next to the Logo (every panel's header
+    // rebuilds this via buildBrandView()) — a glance-able "is the backend
+    // voice link actually alive right now" signal, for the symptom where
+    // tapping the mic silently did nothing (no waveform movement) because
+    // the link had quietly dropped, then recovered on its own moments
+    // later. Reassigned on every panel rebuild, same pattern as
+    // voiceButton/status below.
+    private var backendLinkIndicator: View? = null
+    private var backendLinkPulseAnimator: android.animation.ObjectAnimator? = null
+    // Updated only by the heartbeat check (see startBackendHeartbeat()),
+    // not by the normal recording/processing/done states — those already
+    // take priority in updateBackendLinkIndicator(). False means the most
+    // recent heartbeat found isBackendReady() false.
+    private var backendLinkHealthy = true
+    private val backendHeartbeatHandler = Handler(Looper.getMainLooper())
+    private val backendHeartbeatRunnable = object : Runnable {
+        override fun run() {
+            runBackendHeartbeatCheck()
+            backendHeartbeatHandler.postDelayed(this, BACKEND_HEARTBEAT_INTERVAL_MS)
+        }
+    }
     private var recordingStartedAtMs = 0L
     private var maxObservedLevelThisSession = 0f
     // The exact text this dictation session committed, so the undo/redo
@@ -324,6 +345,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // first stroke key does not pay the asset parsing cost.
         strokeRepository.preloadAsync()
         clipboardManager.addPrimaryClipChangedListener(clipboardHistoryListener)
+        backendHeartbeatHandler.post(backendHeartbeatRunnable)
     }
 
     override fun onDestroy() {
@@ -336,6 +358,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         if (OpenLessOverlayBridge.imeTextListener != null) {
             OpenLessOverlayBridge.imeTextListener = null
         }
+        backendHeartbeatHandler.removeCallbacks(backendHeartbeatRunnable)
+        backendLinkPulseAnimator?.cancel()
         clipboardManager.removePrimaryClipChangedListener(clipboardHistoryListener)
         stopRuntimeService()
         strokeRepository.shutdown()
@@ -560,22 +584,33 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     /**
-     * Same as refreshInputView(), but slides the freshly built panel in from
-     * the side matching [slideDirection] (+1 = from the right, -1 = from the
-     * left) — used for swipe-triggered mode switches so the transition
-     * reads as a continuation of the finger's drag, not an instant swap.
-     * The starting offset uses the screen width rather than the new view's
-     * own (not yet measured at this point) width.
+     * Same as refreshInputView(), but slides the freshly built panel's
+     * content in from the side matching [slideDirection] (+1 = from the
+     * right, -1 = from the left) — used for swipe-triggered mode switches
+     * and toggle-segment taps so the transition reads as a continuation of
+     * the gesture, not an instant swap. Only the content BELOW the header
+     * slides; the header itself (every panel builder addView()'s it first,
+     * so it's always childAt(0) — Logo, mode toggle, backend-link
+     * indicator) stays anchored in place across the transition instead of
+     * sliding off and back with the rest, which previously read as the
+     * Logo "jumping" on every switch. The starting offset uses the screen
+     * width rather than each child's own (not yet measured at this point)
+     * width.
      */
     private fun refreshInputView(slideDirection: Int) {
         val newView = onCreateInputView()
         setInputView(newView)
-        newView.translationX = resources.displayMetrics.widthPixels.toFloat() * slideDirection
-        newView.animate()
-            .translationX(0f)
-            .setDuration(180L)
-            .setInterpolator(android.view.animation.DecelerateInterpolator())
-            .start()
+        val offset = resources.displayMetrics.widthPixels.toFloat() * slideDirection
+        val container = newView as? ViewGroup ?: return
+        for (index in 1 until container.childCount) {
+            val child = container.getChildAt(index)
+            child.translationX = offset
+            child.animate()
+                .translationX(0f)
+                .setDuration(180L)
+                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                .start()
+        }
     }
 
     /**
@@ -718,18 +753,36 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
     private fun buildDivider(): View = View(this).apply { setBackgroundColor(tone(Color.rgb(68, 68, 68), Color.rgb(215, 215, 218))) }
 
-    private fun buildModeToggle(): View = ModeToggle(this, inputMode, isDarkTheme) { selected -> selectInputMode(selected) }
+    // Tapping a toggle segment now slides the panel the same way a
+    // left/right swipe does (same refreshInputView(slideDirection)
+    // mechanics) — direction follows the segments' own left-to-right
+    // InputMode.entries order (see ModeToggle.onDraw()), so tapping a
+    // segment to the right slides in from the right, matching what a
+    // swipe in that direction would already do. Tapping the
+    // already-selected segment has no direction to slide from.
+    private fun buildModeToggle(): View = ModeToggle(this, inputMode, isDarkTheme) { selected ->
+        val direction = when {
+            selected.ordinal > inputMode.ordinal -> 1
+            selected.ordinal < inputMode.ordinal -> -1
+            else -> null
+        }
+        selectInputMode(selected, slideDirection = direction)
+    }
 
     /**
      * White-on-transparent wordmark used in every panel header, replacing
-     * the old text label. Wrapped in a FrameLayout so it can be rendered at
-     * a fixed half-size intrinsic box (start-aligned, vertically centered)
-     * regardless of how tall the header row around it is — the existing
-     * call sites all pass their own LinearLayout.LayoutParams for that row.
+     * the old text label, plus the backend-link status dot right after it.
+     * A plain horizontal LinearLayout (not a FrameLayout) so the dot just
+     * lands after the logo/text in sequence with a fixed gap, regardless of
+     * which of the two logo/text branches below actually renders — the
+     * existing call sites all pass their own LinearLayout.LayoutParams for
+     * this whole row.
      */
     private fun buildBrandView(): View {
         val bitmap = brandLogoBitmap
-        val wrapper = FrameLayout(this).apply {
+        val wrapper = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
             isClickable = true
             contentDescription = ui("打开 OpenLess 设置", "Open OpenLess settings")
             setOnClickListener { openSettings() }
@@ -757,19 +810,45 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 if (!isDarkTheme) {
                     colorFilter = android.graphics.PorterDuffColorFilter(Color.rgb(30, 30, 34), android.graphics.PorterDuff.Mode.SRC_IN)
                 }
-            }, FrameLayout.LayoutParams(widthPx, heightPx, android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL))
+            }, LinearLayout.LayoutParams(widthPx, heightPx))
         } else {
             wrapper.addView(TextView(this).apply {
                 text = "OpenLess"
                 textSize = 18f
                 setTypeface(typeface, android.graphics.Typeface.BOLD)
                 setTextColor(tone(Color.WHITE, Color.rgb(30, 30, 34)))
-            }, FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL,
-            ))
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
+        // Status dot: see backendLinkIndicator's field comment. Reassigned
+        // here on every panel rebuild, then immediately colored so it never
+        // shows a stale state (e.g. still green right after a rebuild that
+        // happened while actually recording). Voice-panel only — the other
+        // panels (stroke/clipboard/English) still rebuild this same view
+        // (so the reference and its color stay valid for whenever the user
+        // switches back), just hidden via GONE.
+        backendLinkIndicator = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(LINK_COLOR_READY)
+            }
+            visibility = if (inputMode == InputMode.VOICE) View.VISIBLE else View.GONE
+        }
+        // Continuous breathing pulse so the dot reads as "alive" rather
+        // than a static badge — cancels whatever animator was running on
+        // the previous panel's now-discarded indicator first, since each
+        // rebuild creates a brand new View instance.
+        backendLinkPulseAnimator?.cancel()
+        backendLinkPulseAnimator = android.animation.ObjectAnimator.ofFloat(backendLinkIndicator, View.ALPHA, 1f, 0.35f).apply {
+            duration = 900L
+            repeatMode = android.animation.ValueAnimator.REVERSE
+            repeatCount = android.animation.ValueAnimator.INFINITE
+            start()
+        }
+        wrapper.addView(
+            backendLinkIndicator,
+            LinearLayout.LayoutParams(dp(12), dp(12)).apply { marginStart = dp(5) },
+        )
+        updateBackendLinkIndicator()
         return wrapper
     }
 
@@ -2470,6 +2549,49 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         false
     }
 
+    /**
+     * Runs every BACKEND_HEARTBEAT_INTERVAL_MS for the service's whole
+     * lifetime (started in onCreate(), stopped in onDestroy()) — not just
+     * while actively recording — so backendLinkIndicator can catch the link
+     * having quietly dropped *before* the user taps the mic and gets no
+     * waveform, instead of only reacting after a failed tap (see "mictap").
+     * On a bad reading it also proactively calls ensureBackendReady() the
+     * same way a failed mic tap already does, so the self-recovery this
+     * symptom relies on gets a head start instead of waiting for the next
+     * tap.
+     */
+    private fun runBackendHeartbeatCheck() {
+        val ready = isBackendReady()
+        backendLinkHealthy = ready
+        if (!ready) {
+            OpenLessProcessRestartStats(this, "heartbeat").recordStart()
+            ensureBackendReady()
+        }
+        if (!recording && !processing) {
+            updateBackendLinkIndicator()
+        }
+    }
+
+    /**
+     * Ready/recording/processing take priority (mirrors the overlay's own
+     * state machine) — the heartbeat's own reading (backendLinkHealthy)
+     * only shows through while otherwise idle, as a distinct color rather
+     * than silently agreeing with "ready". Not gated on an actual
+     * connectivity check (that would need a new ACCESS_NETWORK_STATE
+     * permission the manifest doesn't declare yet): isBackendReady()
+     * false is already the same signal "mictap" reacts to, and is directly
+     * what the user described as the link being "disconnected".
+     */
+    private fun updateBackendLinkIndicator() {
+        val color = when {
+            recording -> LINK_COLOR_RECORDING
+            processing -> LINK_COLOR_PROCESSING
+            !backendLinkHealthy -> LINK_COLOR_ISSUE
+            else -> LINK_COLOR_READY
+        }
+        (backendLinkIndicator?.background as? GradientDrawable)?.setColor(color)
+    }
+
     // Guards scheduleBackendReadyRecheck() so a second mic tap while a
     // recheck loop is already running doesn't stack a duplicate one.
     private var awaitingBackendReadyRecheck = false
@@ -2632,6 +2754,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         voiceButton?.isRecording = recording
         voiceButton?.isProcessing = processing
         updateDictationResultControls()
+        updateBackendLinkIndicator()
     }
 
     private fun commitImeText(text: String) {
@@ -3132,13 +3255,16 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         private var interceptingVertical = false
         private var verticalDismissBlockedForGesture = false
         private val touchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop
-        // Small enough to still claim a horizontal drag early (so a vertical
-        // scroll elsewhere doesn't accidentally get treated as a mode swipe
-        // partway through), but committing the actual mode switch needs a
-        // much bigger, deliberate drag — the system touchSlop alone made
-        // this trigger on almost any stray sideways touch.
-        private val commitThreshold = (100 * resources.displayMetrics.density).toInt()
         private val dismissThreshold = (120 * resources.displayMetrics.density).toInt()
+        // Committing an actual mode switch needs a much bigger, deliberate
+        // drag than the touchSlop-based early claim above (which only
+        // exists so a vertical scroll elsewhere doesn't get mistaken for a
+        // mode swipe partway through) — a fraction of the panel's own width
+        // rather than a fixed dp figure, so the required drag scales with
+        // the device instead of feeling different on a small vs. large
+        // screen. Computed against `width` at commit time (onTouchEvent),
+        // not here at construction, since the view isn't laid out yet.
+        private val commitThresholdFraction = 0.7f
 
         init {
             excludeFromSystemGestures(this)
@@ -3205,7 +3331,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 val dy = event.y - startY
                 if (interceptingVertical && dy > dismissThreshold) {
                     post { (context as? OpenLessImeService)?.hideKeyboardPanel() }
-                } else if (kotlin.math.abs(dx) > commitThreshold) {
+                } else if (kotlin.math.abs(dx) > width * commitThresholdFraction) {
                     // Swiping left (finger moves toward the start, dx < 0)
                     // steps toward Voice; swiping right steps toward
                     // English. (This is inverted from the raw dx sign — on-
@@ -3938,6 +4064,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         private const val MAX_ASSOCIATION_CONTEXT = 8
         private const val SILENCE_LEVEL_THRESHOLD = 0.02f
         private const val SILENCE_CHECK_DELAY_MS = 3000L
+        private const val BACKEND_HEARTBEAT_INTERVAL_MS = 6000L
+        // Same hue family as OpenLessOverlayService's OverlayVisualState
+        // (recording/processing), plus a light-green "ready" and an amber
+        // "link issue" that overlay doesn't have.
+        private val LINK_COLOR_READY = Color.rgb(134, 239, 172)
+        private val LINK_COLOR_RECORDING = Color.rgb(244, 63, 94)
+        private val LINK_COLOR_PROCESSING = Color.rgb(56, 189, 248)
+        private val LINK_COLOR_ISSUE = Color.rgb(250, 204, 21)
 
         /**
          * Opts a view out of Android's system gesture navigation (back/home

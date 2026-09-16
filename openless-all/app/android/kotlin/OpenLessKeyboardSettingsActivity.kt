@@ -184,6 +184,7 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             Triple("actkill", "actkill", "界面被系统回收"),
             Triple("rtexit", "rtexit", "后端异常退出"),
             Triple("unclean", "unclean", "上次异常退出"),
+            Triple("heartbeat", "heartbeat", "心跳自愈"),
         )
         val monospace = android.graphics.Typeface.MONOSPACE
         for ((key, label, gloss) in restartCategories) {
