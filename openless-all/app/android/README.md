@@ -76,6 +76,9 @@ Manifest 合并脚本：
 | 撤销/重做/编辑控件退格保留 | `OpenLessImeService` 通过输入法自己的退格键（含全选后退格，统一走 `deleteBackward()`）删空听写内容后，不再让 `lastDictationText` 失效——新增 `selfInitiatedTextChange` 标记，由 `deleteBackward()` 置位、`invalidateDictationResultIfTextChanged()`（`onUpdateSelection()` 触发）消费并跳过失效判断；只有非退格触发的清空（如宿主 App 发送后自动清空）才会让控件消失；另外开始新一轮听写（非编辑/纠正分支）时主动隐藏 |
 | 编辑弹窗 checkbox 调整 | "同时加入纠错规则"checkbox 从紧跟文字预览下方挪到面板下部（贴底部分隔线上方），字体和勾选框都放大 1.5 倍；全选/未选中（回退到编辑整句）时默认不勾选，只有选中部分内容时才默认勾选（`editingOriginalText != lastDictationText` 判断） |
 | 安装时间显示 | `OpenLessApplication.resetRestartStatsOnVersionBump()` 每次清零重启计数时，同时把 `System.currentTimeMillis()` 写入 `openless_runtime` 的 `build_first_seen_wall_time`；键盘设置页版本号行后面追加"安装于 yyyy-MM-dd HH:mm"，方便截图时知道这些计数是从什么时候开始累计的 |
+| 后端语音链路指示灯 + 心跳自愈 | Logo 右侧新增 12dp 圆形指示灯（`backendLinkIndicator`，仅语音面板显示，带呼吸闪烁），就绪=淡绿、录音中=红、整理中=蓝、心跳检测到未就绪=黄；`runBackendHeartbeatCheck()` 每 6 秒跑一次 `isBackendReady()`，未就绪时主动 `ensureBackendReady()` 并记一次 `heartbeat` 重启统计——解决"点麦克风没反应、录音指示没有波动，过一会又自动恢复"这种静默断链，让用户不用先点一次才能发现链路已经断了 |
+| 面板切换动画：头部固定 | `refreshInputView(slideDirection)` 原来把整个面板（含 Logo 行）一起滑入，现在改成只对 `childAt(1..)`（头部之后的内容）做滑动动画，`childAt(0)`（每个面板 builder 都第一个 addView 的头部行）全程不动，避免 Logo 跟着"跳一下"；四段模式开关点击也接入了同一套动画（按 `InputMode.entries` 顺序算左右方向），不再只有划动切换才有动画 |
+| 划动切换阈值改为宽度百分比 | `SwipeModeContainer` 的 `commitThreshold` 从固定 100dp 改成 `width * 0.7f`（70% 面板宽度），随屏幕尺寸自适应，不再是写死的 dp 值 |
 
 开发流程：每次改动后用 `npm run copy:android-scaffolding` 同步 → `gradlew app:assembleArm64Debug -x app:rustBuildArm64Debug`（Kotlin-only 改动跳过 Rust 重编译）→ `adb install -r` 装机 → 通过 `adb exec-out screencap` 或用户反馈截图核对真机效果；涉及尺寸争议时用 `adb shell wm density` + 实测 px 反推 dp，避免凭空猜测布局问题。
 

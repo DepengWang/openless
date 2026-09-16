@@ -362,6 +362,7 @@ class OpenLessApplication : Application() {
             "actkill",
             "rtexit",
             "unclean",
+            "heartbeat",
         )
     }
 }
