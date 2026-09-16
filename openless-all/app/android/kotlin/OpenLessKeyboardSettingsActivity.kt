@@ -109,6 +109,29 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             },
         )
 
+        content.addView(sectionLabel(ui("英文键盘", "English keyboard")))
+        val englishSuggestionsRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        englishSuggestionsRow.addView(
+            TextView(this).apply {
+                text = ui("英文单词提示", "English word suggestions")
+                textSize = 15f
+                setTextColor(tone(Color.rgb(220, 220, 220), Color.rgb(40, 40, 44)))
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        englishSuggestionsRow.addView(
+            Switch(this).apply {
+                isChecked = prefs.getBoolean("english_suggestions_enabled", true)
+                setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean("english_suggestions_enabled", checked).apply() }
+            },
+        )
+        content.addView(
+            englishSuggestionsRow,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(14)
+            },
+        )
+
         // Amplitude's 255 ceiling is Android's own VibrationEffect max, not a
         // choice made here — the hardware/API can't go any stronger than
         // that regardless of what this slider allows. Duration's ceiling

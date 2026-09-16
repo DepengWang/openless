@@ -78,7 +78,8 @@ Manifest 合并脚本：
 | 安装时间显示 | `OpenLessApplication.resetRestartStatsOnVersionBump()` 每次清零重启计数时，同时把 `System.currentTimeMillis()` 写入 `openless_runtime` 的 `build_first_seen_wall_time`；键盘设置页版本号行后面追加"安装于 yyyy-MM-dd HH:mm"，方便截图时知道这些计数是从什么时候开始累计的 |
 | 后端语音链路指示灯 + 心跳自愈 | Logo 右侧新增 12dp 圆形指示灯（`backendLinkIndicator`，仅语音面板显示，带呼吸闪烁），就绪=淡绿、录音中=红、整理中=蓝、心跳检测到未就绪=黄；`runBackendHeartbeatCheck()` 每 6 秒跑一次 `isBackendReady()`，未就绪时主动 `ensureBackendReady()` 并记一次 `heartbeat` 重启统计——解决"点麦克风没反应、录音指示没有波动，过一会又自动恢复"这种静默断链，让用户不用先点一次才能发现链路已经断了 |
 | 面板切换动画：头部固定 | `refreshInputView(slideDirection)` 原来把整个面板（含 Logo 行）一起滑入，现在改成只对 `childAt(1..)`（头部之后的内容）做滑动动画，`childAt(0)`（每个面板 builder 都第一个 addView 的头部行）全程不动，避免 Logo 跟着"跳一下"；四段模式开关点击也接入了同一套动画（按 `InputMode.entries` 顺序算左右方向），不再只有划动切换才有动画 |
-| 划动切换阈值改为宽度百分比 | `SwipeModeContainer` 的 `commitThreshold` 从固定 100dp 改成 `width * 0.7f`（70% 面板宽度），随屏幕尺寸自适应，不再是写死的 dp 值 |
+| 划动切换阈值改为宽度百分比 | `SwipeModeContainer` 的 `commitThreshold` 从固定 dp 改成面板宽度的固定比例（目前 1/3），随屏幕尺寸自适应，不再是写死的 dp 值 |
+| 英文键盘 iOS 17 布局 + 候选词 | `buildKeyboardView()` 重写为 `EnglishLayer{LETTERS,NUMBERS,SYMBOLS}` 三层结构，键位排列/切换逻辑对齐 iOS 17 的 ABC/123/#+=；新增按键按下预览气泡（`KeyPreviewBubbleView`，Canvas 绘制 + `PopupWindow.showAsDropDown()` 锚点定位，支持拖动到相邻键改选）；新增 `EnglishCandidateProvider`/`EnglishUserFrequency`（架构照抄 `StrokePhraseRepository`/`StrokeUserFrequency`：前缀 Trie + 后台线程 + LRU 缓存 + 用户词频衰减），候选栏复用笔画面板的 `candidateItemView()`/`HorizontalScrollView`/展开按钮/`showCandidateOverlay()`，视觉与交互完全一致；基础词典来自 `hermitdave/FrequencyWords`（MIT License，OpenSubtitles-2018 语料，见 `english-frequency.LICENSE.txt`），构建脚本 `scripts/generate-english-dictionary.mjs` 生成 20000 词、约 250KB 的 `english-frequency.tsv`；设置页新增"英文单词提示"开关（`english_suggestions_enabled`）。未改动任何其它输入模式的按键组件或输入连接协议 |
 
 开发流程：每次改动后用 `npm run copy:android-scaffolding` 同步 → `gradlew app:assembleArm64Debug -x app:rustBuildArm64Debug`（Kotlin-only 改动跳过 Rust 重编译）→ `adb install -r` 装机 → 通过 `adb exec-out screencap` 或用户反馈截图核对真机效果；涉及尺寸争议时用 `adb shell wm density` + 实测 px 反推 dp，避免凭空猜测布局问题。
 
