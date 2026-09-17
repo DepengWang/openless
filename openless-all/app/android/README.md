@@ -63,7 +63,7 @@ Manifest 合并脚本：
 | 键盘设置 | 长按 Logo 打开全屏原生设置页 `OpenLessKeyboardSettingsActivity`（先实现震动强度/时长，后续可继续加项） |
 | 语言同步修复 | `OpenLessApplication` 原来按精确类型判断 `MainActivity`，实际设置页跑在子类 `OpenLessBackendWarmupActivity` 上从未触发，改成 `is` 判断 |
 | 剪贴板 | 新增历史持久化 `OpenLessClipboardHistory.kt`，按钮配色与笔画面板统一 |
-| 语音纠错联动 | `native_bridge.rs` 新增 `nativeAddCorrectionRule`，手动改过的听写结果自动写入纠错词典 |
+| 语音纠错联动（已改为写入词典，见下方新行） | `native_bridge.rs` 新增 `nativeAddCorrectionRule`，手动改过的听写结果自动写入纠错词典——此后该入口已改为写入全局 Dictionary，纠错规则改为纯手工维护 |
 | Activity Context 生命周期 | JNI 侧改用显式 `GlobalRef` 注册表（`nativeRegisterActivityContext`/`nativeUnregisterActivityContext`），由 `OpenLessApplication` 的 `ActivityLifecycleCallbacks`（`is MainActivity` 匹配，覆盖子类 `OpenLessBackendWarmupActivity`）驱动注册/注销；之前先后用过 `ndk_context::android_context()`（Activity 重建后失效）和 `tao::main_android_context()`（仅追踪前台 Activity，后台时为空）都出过问题 |
 | 启动图标黑屏修复 | 直接点应用图标会启动裸 `MainActivity`，触发第二次、未被追踪的 Tauri host 初始化（WebView 拿不到内容）；改用 `merge-android-overlay-manifest.mjs` 把 LAUNCHER `intent-filter` 挪到 `OpenLessBackendWarmupActivity` 上解决 |
 | 构建版本追踪 | 新增 `OpenLessBuildInfo.VERSION`（每次调试构建手动 +0.01），键盘设置页底部显示；版本变化时 `OpenLessApplication.resetRestartStatsOnVersionBump()` 把全部重启计数清零，避免跨构建对比无意义的历史值 |
@@ -80,6 +80,7 @@ Manifest 合并脚本：
 | 面板切换动画：头部固定 | `refreshInputView(slideDirection)` 原来把整个面板（含 Logo 行）一起滑入，现在改成只对 `childAt(1..)`（头部之后的内容）做滑动动画，`childAt(0)`（每个面板 builder 都第一个 addView 的头部行）全程不动，避免 Logo 跟着"跳一下"；四段模式开关点击也接入了同一套动画（按 `InputMode.entries` 顺序算左右方向），不再只有划动切换才有动画 |
 | 划动切换阈值改为宽度百分比 | `SwipeModeContainer` 的 `commitThreshold` 从固定 dp 改成面板宽度的固定比例（目前 1/3），随屏幕尺寸自适应，不再是写死的 dp 值 |
 | 英文键盘 iOS 17 布局 + 候选词 | `buildKeyboardView()` 重写为 `EnglishLayer{LETTERS,NUMBERS,SYMBOLS}` 三层结构，键位排列/切换逻辑对齐 iOS 17 的 ABC/123/#+=；新增按键按下预览气泡（`KeyPreviewBubbleView`，Canvas 绘制 + `PopupWindow.showAsDropDown()` 锚点定位，支持拖动到相邻键改选）；新增 `EnglishCandidateProvider`/`EnglishUserFrequency`（架构照抄 `StrokePhraseRepository`/`StrokeUserFrequency`：前缀 Trie + 后台线程 + LRU 缓存 + 用户词频衰减），候选栏复用笔画面板的 `candidateItemView()`/`HorizontalScrollView`/展开按钮/`showCandidateOverlay()`，视觉与交互完全一致；基础词典来自 `hermitdave/FrequencyWords`（MIT License，OpenSubtitles-2018 语料，见 `english-frequency.LICENSE.txt`），构建脚本 `scripts/generate-english-dictionary.mjs` 生成 20000 词、约 250KB 的 `english-frequency.tsv`；设置页新增"英文单词提示"开关（`english_suggestions_enabled`）。未改动任何其它输入模式的按键组件或输入连接协议 |
+| 编辑/纠正结果改为写入全局词典，不再自动生成纠错规则 | 之前"编辑弹窗 checkbox"/剪贴板划动"加入纠错"两处入口，都是自动调用 `nativeAddCorrectionRule()` 往 `CorrectionRuleStore` 写一条 pattern→replacement 规则；现在改为调用新增的 `nativeAddVocabularyWord(phrase)`（`native_bridge.rs::spawn_add_vocabulary_word()`，走 `OpenLessBackend::add_vocabulary_if_absent()`，与桌面端 `add_vocab` 命令同一个全局 Dictionary 存储，用于提升 ASR/LLM 转换准确率），重复纠正同一个词不会堆积重复条目；纠错规则（`CorrectionRule`）今后改为纯手工维护，不再由这些 Android 入口自动生成。配套新增 `nativeVocabularyPhrases()`/`nativeRemoveVocabularyWord()`（对应旧的 `nativeCorrectionRulePatterns()`/`nativeRemoveCorrectionRule()`），剪贴板划动区的高亮判断和"加入/移出"文案随之改为"加入词典/移出词典"；`OpenLessImeService.kt` 内部字段 `addCorrectionRuleForEdit` 相应改名为 `addToDictionaryForEdit`，勾选框文案改为"同时加入词典（提升识别准确率）" |
 
 开发流程：每次改动后用 `npm run copy:android-scaffolding` 同步 → `gradlew app:assembleArm64Debug -x app:rustBuildArm64Debug`（Kotlin-only 改动跳过 Rust 重编译）→ `adb install -r` 装机 → 通过 `adb exec-out screencap` 或用户反馈截图核对真机效果；涉及尺寸争议时用 `adb shell wm density` + 实测 px 反推 dp，避免凭空猜测布局问题。
 

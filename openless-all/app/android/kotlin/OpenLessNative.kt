@@ -28,12 +28,23 @@ object OpenLessNative {
 
     /** Records a hand-corrected span from the IME's "edit result" flow into the shared correction dictionary. */
     @JvmStatic external fun nativeAddCorrectionRule(pattern: String, replacement: String)
+    // Adds a word/phrase straight to the global Dictionary (same store
+    // add_vocab exposes to the desktop UI) instead of a CorrectionRule —
+    // see native_bridge.rs's spawn_add_vocabulary_word() doc comment for
+    // why the IME's edit/correction flows moved to this.
+    @JvmStatic external fun nativeAddVocabularyWord(phrase: String)
 
     /** JSON array of every existing correction rule's pattern — lets the clipboard swipe-left gesture show "add" vs. "remove" before the drag finishes. */
     @JvmStatic external fun nativeCorrectionRulePatterns(): String
 
     /** Removes every correction rule whose pattern exactly matches — the clipboard swipe-left "remove" action. */
     @JvmStatic external fun nativeRemoveCorrectionRule(pattern: String)
+
+    /** JSON array of every existing Dictionary entry's phrase — same purpose as nativeCorrectionRulePatterns(), for the clipboard swipe-left zone now that adding writes to the Dictionary instead. */
+    @JvmStatic external fun nativeVocabularyPhrases(): String
+
+    /** Removes every Dictionary entry whose phrase exactly matches — the clipboard swipe-left "remove" action's counterpart to nativeAddVocabularyWord(). */
+    @JvmStatic external fun nativeRemoveVocabularyWord(phrase: String)
 
     /**
      * Registers this Activity as the one with_android_env() (every

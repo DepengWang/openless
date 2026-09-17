@@ -325,6 +325,30 @@ fn spawn_add_correction_rule(pattern: String, replacement: String) {
     });
 }
 
+/// Records a spoken correction as a global Dictionary entry instead of a
+/// CorrectionRule — the IME's "edit result"/clipboard-correction flows used
+/// to auto-generate a pattern->replacement rule from every edit; that's now
+/// hand-maintained only (desktop's Corrections settings page), and these
+/// flows just remember the corrected word/phrase itself, the same
+/// mechanism `add_vocab` (commands/dictionary.rs) exposes to the desktop
+/// Dictionary UI. `add_vocabulary_if_absent` skips silently if the phrase
+/// is already known, so repeatedly correcting the same word never piles up
+/// duplicate entries.
+fn spawn_add_vocabulary_word(phrase: String) {
+    let Some(backend) = CORE_BACKEND.get().cloned() else {
+        log::warn!("[android-native] core backend unavailable");
+        return;
+    };
+    if phrase.trim().is_empty() {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = backend.add_vocabulary_if_absent(phrase, None) {
+            log::warn!("[android-native] add_vocabulary_if_absent failed: {error}");
+        }
+    });
+}
+
 /// Every existing correction rule's pattern, so the clipboard swipe-left
 /// gesture can show "add" vs. "remove" before the user finishes the drag.
 /// Synchronous rather than spawned: list_correction_rules() is just a
@@ -372,6 +396,58 @@ fn spawn_remove_correction_rule(pattern: String) {
         for id in ids {
             if let Err(error) = backend.remove_correction_rule(&id) {
                 log::warn!("[android-native] remove_correction_rule failed: {error}");
+            }
+        }
+    });
+}
+
+/// Every existing Dictionary entry's phrase — same purpose as
+/// correction_rule_patterns_json() above, for the clipboard swipe-left
+/// zone's "add"/"remove" label and the row's "✎" marker, now that adding
+/// from the IME writes to the Dictionary instead of a CorrectionRule.
+fn vocabulary_phrases_json() -> String {
+    let Some(backend) = CORE_BACKEND.get() else {
+        return "[]".to_string();
+    };
+    match backend.list_vocabulary() {
+        Ok(entries) => {
+            let phrases: Vec<&str> = entries.iter().map(|entry| entry.phrase.as_str()).collect();
+            serde_json::to_string(&phrases).unwrap_or_else(|_| "[]".to_string())
+        }
+        Err(error) => {
+            log::warn!("[android-native] list_vocabulary failed: {error}");
+            "[]".to_string()
+        }
+    }
+}
+
+/// Removes every Dictionary entry whose phrase exactly matches — the
+/// clipboard swipe-left "remove" action's counterpart to
+/// spawn_add_vocabulary_word() above. Idempotent: no match is a silent
+/// no-op, same as remove_vocabulary(id) itself.
+fn spawn_remove_vocabulary_word(phrase: String) {
+    let Some(backend) = CORE_BACKEND.get().cloned() else {
+        log::warn!("[android-native] core backend unavailable");
+        return;
+    };
+    if phrase.is_empty() {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let ids: Vec<String> = match backend.list_vocabulary() {
+            Ok(entries) => entries
+                .into_iter()
+                .filter(|entry| entry.phrase == phrase)
+                .map(|entry| entry.id)
+                .collect(),
+            Err(error) => {
+                log::warn!("[android-native] list_vocabulary for remove failed: {error}");
+                return;
+            }
+        };
+        for id in ids {
+            if let Err(error) = backend.remove_vocabulary(&id) {
+                log::warn!("[android-native] remove_vocabulary failed: {error}");
             }
         }
     });
@@ -577,6 +653,26 @@ mod jni_exports {
     }
 
     #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeAddVocabularyWord(
+        env: *mut JNIEnv,
+        _class: JClass,
+        phrase: jstring,
+    ) {
+        let mut jni_env = match JniEnv::from_raw(env) {
+            Ok(env) => env,
+            Err(error) => {
+                log::warn!("[android-native] attach JNI env for add_vocabulary_word failed: {error}");
+                return;
+            }
+        };
+        let phrase_str: String = jni_env
+            .get_string(&JString::from_raw(phrase))
+            .map(|value| value.into())
+            .unwrap_or_default();
+        spawn_add_vocabulary_word(phrase_str);
+    }
+
+    #[no_mangle]
     pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeCorrectionRulePatterns(
         env: *mut JNIEnv,
         _class: JClass,
@@ -606,6 +702,38 @@ mod jni_exports {
             .map(|value| value.into())
             .unwrap_or_default();
         spawn_remove_correction_rule(pattern_str);
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeVocabularyPhrases(
+        env: *mut JNIEnv,
+        _class: JClass,
+    ) -> jstring {
+        let response = vocabulary_phrases_json();
+        match JniEnv::from_raw(env) {
+            Ok(mut env) => crate::android::jni::android::export_jstring(&mut env, &response),
+            Err(_) => std::ptr::null_mut(),
+        }
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeRemoveVocabularyWord(
+        env: *mut JNIEnv,
+        _class: JClass,
+        phrase: jstring,
+    ) {
+        let mut jni_env = match JniEnv::from_raw(env) {
+            Ok(env) => env,
+            Err(error) => {
+                log::warn!("[android-native] attach JNI env for remove_vocabulary_word failed: {error}");
+                return;
+            }
+        };
+        let phrase_str: String = jni_env
+            .get_string(&JString::from_raw(phrase))
+            .map(|value| value.into())
+            .unwrap_or_default();
+        spawn_remove_vocabulary_word(phrase_str);
     }
 
     #[no_mangle]
