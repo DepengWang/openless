@@ -152,19 +152,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // or (if nothing was selected) the whole last dictation result.
     private var editingOriginalText: String? = null
     private var editingReplacesWholeResult = false
-    // True only for the clipboard swipe-left "add correction" flow: the
-    // spoken result never touches currentInputConnection, it only becomes a
-    // correction rule. False for the normal "edit dictation result" flow.
-    private var editingForClipboardCorrection = false
-    // Whether finishEditWithSpokenReplacement() should record a correction
-    // rule at all. Defaults true (matches the original always-record
-    // behavior); the edit panel's checkbox lets the user opt out per-edit
-    // for edits that are just rewording, not an actual misrecognition worth
-    // remembering — otherwise every edit silently accumulates a rule, which
-    // was the reported problem (too many unwanted rules piling up). Always
-    // true and hidden for the clipboard-correction flow, where recording the
-    // rule is the entire point of the action.
-    private var addToDictionaryForEdit = true
+    // Whether finishEditWithSpokenReplacement() should write the spoken
+    // replacement to the global Dictionary. Defaults false — the edit
+    // panel's checkbox is an opt-in per-edit, not an opt-out, since most
+    // edits are just rewording rather than an actual new/misrecognized word
+    // worth remembering; ticking it is what makes the write happen at all.
+    private var addToDictionaryForEdit = false
     private var undoRedoButton: TextView? = null
     private var editResultButton: TextView? = null
     // The row holding undoRedoButton/editResultButton, toggled as a whole so
@@ -701,46 +694,38 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // pushing the divider + mic row down to the bottom of the panel.
         root.addView(View(this), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        // Hidden for the clipboard swipe-left flow, where adding to the
-        // dictionary is the entire point of the action, not an optional
-        // side effect of fixing dictated text in place. Shown for the
-        // normal edit flow so an edit that's just rewording (not an actual
-        // new/misrecognized word) doesn't silently pile up dictionary
-        // entries.
         // Placed low in the panel, just above the bottom divider — not
         // right under the text chip — and sized 1.5x (checkbox glyph and
         // label both) so it reads as a deliberate decision, not a small
         // afterthought easy to miss/mis-tap.
-        if (!editingForClipboardCorrection) {
-            val correctionToggleRow = LinearLayout(this).apply {
-                gravity = android.view.Gravity.CENTER_VERTICAL
-                isClickable = true
-                setOnClickListener {
-                    addToDictionaryForEdit = !addToDictionaryForEdit
-                    refreshInputView()
-                }
+        val correctionToggleRow = LinearLayout(this).apply {
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            isClickable = true
+            setOnClickListener {
+                addToDictionaryForEdit = !addToDictionaryForEdit
+                refreshInputView()
             }
-            correctionToggleRow.addView(
-                TextView(this).apply {
-                    text = if (addToDictionaryForEdit) "☑" else "☐"
-                    textSize = 24f
-                    setTextColor(if (addToDictionaryForEdit) strokeEncodeAccentColor else tone(Color.rgb(140, 140, 140), Color.rgb(150, 150, 154)))
-                },
-                LinearLayout.LayoutParams(dp(33), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(9) },
-            )
-            correctionToggleRow.addView(
-                TextView(this).apply {
-                    text = ui("同时加入词典（提升识别准确率）", "Also add to dictionary")
-                    textSize = 18f
-                    setTextColor(tone(Color.rgb(180, 180, 180), Color.rgb(120, 120, 125)))
-                },
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
-            )
-            root.addView(
-                correctionToggleRow,
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) },
-            )
         }
+        correctionToggleRow.addView(
+            TextView(this).apply {
+                text = if (addToDictionaryForEdit) "☑" else "☐"
+                textSize = 24f
+                setTextColor(if (addToDictionaryForEdit) strokeEncodeAccentColor else tone(Color.rgb(140, 140, 140), Color.rgb(150, 150, 154)))
+            },
+            LinearLayout.LayoutParams(dp(33), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(9) },
+        )
+        correctionToggleRow.addView(
+            TextView(this).apply {
+                text = ui("加入到字典中", "Add to dictionary")
+                textSize = 18f
+                setTextColor(tone(Color.rgb(180, 180, 180), Color.rgb(120, 120, 125)))
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        root.addView(
+            correctionToggleRow,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) },
+        )
 
         root.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
             bottomMargin = dp(10)
@@ -1741,19 +1726,21 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val pasteKey = quickActionLabel(ui("粘贴", "Paste"), {
             currentInputConnection?.performContextMenuAction(android.R.id.paste)
         }, 20f)
-        // Two lines ("History" / "Correct") since this button now opens both
+        // Two lines ("History" / "Dict") since this button now opens both
         // the clipboard history browser (tap) and the voice-correction flow
-        // for whatever's selected in the real input field (long-press).
+        // for whatever's selected in the real input field (long-press) —
+        // labeled "Dict" since the long-press flow writes to the global
+        // Dictionary now, not a correction rule.
         // quickActionLabel()->keyboardKey()'s own '\n' handling shrinks only
         // the label's first character (built for single-char rows like
         // "1\n!"), which would leave just one letter undersized here, so the
         // spanned text it sets is overwritten with a plain two-line string
         // right after construction.
-        val clipboardKey = quickActionLabel(ui("历史\n纠正", "History\nCorrect"), {
+        val clipboardKey = quickActionLabel(ui("历史\n字典", "History\nDict"), {
             clipboardHistoryMode = true
             refreshInputView()
         }, 17f, midDivider = true).apply {
-            text = ui("历史\n纠正", "History\nCorrect")
+            text = ui("历史\n字典", "History\nDict")
             setOnLongClickListener {
                 openSelectedTextCorrectionViaVoice()
                 true
@@ -1973,7 +1960,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                         OpenLessClipboardHistory.delete(this, entry.text)
                         refreshInputView()
                     },
-                    onAddCorrection = { openCorrectionRuleViaVoice(entry.text) },
+                    onAddCorrection = {
+                        runNativeAction("加入词典") { OpenLessNative.nativeAddVocabularyWord(entry.text) }
+                        refreshInputView()
+                    },
                     onRemoveCorrection = {
                         OpenLessNative.nativeRemoveVocabularyWord(entry.text)
                         refreshInputView()
@@ -2108,43 +2098,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     }
 
-    /**
-     * Clipboard swipe-left "add to dictionary" action, only reached when
-     * this text isn't already an entry (once it is, the same swipe instead
-     * removes it directly via onRemoveCorrection, no prompt). Reuses the
-     * dictation "edit result" mechanism's speak-to-replace mic
-     * (openEditDictationResult/finishEditWithSpokenReplacement) instead of
-     * any separate window.
-     *
-     * A dedicated Activity was tried for the "type the correct wording" step
-     * first. On a real device it reproduced a native crash: SIGSEGV in
-     * HWUI's RenderThread (WebViewFunctorManager::destroyFunctor, abort
-     * message "FORTIFY: pthread_mutex_lock called on a destroyed mutex"),
-     * whenever that Activity's window appeared while
-     * OpenLessBackendWarmupActivity's WebView-hosting window was mid
-     * teardown in the background — confirmed via on-device tombstones on two
-     * different phones, not timing-tunable away since Android decides when
-     * to reclaim a backgrounded WebView's hardware layer, not app code. This
-     * panel never opens a second window at all, so that whole crash class
-     * does not apply, and it reuses machinery already proven here for
-     * exactly this purpose (recording the spoken text as a Dictionary entry).
-     *
-     * editingReplacesWholeResult stays false and editingForClipboardCorrection
-     * is set so finishEditWithSpokenReplacement() skips touching
-     * currentInputConnection entirely — wrongText is an arbitrary clipboard
-     * entry, not necessarily anything currently focused in any app.
-     */
-    private fun openCorrectionRuleViaVoice(wrongText: String) {
-        editingOriginalText = wrongText
-        editingReplacesWholeResult = false
-        editingForClipboardCorrection = true
-        addToDictionaryForEdit = true
-        editingDictationResult = true
-        awaitingEditReplacement = true
-        refreshInputView()
-        toggleDictation()
-    }
-
     /** Commits the current character together with any segments already marked via 分词. */
     private fun commitStrokeCandidate(candidate: String) {
         // Picking anything other than the top-ranked result is a correction
@@ -2232,7 +2185,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // not red — pass the theme-appropriate color explicitly.
         graphicIconColor: Int? = null,
         // Draws a thin horizontal divider between the two lines of a
-        // two-line label (e.g. the clipboard panel's "History"/"Correct"
+        // two-line label (e.g. the clipboard panel's "History"/"Dict"
         // key, which does two unrelated things depending on tap vs.
         // long-press) — a plain '\n' alone read as one cramped label.
         midDivider: Boolean = false,
@@ -3200,15 +3153,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             editingOriginalText = whole
             editingReplacesWholeResult = true
         }
-        editingForClipboardCorrection = false
-        // Selecting the *whole* dictated span (either by not selecting
-        // anything at all — the fallback above — or by explicitly
-        // select-all-ing exactly that span) reads more like "redo this
-        // utterance" than "this specific word was wrong", so it starts
-        // unchecked; selecting only part of it starts checked, since that's
-        // the classic "fix this one word" correction. Either way the user
-        // can still flip the checkbox themselves before finishing.
-        addToDictionaryForEdit = editingOriginalText != lastDictationText
+        // Starts unchecked every time — adding to the Dictionary is an
+        // opt-in the user ticks deliberately, not a guess based on how much
+        // of the result was selected. The user can still flip the checkbox
+        // themselves before finishing.
+        addToDictionaryForEdit = false
         editingDictationResult = true
         awaitingEditReplacement = true
         refreshInputView()
@@ -3221,10 +3170,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     /**
      * Long-press "History"/"历史" in the clipboard panel: same mechanism as
      * openEditDictationResult()'s selected-text branch (replaces the
-     * selection in the real input field with the spoken correction, and
-     * records a correction rule) — but with no whole-last-result fallback.
-     * Without an actual selection there's nothing this gesture can
-     * reasonably act on, so it surfaces a hint instead of guessing.
+     * selection in the real input field with the spoken correction) — but
+     * with no whole-last-result fallback. Without an actual selection
+     * there's nothing this gesture can reasonably act on, so it surfaces a
+     * hint instead of guessing.
      */
     private fun openSelectedTextCorrectionViaVoice() {
         val selected = currentInputConnection?.getSelectedText(0)?.toString()?.takeIf { it.isNotEmpty() }
@@ -3234,8 +3183,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         editingOriginalText = selected
         editingReplacesWholeResult = false
-        editingForClipboardCorrection = false
-        addToDictionaryForEdit = true
+        addToDictionaryForEdit = false
         editingDictationResult = true
         awaitingEditReplacement = true
         refreshInputView()
@@ -3252,56 +3200,36 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         editingDictationResult = false
         awaitingEditReplacement = false
         editingOriginalText = null
-        editingForClipboardCorrection = false
         setState("done", "已上屏")
         refreshInputView()
     }
 
     /**
-     * Applies the freshly spoken replacement for editingOriginalText.
+     * Applies the freshly spoken replacement for editingOriginalText: swaps
+     * it into the input field (relying on InputConnection.commitText's
+     * standard "replace the active selection" behavior when there is a real
+     * OS selection, or an explicit delete+insert when we fell back to the
+     * whole last result).
      *
-     * Normal "edit dictation result" flow: swaps it into the input field
-     * (relying on InputConnection.commitText's standard "replace the active
-     * selection" behavior when there is a real OS selection, or an explicit
-     * delete+insert when we fell back to the whole last result). Clipboard
-     * swipe-left "add to dictionary" flow (editingForClipboardCorrection):
-     * never touches currentInputConnection at all, since editingOriginalText
-     * there is an arbitrary clipboard entry, not necessarily anything
-     * currently focused anywhere — only the dictionary write applies.
-     *
-     * Either way, remembering the corrected word/phrase in the global
-     * Dictionary (nativeAddVocabularyWord — the same store the desktop
-     * Dictionary UI reads/writes; corrections themselves are hand-
-     * maintained only, see native_bridge.rs's spawn_add_vocabulary_word())
-     * is gated on addToDictionaryForEdit — unconditional for the clipboard
-     * flow (that is the entire point of swiping), opt-out via the edit
-     * panel's checkbox for the normal flow (every edit used to silently
-     * add one, which piled up entries for edits that were just rewording,
-     * not an actual new/misrecognized word).
+     * Remembering the corrected word/phrase in the global Dictionary
+     * (nativeAddVocabularyWord — the same store the desktop Dictionary UI
+     * reads/writes; corrections themselves are hand-maintained only, see
+     * native_bridge.rs's spawn_add_vocabulary_word()) is gated on
+     * addToDictionaryForEdit, opt-out via the edit panel's checkbox (every
+     * edit used to silently add one, which piled up entries for edits that
+     * were just rewording, not an actual new/misrecognized word).
      */
     private fun finishEditWithSpokenReplacement(text: String) {
         recording = false
         processing = false
         val original = editingOriginalText
         val replacesWhole = editingReplacesWholeResult
-        val forClipboardCorrection = editingForClipboardCorrection
         val shouldAddToDictionary = addToDictionaryForEdit
         editingDictationResult = false
         awaitingEditReplacement = false
         editingOriginalText = null
-        editingForClipboardCorrection = false
         if (text.isBlank() || original == null) {
             setState("done", "已上屏")
-            refreshInputView()
-            return
-        }
-        if (forClipboardCorrection) {
-            if (shouldAddToDictionary && text != original) {
-                runNativeAction("加入词典") {
-                    OpenLessNative.nativeAddVocabularyWord(text)
-                }
-            }
-            setState("done", ui("已加入词典", "Added to dictionary"))
             refreshInputView()
             return
         }
