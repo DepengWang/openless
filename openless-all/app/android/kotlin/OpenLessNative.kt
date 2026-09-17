@@ -22,6 +22,9 @@ object OpenLessNative {
 
     @JvmStatic external fun nativeStopDictationForIme()
 
+    /** Same as nativeStopDictationForIme(), but skips the LLM polish step for this utterance — the IME keyboard's mic-button swipe-up gesture. */
+    @JvmStatic external fun nativeStopDictationForImeWithRaw(raw: Boolean)
+
     @JvmStatic external fun nativeStopDictationWithTranslation(translation: Boolean)
 
     @JvmStatic external fun nativeCancelDictation()
