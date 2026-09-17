@@ -42,6 +42,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private var sessionEpoch = 0L
     private var recording = false
     private var processing = false
+    // Armed by the mic button's swipe-up gesture while recording is still
+    // in progress (see onCreateInputView()'s voice-panel branch) — recording
+    // itself keeps going, this only changes what happens once it eventually
+    // stops (skip the LLM polish step). Reset whenever a fresh recording
+    // starts or is cancelled, so it never leaks into a later utterance.
+    private var rawModeArmed = false
     private var inputMode = InputMode.VOICE
     private var englishLayer = EnglishLayer.LETTERS
     // The word currently being typed on the English keyboard — appended to
@@ -443,6 +449,52 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             isClickable = true
             setOnClickListener { toggleDictation() }
             contentDescription = ui("OpenLess 语音听写", "OpenLess dictation")
+            // Swipe down while actively recording cancels outright (same
+            // effect as cancelDictation(), already used elsewhere for this
+            // exact purpose) instead of stopping normally and running the
+            // usual thinking/polish step on a recording the user is
+            // discarding. Swipe up while already recording just arms
+            // rawModeArmed — recording keeps going, a normal tap still ends
+            // it, only now skipping the LLM polish step for this utterance
+            // once it does (see toggleDictation()'s recording-stop branch).
+            // Swipe up from idle (not yet recording) instead starts
+            // recording immediately with rawModeArmed pre-armed, so a single
+            // continuous up-swipe from the ready state is "record, no
+            // polish" without a separate initial tap. requestDisallow... is
+            // claimed unconditionally on DOWN (not only once a threshold is
+            // crossed), matching buildEnglishCharKey()'s same fix earlier
+            // this session: without it, a downward drag here is
+            // indistinguishable from the enclosing SwipeModeContainer's own
+            // "long downward drag dismisses the keyboard" gesture, and that
+            // ancestor can steal the sequence before our own dp(24) check
+            // ever sees the full distance.
+            var downY = 0f
+            setOnTouchListener { view, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downY = event.y
+                        view.parent?.requestDisallowInterceptTouchEvent(true)
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        if (recording && event.y - downY >= dp(24)) {
+                            performDoubleKeyHaptic()
+                            cancelDictation()
+                        } else if (recording && !rawModeArmed && downY - event.y >= dp(24)) {
+                            rawModeArmed = true
+                            performDoubleKeyHaptic()
+                            updateBackendLinkIndicator()
+                        } else if (!recording && !processing && downY - event.y >= dp(24)) {
+                            toggleDictation()
+                            if (recording) {
+                                rawModeArmed = true
+                                performDoubleKeyHaptic()
+                                updateBackendLinkIndicator()
+                            }
+                        }
+                    }
+                }
+                false
+            }
         }
         val buttonHolder = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -502,7 +554,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             gravity = android.view.Gravity.CENTER_VERTICAL
         }
         header.addView(buildBrandView(), LinearLayout.LayoutParams(0, dp(38), 1f))
-        header.addView(buildModeToggle(), LinearLayout.LayoutParams(dp(165), dp(38)))
+        header.addView(buildModeToggle(), LinearLayout.LayoutParams(dp(240), dp(38)))
         return header
     }
 
@@ -852,7 +904,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // rebuild creates a brand new View instance.
         backendLinkPulseAnimator?.cancel()
         backendLinkPulseAnimator = android.animation.ObjectAnimator.ofFloat(backendLinkIndicator, View.ALPHA, 1f, 0.35f).apply {
-            duration = 900L
+            duration = BACKEND_LINK_READY_PULSE_DURATION_MS
             repeatMode = android.animation.ValueAnimator.REVERSE
             repeatCount = android.animation.ValueAnimator.INFINITE
             start()
@@ -928,7 +980,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             gravity = android.view.Gravity.CENTER_VERTICAL
         }
         header.addView(buildBrandView(), LinearLayout.LayoutParams(0, dp(38), 1f))
-        header.addView(buildModeToggle(), LinearLayout.LayoutParams(dp(165), dp(38)))
+        header.addView(buildModeToggle(), LinearLayout.LayoutParams(dp(240), dp(38)))
         // This panel's own root padding (8dp) is narrower than the voice panel's
         // (16dp), which it needs for its body rows. Compensate with margins so
         // the header/toggle still land at the same canonical 16dp/8dp inset as
@@ -1067,7 +1119,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         val header = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
         header.addView(buildBrandView(), LinearLayout.LayoutParams(0, dp(38), 1f))
-        header.addView(buildModeToggle(), LinearLayout.LayoutParams(dp(165), dp(38)))
+        header.addView(buildModeToggle(), LinearLayout.LayoutParams(dp(240), dp(38)))
         // Stroke mode's root padding is much tighter (4dp/3dp) to fit its dense
         // grid. Compensate with margins so the header/toggle still land at the
         // same canonical 16dp/8dp inset as every other panel.
@@ -1309,7 +1361,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         val header = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
         header.addView(buildBrandView().apply { setPadding(dp(8), 0, 0, 0) }, LinearLayout.LayoutParams(0, dp(38), 1f))
-        header.addView(buildModeToggle(), LinearLayout.LayoutParams(dp(165), dp(38)))
+        header.addView(buildModeToggle(), LinearLayout.LayoutParams(dp(240), dp(38)))
         // This panel's own root padding (8dp) is narrower than the voice panel's
         // (16dp). Compensate with margins so the header/toggle still land at the
         // same canonical 16dp/8dp inset as every other panel.
@@ -2264,32 +2316,29 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     }
                     MotionEvent.ACTION_MOVE -> {
                         if (swipePopup == null && swipeUpAction != null && swipePreview != null && downY - event.y >= dp(10)) {
-                            val preview = TextView(this@OpenLessImeService).apply {
-                                text = swipePreview
-                                textSize = 22f
-                                gravity = android.view.Gravity.CENTER
-                                setTextColor(Color.WHITE)
-                                background = GradientDrawable().apply {
-                                    shape = GradientDrawable.RECTANGLE
-                                    cornerRadius = dp(10).toFloat()
-                                    setColor(Color.argb(205, 65, 65, 65))
-                                    setStroke(dp(1), Color.rgb(105, 105, 105))
-                                }
-                            }
-                            swipePopup = android.widget.PopupWindow(
-                                preview,
-                                dp(64),
-                                dp(40),
-                                false,
-                            ).apply {
+                            // Same iOS-style bubble as buildEnglishCharKey()'s
+                            // press preview (KeyPreviewBubbleView: rounded
+                            // body + downward arrow + red text) instead of
+                            // the old plain gray box — shown only for the
+                            // digit-swipe keys (0-9), since swipeUpAction/
+                            // swipePreview are only ever set for those, and
+                            // anchored to the key itself via showAsDropDown()
+                            // so the arrow actually points at the key being
+                            // swiped, unlike the old fixed top-of-screen box.
+                            val bubbleView = KeyPreviewBubbleView(this@OpenLessImeService, isDarkTheme)
+                            val keyTextSizePx = (view as TextView).textSize
+                            bubbleView.label = swipePreview
+                            bubbleView.fixedTextSizePx = keyTextSizePx
+                            // Doubled: the finger is still sliding upward
+                            // when this shows, so the taller arrow buys the
+                            // digit more clearance before the finger reaches it.
+                            bubbleView.arrowHeightFraction = 0.64f
+                            val bubbleWidthPx = dp(44)
+                            val bubbleHeightPx = dp(70)
+                            swipePopup = android.widget.PopupWindow(bubbleView, bubbleWidthPx, bubbleHeightPx, false).apply {
                                 isClippingEnabled = false
                                 elevation = dp(6).toFloat()
-                                showAtLocation(
-                                    view.rootView,
-                                    android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL,
-                                    0,
-                                    dp(8),
-                                )
+                                showAsDropDown(view, (view.width - bubbleWidthPx) / 2, -(view.height + bubbleHeightPx))
                             }
                         }
                     }
@@ -2349,6 +2398,17 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     }
 
+    // Two short ticks instead of one — used for the mic button's swipe
+    // gestures (cancel-recording, arm raw mode) so they read as distinctly
+    // different from a plain key press's single tick. The gap between them
+    // reuses the same user-configurable repeat interval as key-repeat
+    // haptics, since that's already tuned to feel like separate pulses
+    // rather than one long buzz.
+    private fun performDoubleKeyHaptic() {
+        performKeyHaptic()
+        android.os.Handler(Looper.getMainLooper()).postDelayed({ performKeyHaptic() }, keyRepeatIntervalMs())
+    }
+
     /**
      * A single ABC/123/#+= character-emitting key with an iOS-style press
      * preview: a bubble above the key showing the character that will
@@ -2390,7 +2450,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 val bubbleView = bubble ?: KeyPreviewBubbleView(this@OpenLessImeService, isDarkTheme).also { bubble = it }
                 bubbleView.label = charFor(target)
                 val bubbleWidthPx = dp(44)
-                val bubbleHeightPx = dp(60)
+                val bubbleHeightPx = dp(70)
                 val xoff = (target.width - bubbleWidthPx) / 2
                 val yoff = -(target.height + bubbleHeightPx)
                 val existing = popup
@@ -2406,23 +2466,41 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 }
             }
 
-            // Hit-tests this key's row siblings by their actual on-screen
-            // bounds (a little vertical slop added, since a real finger
-            // drifts above/below the row while sliding sideways) — every
-            // sibling in an English row is one of these tagged keys, so
-            // functional keys (shift/backspace, tag == null) are simply
-            // never matched and the original key stays tracked.
+            // Hit-tests every char-key row in this key's own row group (not
+            // just its immediate row siblings) by their actual on-screen
+            // bounds — a little slop added on both axes, since a real
+            // finger drifts while sliding. Climbing to the row's own parent
+            // and collecting every child row that has at least one
+            // String-tagged (char) key lets a vertical drag retarget across
+            // rows (e.g. row2's "a" up to row1's "q") the same way a
+            // horizontal drag already retargets within one row — the
+            // candidate bar, header, and bottom row (space/return/mode
+            // toggle) never have any String-tagged children, so they're
+            // simply never included. Functional keys within an included row
+            // (shift/backspace, tag == null) are still never matched.
             fun findTrackTargetAt(rawX: Float, rawY: Float): View {
                 val row = parent as? ViewGroup ?: return this
-                for (index in 0 until row.childCount) {
-                    val sibling = row.getChildAt(index)
-                    if (sibling.tag !is String) continue
-                    val loc = IntArray(2)
-                    sibling.getLocationOnScreen(loc)
-                    if (rawX >= loc[0] && rawX < loc[0] + sibling.width &&
-                        rawY >= loc[1] - dp(24) && rawY < loc[1] + sibling.height + dp(24)
-                    ) {
-                        return sibling
+                val group = row.parent as? ViewGroup
+                val candidateRows = if (group != null) {
+                    (0 until group.childCount).mapNotNull { index ->
+                        (group.getChildAt(index) as? ViewGroup)?.takeIf { candidate ->
+                            (0 until candidate.childCount).any { candidate.getChildAt(it).tag is String }
+                        }
+                    }
+                } else {
+                    listOf(row)
+                }
+                for (candidateRow in candidateRows) {
+                    for (index in 0 until candidateRow.childCount) {
+                        val sibling = candidateRow.getChildAt(index)
+                        if (sibling.tag !is String) continue
+                        val loc = IntArray(2)
+                        sibling.getLocationOnScreen(loc)
+                        if (rawX >= loc[0] - dp(6) && rawX < loc[0] + sibling.width + dp(6) &&
+                            rawY >= loc[1] - dp(24) && rawY < loc[1] + sibling.height + dp(24)
+                        ) {
+                            return sibling
+                        }
                     }
                 }
                 return trackedView
@@ -2431,6 +2509,19 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             setOnTouchListener { view, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
+                        // Without this, a same-row drag to an adjacent key
+                        // (a clearly horizontal drag, same shape as a
+                        // panel-switch swipe) gets stolen mid-gesture by the
+                        // enclosing SwipeModeContainer's own horizontal-swipe
+                        // intercept once it crosses touchSlop — the key would
+                        // stop receiving MOVE/UP entirely, so the bubble
+                        // never follows the finger and nothing ever commits
+                        // on release. Claimed unconditionally on DOWN, not
+                        // only once a drag is detected: any movement that
+                        // starts on a key belongs to that key's own
+                        // press/retarget/commit handling, never to a
+                        // panel-switch gesture.
+                        view.parent?.requestDisallowInterceptTouchEvent(true)
                         trackedView = view
                         view.animate().scaleX(0.97f).scaleY(0.97f).translationZ(dp(3).toFloat()).alpha(0.90f).setDuration(65L).start()
                         performKeyHaptic()
@@ -2770,7 +2861,20 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 refreshInputView()
             }
             setState("thinking", "正在思考")
-            runNativeAction("停止听写") { OpenLessNative.nativeStopDictationForIme() }
+            // rawModeArmed is set by the mic button's own swipe-up gesture
+            // (see onCreateInputView()'s voice-panel branch) while this
+            // recording was still in progress — recording itself keeps
+            // going after that swipe, only the eventual stop (here, however
+            // it's triggered) skips the LLM polish step and inserts the ASR
+            // transcript as-is. Mirrors the existing "swipe left on the
+            // overlay to finish+translate" gesture contract
+            // (OpenLessOverlayService.kt), just decided earlier (at the
+            // swipe) instead of at this exact call.
+            if (rawModeArmed) {
+                runNativeAction("停止听写") { OpenLessNative.nativeStopDictationForImeWithRaw(true) }
+            } else {
+                runNativeAction("停止听写") { OpenLessNative.nativeStopDictationForIme() }
+            }
         } else {
             // nativeStartDictationForIme() itself never throws when the
             // Rust backend isn't registered yet — that side just logs a
@@ -2795,6 +2899,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             }
             recording = true
             processing = false
+            rawModeArmed = false
             // The actual start of a new recording attempt — reset the
             // silence watch and fire the start haptic here, not in
             // onCapsuleStateChanged's "recording" branch: that branch only
@@ -2823,6 +2928,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private fun cancelDictation() {
         recording = false
         processing = false
+        rawModeArmed = false
         invalidateSession("已取消")
         runNativeAction("取消听写") { OpenLessNative.nativeCancelDictation() }
     }
@@ -2876,12 +2982,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      */
     private fun updateBackendLinkIndicator() {
         val color = when {
+            recording && rawModeArmed -> LINK_COLOR_RECORDING_RAW
             recording -> LINK_COLOR_RECORDING
             processing -> LINK_COLOR_PROCESSING
             !backendLinkHealthy -> LINK_COLOR_ISSUE
             else -> LINK_COLOR_READY
         }
         (backendLinkIndicator?.background as? GradientDrawable)?.setColor(color)
+        backendLinkPulseAnimator?.duration =
+            if (color == LINK_COLOR_READY) BACKEND_LINK_READY_PULSE_DURATION_MS else BACKEND_LINK_PULSE_DURATION_MS
     }
 
     // Guards scheduleBackendReadyRecheck() so a second mic tap while a
@@ -3630,13 +3739,28 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // rebuilt on every panel refresh, so a live theme switch just means
         // a fresh instance with the other branch's colors.
         private val trackColor = if (darkTheme) Color.rgb(28, 28, 28) else Color.rgb(222, 222, 226)
-        private val dividerColor = if (darkTheme) Color.rgb(58, 58, 58) else Color.rgb(200, 200, 204)
-        // Matches the outer panel's own background exactly (see
-        // OpenLessImeService's panel-root tone(48,48,48 / 242,242,246)), so
-        // the selected toggle segment reads as continuous with the panel
-        // beneath it.
-        private val panelBackgroundColor = if (darkTheme) Color.rgb(48, 48, 48) else Color.rgb(242, 242, 246)
+        // Weakened from a fully-opaque line to a near-invisible one — the
+        // floating selected pill below is meant to be the only thing the
+        // user reads as "current mode", not these dividers, but the layout
+        // math that positions the four icons/labels still uses the same
+        // segmentWidth split, so the dividers stay (very faintly) for
+        // continuity rather than being deleted outright.
+        private val dividerColor = run {
+            val base = if (darkTheme) Color.rgb(58, 58, 58) else Color.rgb(200, 200, 204)
+            Color.argb(28, Color.red(base), Color.green(base), Color.blue(base))
+        }
+        // Same surface color as every ordinary key's own background
+        // (roundedButton(tone(Color.rgb(52, 52, 54), Color.WHITE), ...) —
+        // see buildEnglishCharKey()/keyboardKey()) — reusing it here ties
+        // the selected pill into the keyboard's existing "raised key"
+        // visual language instead of introducing a new floating-pill color.
+        private val selectedPillColor = if (darkTheme) Color.rgb(52, 52, 54) else Color.WHITE
         private val iconColor = if (darkTheme) Color.rgb(240, 240, 240) else Color.rgb(50, 50, 54)
+        // Unselected icons/labels dim slightly (not a color or hue change)
+        // so the fully-opaque selected one reads as the one thing actively
+        // "on" — a light touch, not the kind of visible recolor the spec
+        // asks not to introduce.
+        private val dimmedIconColor = Color.argb(178, Color.red(iconColor), Color.green(iconColor), Color.blue(iconColor))
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
@@ -3649,7 +3773,46 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         private val textBounds = android.graphics.Rect()
         private val chevronPath = Path()
-        private val trackClipPath = Path()
+
+        private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+        // Continuous [0, modes.size - 1] position of the selected pill, in
+        // segment units — settles on the selected index, but slides through
+        // fractional values mid-animation. This view is a fresh instance on
+        // every panel rebuild (see the class doc above), so a real mode
+        // switch is detected by comparing against lastRenderedMode (a
+        // companion field, surviving across those rebuilds) rather than any
+        // state this instance could hold itself; an unrelated rebuild that
+        // leaves the mode unchanged just settles here with no animation.
+        private var indicatorPosition: Float
+        private var indicatorAnimator: android.animation.ValueAnimator? = null
+
+        init {
+            val modes = InputMode.entries
+            val targetIndex = modes.indexOf(selectedMode).coerceAtLeast(0).toFloat()
+            val previousMode = lastRenderedMode
+            if (previousMode != null && previousMode != selectedMode) {
+                val startIndex = modes.indexOf(previousMode).coerceAtLeast(0).toFloat()
+                indicatorPosition = startIndex
+                indicatorAnimator = android.animation.ValueAnimator.ofFloat(startIndex, targetIndex).apply {
+                    duration = 180L
+                    interpolator = android.view.animation.DecelerateInterpolator()
+                    addUpdateListener {
+                        indicatorPosition = it.animatedValue as Float
+                        invalidate()
+                    }
+                    start()
+                }
+            } else {
+                indicatorPosition = targetIndex
+            }
+            lastRenderedMode = selectedMode
+        }
+
+        override fun onDetachedFromWindow() {
+            indicatorAnimator?.cancel()
+            super.onDetachedFromWindow()
+        }
 
         // Every proportion below is measured off the reference toggle design
         // and expressed in units of the pill height `h`.
@@ -3672,30 +3835,40 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 canvas.drawLine(x, h * 0.2f, x, h * 0.8f, paint)
             }
 
-            // The selected segment is filled with the exact same color as
-            // the panel body below (not a lighter floating pill), and drawn
-            // with sharp corners — no rounding, no border, no shadow, no
-            // gap — so it reads as one continuous surface with the panel
-            // rather than a separate highlighted control sitting on top of
-            // it. Clipped to the track's own rounded outline so a sharp
-            // corner at the first/last segment doesn't poke past the
-            // track's curve — the track's existing shape provides the only
-            // rounding here, not a second one on the highlight itself.
-            val selectedIndex = modes.indexOf(selectedMode).coerceAtLeast(0)
-            val segmentLeft = segmentWidth * selectedIndex
-            val segmentRight = segmentWidth * (selectedIndex + 1)
-            trackClipPath.reset()
-            trackClipPath.addRoundRect(0f, 0f, w, h, h / 2f, h / 2f, Path.Direction.CW)
-            canvas.save()
-            canvas.clipPath(trackClipPath)
-            paint.color = panelBackgroundColor
-            canvas.drawRect(segmentLeft, 0f, segmentRight, h, paint)
-            canvas.restore()
+            // Floating rounded pill instead of the old sharp, edge-to-edge
+            // highlight: inset on every side so it reads as its own raised
+            // surface hovering over the track rather than a panel-colored
+            // cutout flush with the track's shape. Insets alone keep it
+            // well inside the track's rounded corners even at the first/
+            // last segment, so no extra clip path is needed the way the
+            // sharp-cornered version required one.
+            // Fixed 5dp (not h-proportional anymore) so the pill's own
+            // height comes out to exactly 28dp (h=38dp - 2*5dp) per an
+            // explicit dp spec, rather than whatever h*0.14 happens to be.
+            val pillInsetV = dp(5).toFloat()
+            // Fixed 53dp width (an explicit dp spec, not a segmentWidth
+            // fraction anymore), centered within its segment — decoupled
+            // from segmentWidth so a future outer-track width change alone
+            // doesn't also resize the pill.
+            val pillWidth = dp(53).toFloat()
+            val pillCenterX = segmentWidth * (indicatorPosition + 0.5f)
+            val pillLeft = pillCenterX - pillWidth / 2f
+            val pillRight = pillCenterX + pillWidth / 2f
+            val pillTop = pillInsetV
+            val pillBottom = h - pillInsetV
+            paint.color = selectedPillColor
+            canvas.drawRoundRect(pillLeft, pillTop, pillRight, pillBottom, (pillBottom - pillTop) / 2f, (pillBottom - pillTop) / 2f, paint)
 
-            paint.color = iconColor
+            val selectedIndex = modes.indexOf(selectedMode).coerceAtLeast(0)
+            fun colorFor(index: Int) = if (index == selectedIndex) iconColor else dimmedIconColor
+
+            paint.color = colorFor(0)
             drawWaveform(canvas, segmentWidth * 0.5f, centerY, h)
+            textPaint.color = colorFor(1)
             drawLabel(canvas, "笔画", segmentWidth * 1.5f, centerY, h * 0.34f, extraBold = true)
+            paint.color = colorFor(2)
             drawCursorBrackets(canvas, segmentWidth * 2.5f, centerY, h)
+            textPaint.color = colorFor(3)
             drawLabel(canvas, "EN", segmentWidth * 3.5f, centerY, h * 0.28f)
         }
 
@@ -3756,6 +3929,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             return true
         }
 
+        private companion object {
+            // Survives across this view's per-rebuild instances (see the
+            // class doc above) so a fresh instance can tell "the mode
+            // actually changed since last drawn" from "this rebuild is for
+            // some unrelated reason" and only animate the former.
+            @Volatile
+            private var lastRenderedMode: InputMode? = null
+        }
     }
 
     /** Central stroke keys use a canvas glyph so their proportions do not depend on a font. */
@@ -4024,13 +4205,27 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 field = value
                 invalidate()
             }
+        // Non-null (the stroke keyboard's plain-text bubbles — 通配/分词/
+        // ：/；/符号/繁) matches the actual pressed key's own font size
+        // (TextView.getTextSize(), already resolved to raw pixels, so no
+        // sp->px conversion is needed here) instead of the default size
+        // derived from the bubble's own height, which buildEnglishCharKey()
+        // still relies on and is left untouched.
+        var fixedTextSizePx: Float? = null
+            set(value) {
+                field = value
+                invalidate()
+            }
         private val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = if (darkTheme) Color.rgb(120, 120, 126) else Color.WHITE
+            // Lighter than a plain mid-gray so the bubble reads clearly
+            // against a dark keyboard background — the original rgb(120,120,126)
+            // sat too close to the surrounding dark theme's own key color.
+            color = if (darkTheme) Color.rgb(196, 196, 202) else Color.WHITE
         }
         private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = 2f
-            color = if (darkTheme) Color.rgb(150, 150, 156) else Color.rgb(206, 206, 210)
+            color = if (darkTheme) Color.rgb(224, 224, 228) else Color.rgb(206, 206, 210)
         }
         // Same red as the stroke panel's own action rail (←/↵/清除/123
         // keys), unconditional of theme there too — see buildStrokeView().
@@ -4041,16 +4236,30 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         private val outline = Path()
 
+        // Settable instead of the plain constant it defaults to: the stroke
+        // keyboard's swipe-up digit preview doubles this (see keyboardKey()'s
+        // ACTION_MOVE) to push the readable body further from the key, since
+        // that bubble appears while the finger is still sliding upward past
+        // it — buildEnglishCharKey()'s press preview never drags away like
+        // that, so it keeps the default.
+        var arrowHeightFraction: Float = ARROW_HEIGHT_FRACTION
+            set(value) {
+                field = value
+                invalidate()
+            }
+
+        private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             val w = width.toFloat()
             val h = height.toFloat()
             if (w <= 0f || h <= 0f) return
-            val arrowHeight = h * ARROW_HEIGHT_FRACTION
+            val arrowHeight = h * arrowHeightFraction
             val bodyBottom = h - arrowHeight
-            val radius = bodyBottom * 0.3f
+            val radius = dp(12).toFloat()
             val cx = w / 2f
-            val arrowHalfWidth = w * 0.14f
+            val arrowHalfWidth = w * 0.25f
             outline.reset()
             outline.addRoundRect(0f, 0f, w, bodyBottom, radius, radius, Path.Direction.CW)
             outline.moveTo(cx - arrowHalfWidth, bodyBottom - 1f)
@@ -4059,14 +4268,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             outline.close()
             canvas.drawPath(outline, bodyPaint)
             canvas.drawPath(outline, borderPaint)
-            textPaint.textSize = bodyBottom * 0.55f
+            textPaint.textSize = fixedTextSizePx ?: (bodyBottom * 0.55f)
             val metrics = textPaint.fontMetrics
-            val textY = bodyBottom / 2f - (metrics.ascent + metrics.descent) / 2f
+            val textY = bodyBottom * 0.4f - (metrics.ascent + metrics.descent) / 2f
             canvas.drawText(label, cx, textY, textPaint)
         }
 
         private companion object {
-            const val ARROW_HEIGHT_FRACTION = 0.2f
+            const val ARROW_HEIGHT_FRACTION = 0.32f
         }
     }
 
@@ -4412,8 +4621,17 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // "link issue" that overlay doesn't have.
         private val LINK_COLOR_READY = Color.rgb(134, 239, 172)
         private val LINK_COLOR_RECORDING = Color.rgb(244, 63, 94)
+        // Recording with rawModeArmed set (mic swipe-up: skip LLM polish on
+        // stop) — distinct orange so glancing at the dot tells the two
+        // recording states apart without reading any text.
+        private val LINK_COLOR_RECORDING_RAW = Color.rgb(249, 115, 22)
         private val LINK_COLOR_PROCESSING = Color.rgb(56, 189, 248)
         private val LINK_COLOR_ISSUE = Color.rgb(250, 204, 21)
+        // Ready is the state the indicator sits in almost all the time, so
+        // its pulse is slower/gentler ("breathing") than the other, more
+        // urgent states — which keep the original brisker cadence.
+        private const val BACKEND_LINK_PULSE_DURATION_MS = 900L
+        private const val BACKEND_LINK_READY_PULSE_DURATION_MS = 1800L
 
         /**
          * Opts a view out of Android's system gesture navigation (back/home
@@ -4433,12 +4651,41 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         @Volatile
         private var activeInstance: java.lang.ref.WeakReference<OpenLessImeService>? = null
 
-        /** Re-open the IME after the one-time backend Activity gives focus back. */
+        /**
+         * Whether the input panel is actually on screen right now — checked by
+         * OpenLessBackendWarmupActivity.launchWarmup() right before it steals
+         * the foreground, so it knows afterward whether restoring the panel is
+         * even meaningful (see requestInputPanelAfterWarmup()'s doc comment).
+         */
+        fun isInputPanelCurrentlyShown(): Boolean {
+            val service = activeInstance?.get() ?: return false
+            return service.isInputViewShown
+        }
+
+        /**
+         * Re-open the IME after the one-time backend Activity gives focus
+         * back — but only when there is still a real, keyboard-wanting field
+         * focused at fire time. Without this check, a warmup silently
+         * triggered by an unrelated onStartInput() (e.g. Camera/Dialer
+         * momentarily focusing their own non-text-entry views) or by the
+         * periodic backend heartbeat could force the panel open over
+         * whatever app the user has since switched to — up to ~500ms after
+         * the original trigger (120ms launch delay + 180ms self-background +
+         * this call's own delay), plenty of time to have left the field, the
+         * app, or even backgrounded to the home screen entirely. Callers are
+         * additionally expected to only invoke this at all when the panel
+         * was visible right before the warmup Activity took focus (see
+         * isInputPanelCurrentlyShown()) — this is the second, independent
+         * check against the state at the moment of firing.
+         */
         fun requestInputPanelAfterWarmup(delayMs: Long = 260L) {
             val service = activeInstance?.get() ?: return
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 if (activeInstance?.get() === service) {
-                    service.requestShowSelf(InputMethodManager.SHOW_IMPLICIT)
+                    val attribute = service.currentInputEditorInfo
+                    if (attribute != null && attribute.inputType != InputType.TYPE_NULL) {
+                        service.requestShowSelf(InputMethodManager.SHOW_IMPLICIT)
+                    }
                 }
             }, delayMs)
         }

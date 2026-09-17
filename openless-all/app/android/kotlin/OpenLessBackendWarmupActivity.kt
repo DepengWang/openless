@@ -20,8 +20,59 @@ import android.content.Intent
 class OpenLessBackendWarmupActivity : MainActivity() {
     // Activity 实例化阶段尚未 attach Context，不能访问 Activity.mainLooper。
     private val warmupHandler = Handler(Looper.getMainLooper())
-    private val sendToBackground = Runnable {
-        if (!settingsRequested && !isFinishing && !isDestroyed) {
+    // How long sendToBackground() has already spent polling for the WebView
+    // to finish its first load, this warmup cycle — reset in onCreate()
+    // right before the first postDelayed(). Not reset anywhere else: this
+    // Activity's onCreate() only ever runs once per singleTask instance, and
+    // sendToBackground only ever runs once per instance too (onNewIntent()
+    // cancels the pending one instead of letting a second cycle start).
+    private var webViewReadyWaitElapsedMs = 0L
+    // lateinit + assigned in init{}, not a plain `val = Runnable { ... }`:
+    // the lambda below reschedules itself by referencing this same property
+    // (needed so warmupHandler.removeCallbacks(sendToBackground) elsewhere
+    // in this class always cancels the exact instance that was posted), and
+    // Kotlin can't resolve that self-reference inside a single property
+    // initializer expression (fails with "Variable must be initialized" /
+    // a recursive type-checking error) — splitting the declaration from the
+    // assignment gives the lambda a property that already exists to close over.
+    private lateinit var sendToBackground: Runnable
+
+    init {
+        sendToBackground = Runnable {
+            if (settingsRequested || isFinishing || isDestroyed) return@Runnable
+            // On-device logs showed a genuinely black settings page whose window
+            // itself was drawn and focused fine, but whose WebView had never
+            // rendered a single frame — no renderer process ever spawned, no
+            // crash either. The likely cause: this Runnable used to fire
+            // unconditionally 180ms after onCreate(), which is well within the
+            // time a cold Tauri/WebView init can still be in flight (the exact
+            // race the overridePendingTransition/moveTaskToBack comment below
+            // already worried about for HWUI's worker pool) — backgrounding the
+            // window mid-init apparently can wedge the WebView itself, not just
+            // its renderer process, and since this Activity is singleTask and
+            // never recreated, every later "genuine settings open" just reopens
+            // the same permanently-wedged instance. Polling WebView.progress
+            // (a plain getter, no WebViewClient override needed — Tauri/Wry
+            // installs its own client for the JS<->Rust bridge and overriding it
+            // here would break that) instead of trusting a fixed delay lets a
+            // slow cold start finish before this window ever gets backgrounded.
+            // The wait is capped (WEBVIEW_READY_MAX_WAIT_MS) so a WebView that
+            // never reaches 100 for some unrelated reason can't keep the silent
+            // warmup path visible forever.
+            // webViewRef is still null until onWebViewCreate() fires — on a
+            // cold process start that hasn't happened yet by the time this
+            // first runs, which is exactly the case most in need of waiting,
+            // not a "nothing to wait for" free pass. (An earlier version of
+            // this check read `webView == null || ...`, treating "not
+            // created yet" as ready — that let a cold start still hit the
+            // exact bug this polling was meant to fix.)
+            val webView = webViewRef
+            val webViewReady = webView != null && webView.progress >= 100
+            if (!webViewReady && webViewReadyWaitElapsedMs < WEBVIEW_READY_MAX_WAIT_MS) {
+                webViewReadyWaitElapsedMs += WEBVIEW_READY_POLL_INTERVAL_MS
+                warmupHandler.postDelayed(sendToBackground, WEBVIEW_READY_POLL_INTERVAL_MS)
+                return@Runnable
+            }
             // Tauri/Rust runtime is owned by this Activity. Keep it alive as the
             // single UI/runtime host, but never relaunch the editor's package here:
             // a package launch intent only knows that app's launcher Activity, which
@@ -31,9 +82,19 @@ class OpenLessBackendWarmupActivity : MainActivity() {
             // Activity/window that requested the IME.
             overridePendingTransition(0, 0)
             moveTaskToBack(true)
-            OpenLessImeService.requestInputPanelAfterWarmup(260L)
+            // Only bother trying to restore the panel if it was actually the
+            // thing on screen right before this Activity stole focus (see
+            // restoreInputPanelAfterWarmup's own doc comment) — a warmup
+            // triggered by an unrelated app's onStartInput(), or by the
+            // periodic backend heartbeat while nothing was being typed into,
+            // has nothing to restore.
+            if (restoreInputPanelAfterWarmup) {
+                restoreInputPanelAfterWarmup = false
+                OpenLessImeService.requestInputPanelAfterWarmup(260L)
+            }
         }
     }
+
     private var settingsRequested = false
     private var webViewRef: android.webkit.WebView? = null
 
@@ -192,6 +253,8 @@ class OpenLessBackendWarmupActivity : MainActivity() {
 
         private const val EXTRA_SHOW_SETTINGS = "com.openless.app.extra.SHOW_SETTINGS"
         private const val REQUEST_POST_NOTIFICATIONS = 9102
+        private const val WEBVIEW_READY_POLL_INTERVAL_MS = 60L
+        private const val WEBVIEW_READY_MAX_WAIT_MS = 4000L
 
         // Set synchronously by openSettings()/openSettingsIfRunning() BEFORE
         // startActivity() is ever called, and consumed by onCreate()/
@@ -260,6 +323,16 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         @Volatile
         private var lastWarmupAttemptElapsed = 0L
 
+        // Snapshot of OpenLessImeService.isInputPanelCurrentlyShown() taken
+        // right before this Activity steals the foreground (see the
+        // postDelayed block below) — consumed once by sendToBackground() to
+        // decide whether requestInputPanelAfterWarmup() is even worth
+        // calling. Not reset here on a false read: sendToBackground() only
+        // acts on it when true, and always clears it back to false itself
+        // right after, so a stale true never lingers across warmup cycles.
+        @Volatile
+        private var restoreInputPanelAfterWarmup = false
+
         /**
          * Warms the Tauri/Rust backend if it isn't ready yet, from whatever
          * Context happens to notice first — not just the IME service reacting
@@ -326,6 +399,10 @@ class OpenLessBackendWarmupActivity : MainActivity() {
                 // warmup landing within milliseconds of each other right
                 // after the OS killed the process in the background.
                 if (isRunning()) return@postDelayed
+                // Snapshot taken right here, the last possible moment before
+                // this launch steals the foreground — see
+                // restoreInputPanelAfterWarmup's own doc comment.
+                restoreInputPanelAfterWarmup = OpenLessImeService.isInputPanelCurrentlyShown()
                 runCatching {
                     context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -333,6 +410,7 @@ class OpenLessBackendWarmupActivity : MainActivity() {
                         addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
                     })
                 }.onFailure { launchError ->
+                    restoreInputPanelAfterWarmup = false
                     android.util.Log.w("OpenLessBackendWarmupActivity", "failed to launch warmup", launchError)
                 }
             }, 120L)

@@ -4970,11 +4970,18 @@ impl OpenLessBackend {
                             }
                             None => captured,
                         };
+                        let context = match options.raw_requested {
+                            Some(true) => Arc::new(context.with_raw_requested(true)),
+                            _ => context,
+                        };
                         let context_changed =
                             state.dictation_translation_requested.take().is_some()
                                 || state.dictation_context.as_ref().is_some_and(|previous| {
                                     previous.polish.translation_active
                                         != context.polish.translation_active
+                                        || previous.polish.mode != context.polish.mode
+                                        || previous.polish.style_system_prompt
+                                            != context.polish.style_system_prompt
                                 });
                         state.dictation_context = Some(Arc::clone(&context));
                         state.dictation.translation_active = context.polish.translation_active;

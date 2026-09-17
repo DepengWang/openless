@@ -238,7 +238,7 @@ fn spawn_stop_dictation() {
         return;
     };
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = stop_core_dictation(&backend, None).await {
+        if let Err(error) = stop_core_dictation(&backend, None, None).await {
             log::warn!("[android-native] stop_dictation failed: {error}");
         }
     });
@@ -250,7 +250,7 @@ fn spawn_stop_dictation_for_ime() {
         return;
     };
     tauri::async_runtime::spawn(async move {
-        match stop_core_dictation(&backend, None).await {
+        match stop_core_dictation(&backend, None, None).await {
             Ok(result) => {
                 let text = result.polished_text;
                 let _ = crate::android::jni::android::with_android_env(|env, context| {
@@ -268,8 +268,31 @@ fn spawn_stop_dictation_with_translation(translation: bool) {
         return;
     };
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = stop_core_dictation(&backend, Some(translation)).await {
+        if let Err(error) = stop_core_dictation(&backend, Some(translation), None).await {
             log::warn!("[android-native] stop_dictation_with_translation failed: {error}");
+        }
+    });
+}
+
+/// IME keyboard's mic-button swipe-up gesture: same "insert-as-you-go" path
+/// as spawn_stop_dictation_for_ime(), but with the ASR-only override armed
+/// (see DictationContext::with_raw_requested()'s doc comment) — the LLM
+/// polish step is skipped entirely for this utterance and the raw
+/// transcript is inserted as-is.
+fn spawn_stop_dictation_for_ime_with_raw(raw: bool) {
+    let Some(backend) = CORE_BACKEND.get().cloned() else {
+        log::warn!("[android-native] core backend unavailable");
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        match stop_core_dictation(&backend, None, Some(raw)).await {
+            Ok(result) => {
+                let text = result.polished_text;
+                let _ = crate::android::jni::android::with_android_env(|env, context| {
+                    crate::android::jni::android::notify_ime_text(env, context, &text)
+                });
+            }
+            Err(error) => log::warn!("[android-native] stop_dictation_for_ime_with_raw failed: {error}"),
         }
     });
 }
@@ -490,11 +513,13 @@ async fn start_core_dictation_for_ime(
 async fn stop_core_dictation(
     backend: &OpenLessBackend,
     translation: Option<bool>,
+    raw: Option<bool>,
 ) -> Result<openless_core::DictationResult, BackendError> {
     ensure_core_started(backend).await?;
     backend
         .stop_dictation_with_options(DictationStopOptions {
             translation_requested: translation,
+            raw_requested: raw,
         })
         .await
 }
@@ -608,6 +633,15 @@ mod jni_exports {
         _class: JClass,
     ) {
         spawn_stop_dictation_for_ime();
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeStopDictationForImeWithRaw(
+        _env: *mut JNIEnv,
+        _class: JClass,
+        raw: jboolean,
+    ) {
+        spawn_stop_dictation_for_ime_with_raw(raw != 0);
     }
 
     #[no_mangle]
@@ -960,7 +994,7 @@ mod tests {
             serde_json::from_str(&android_backend_snapshot_response(Some(&backend))).unwrap();
         assert_eq!(ready["ok"], true);
         let translated_session = backend.snapshot().dictation.session_id.unwrap();
-        stop_core_dictation(&backend, Some(true)).await.unwrap();
+        stop_core_dictation(&backend, Some(true), None).await.unwrap();
         start_core_dictation(&backend, true).await.unwrap();
         let cancelled_session = backend.snapshot().dictation.session_id.unwrap();
         cancel_core_dictation(&backend).await.unwrap();
