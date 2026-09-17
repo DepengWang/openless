@@ -164,7 +164,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // was the reported problem (too many unwanted rules piling up). Always
     // true and hidden for the clipboard-correction flow, where recording the
     // rule is the entire point of the action.
-    private var addCorrectionRuleForEdit = true
+    private var addToDictionaryForEdit = true
     private var undoRedoButton: TextView? = null
     private var editResultButton: TextView? = null
     // The row holding undoRedoButton/editResultButton, toggled as a whole so
@@ -701,11 +701,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // pushing the divider + mic row down to the bottom of the panel.
         root.addView(View(this), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        // Hidden for the clipboard swipe-left flow, where recording a
-        // correction rule is the entire point of the action, not an
-        // optional side effect of fixing dictated text in place. Shown for
-        // the normal edit flow so an edit that's just rewording (not an
-        // actual misrecognition) doesn't silently pile up an unwanted rule.
+        // Hidden for the clipboard swipe-left flow, where adding to the
+        // dictionary is the entire point of the action, not an optional
+        // side effect of fixing dictated text in place. Shown for the
+        // normal edit flow so an edit that's just rewording (not an actual
+        // new/misrecognized word) doesn't silently pile up dictionary
+        // entries.
         // Placed low in the panel, just above the bottom divider — not
         // right under the text chip — and sized 1.5x (checkbox glyph and
         // label both) so it reads as a deliberate decision, not a small
@@ -715,21 +716,21 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 gravity = android.view.Gravity.CENTER_VERTICAL
                 isClickable = true
                 setOnClickListener {
-                    addCorrectionRuleForEdit = !addCorrectionRuleForEdit
+                    addToDictionaryForEdit = !addToDictionaryForEdit
                     refreshInputView()
                 }
             }
             correctionToggleRow.addView(
                 TextView(this).apply {
-                    text = if (addCorrectionRuleForEdit) "☑" else "☐"
+                    text = if (addToDictionaryForEdit) "☑" else "☐"
                     textSize = 24f
-                    setTextColor(if (addCorrectionRuleForEdit) strokeEncodeAccentColor else tone(Color.rgb(140, 140, 140), Color.rgb(150, 150, 154)))
+                    setTextColor(if (addToDictionaryForEdit) strokeEncodeAccentColor else tone(Color.rgb(140, 140, 140), Color.rgb(150, 150, 154)))
                 },
                 LinearLayout.LayoutParams(dp(33), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(9) },
             )
             correctionToggleRow.addView(
                 TextView(this).apply {
-                    text = ui("同时加入纠错规则（下次自动改正）", "Also add as a correction rule")
+                    text = ui("同时加入词典（提升识别准确率）", "Also add to dictionary")
                     textSize = 18f
                     setTextColor(tone(Color.rgb(180, 180, 180), Color.rgb(120, 120, 125)))
                 },
@@ -1837,19 +1838,19 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
         val listContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val entries = OpenLessClipboardHistory.filter(OpenLessClipboardHistory.load(this), clipboardHistoryCategory)
-        // Correction rules live in the Rust backend (CORE_BACKEND), which is
+        // The Dictionary lives in the Rust backend (CORE_BACKEND), which is
         // only registered once mobile_runtime::run()'s setup() has actually
         // executed — not guaranteed just because the IME is showing. Without
-        // this, nativeCorrectionRulePatterns()/nativeAddCorrectionRule() below
+        // this, nativeVocabularyPhrases()/nativeAddVocabularyWord() below
         // silently no-op against an unregistered backend: the star-like icon
-        // never appears and Save in the correction-rule Activity does nothing,
-        // with no visible error either place.
+        // never appears and the swipe zone's "add" never takes, with no
+        // visible error either place.
         ensureBackendReady()
         // Fetched once per panel build, not per row: a native round trip
         // per row would be wasted work when a single JSON snapshot already
-        // answers "does this text have a rule" for all of them.
-        val correctionPatterns: Set<String> = try {
-            val array = org.json.JSONArray(OpenLessNative.nativeCorrectionRulePatterns())
+        // answers "is this text already in the dictionary" for all of them.
+        val vocabularyPhrases: Set<String> = try {
+            val array = org.json.JSONArray(OpenLessNative.nativeVocabularyPhrases())
             (0 until array.length()).mapTo(mutableSetOf()) { array.getString(it) }
         } catch (error: Exception) {
             emptySet()
@@ -1925,7 +1926,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 )
                 // After the weighted text view, not before it, so this lands
                 // at the row's far right edge instead of crowding the star.
-                if (correctionPatterns.contains(entry.text)) {
+                if (vocabularyPhrases.contains(entry.text)) {
                     row.addView(
                         TextView(this).apply {
                             text = "✎"
@@ -1958,11 +1959,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     favoriteZone = favoriteZone,
                     correctionZone = correctionZone,
                     isFavorite = { entry.favorite },
-                    hasCorrectionRule = { correctionPatterns.contains(entry.text) },
+                    hasCorrectionRule = { vocabularyPhrases.contains(entry.text) },
                     addLabel = ui("加入收藏", "Add"),
                     removeLabel = ui("取消收藏", "Remove"),
-                    addCorrectionLabel = ui("加入纠错规则", "Add correction"),
-                    removeCorrectionLabel = ui("移除纠错规则", "Remove correction"),
+                    addCorrectionLabel = ui("加入词典", "Add to dictionary"),
+                    removeCorrectionLabel = ui("移出词典", "Remove from dictionary"),
                     onSuppressClick = { suppressRowClick = true },
                     onToggleFavorite = {
                         OpenLessClipboardHistory.toggleFavorite(this, entry.text)
@@ -1974,7 +1975,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     },
                     onAddCorrection = { openCorrectionRuleViaVoice(entry.text) },
                     onRemoveCorrection = {
-                        OpenLessNative.nativeRemoveCorrectionRule(entry.text)
+                        OpenLessNative.nativeRemoveVocabularyWord(entry.text)
                         refreshInputView()
                     },
                 )
@@ -2108,11 +2109,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     /**
-     * Clipboard swipe-left "add correction" action, only reached when this
-     * text has no rule yet (once one exists, the same swipe instead removes
-     * it directly via onRemoveCorrection, no prompt). Reuses the dictation
-     * "edit result" mechanism's speak-to-replace mic (openEditDictationResult
-     * / finishEditWithSpokenReplacement) instead of any separate window.
+     * Clipboard swipe-left "add to dictionary" action, only reached when
+     * this text isn't already an entry (once it is, the same swipe instead
+     * removes it directly via onRemoveCorrection, no prompt). Reuses the
+     * dictation "edit result" mechanism's speak-to-replace mic
+     * (openEditDictationResult/finishEditWithSpokenReplacement) instead of
+     * any separate window.
      *
      * A dedicated Activity was tried for the "type the correct wording" step
      * first. On a real device it reproduced a native crash: SIGSEGV in
@@ -2125,7 +2127,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * to reclaim a backgrounded WebView's hardware layer, not app code. This
      * panel never opens a second window at all, so that whole crash class
      * does not apply, and it reuses machinery already proven here for
-     * exactly this purpose (recording a correction rule from spoken text).
+     * exactly this purpose (recording the spoken text as a Dictionary entry).
      *
      * editingReplacesWholeResult stays false and editingForClipboardCorrection
      * is set so finishEditWithSpokenReplacement() skips touching
@@ -2136,7 +2138,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         editingOriginalText = wrongText
         editingReplacesWholeResult = false
         editingForClipboardCorrection = true
-        addCorrectionRuleForEdit = true
+        addToDictionaryForEdit = true
         editingDictationResult = true
         awaitingEditReplacement = true
         refreshInputView()
@@ -3206,7 +3208,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // unchecked; selecting only part of it starts checked, since that's
         // the classic "fix this one word" correction. Either way the user
         // can still flip the checkbox themselves before finishing.
-        addCorrectionRuleForEdit = editingOriginalText != lastDictationText
+        addToDictionaryForEdit = editingOriginalText != lastDictationText
         editingDictationResult = true
         awaitingEditReplacement = true
         refreshInputView()
@@ -3233,7 +3235,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         editingOriginalText = selected
         editingReplacesWholeResult = false
         editingForClipboardCorrection = false
-        addCorrectionRuleForEdit = true
+        addToDictionaryForEdit = true
         editingDictationResult = true
         awaitingEditReplacement = true
         refreshInputView()
@@ -3262,16 +3264,20 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * (relying on InputConnection.commitText's standard "replace the active
      * selection" behavior when there is a real OS selection, or an explicit
      * delete+insert when we fell back to the whole last result). Clipboard
-     * swipe-left "add correction" flow (editingForClipboardCorrection):
+     * swipe-left "add to dictionary" flow (editingForClipboardCorrection):
      * never touches currentInputConnection at all, since editingOriginalText
      * there is an arbitrary clipboard entry, not necessarily anything
-     * currently focused anywhere — only recording a correction rule applies.
+     * currently focused anywhere — only the dictionary write applies.
      *
-     * Either way, recording the change as a correction rule is gated on
-     * addCorrectionRuleForEdit — unconditional for the clipboard flow (that
-     * is the entire point of swiping), opt-out via the edit panel's checkbox
-     * for the normal flow (every edit used to silently add one, which piled
-     * up rules for edits that were just rewording, not misrecognitions).
+     * Either way, remembering the corrected word/phrase in the global
+     * Dictionary (nativeAddVocabularyWord — the same store the desktop
+     * Dictionary UI reads/writes; corrections themselves are hand-
+     * maintained only, see native_bridge.rs's spawn_add_vocabulary_word())
+     * is gated on addToDictionaryForEdit — unconditional for the clipboard
+     * flow (that is the entire point of swiping), opt-out via the edit
+     * panel's checkbox for the normal flow (every edit used to silently
+     * add one, which piled up entries for edits that were just rewording,
+     * not an actual new/misrecognized word).
      */
     private fun finishEditWithSpokenReplacement(text: String) {
         recording = false
@@ -3279,7 +3285,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val original = editingOriginalText
         val replacesWhole = editingReplacesWholeResult
         val forClipboardCorrection = editingForClipboardCorrection
-        val shouldAddRule = addCorrectionRuleForEdit
+        val shouldAddToDictionary = addToDictionaryForEdit
         editingDictationResult = false
         awaitingEditReplacement = false
         editingOriginalText = null
@@ -3290,12 +3296,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             return
         }
         if (forClipboardCorrection) {
-            if (shouldAddRule && text != original) {
-                runNativeAction("记录纠错") {
-                    OpenLessNative.nativeAddCorrectionRule(original, text)
+            if (shouldAddToDictionary && text != original) {
+                runNativeAction("加入词典") {
+                    OpenLessNative.nativeAddVocabularyWord(text)
                 }
             }
-            setState("done", ui("已加入纠错规则", "Correction rule added"))
+            setState("done", ui("已加入词典", "Added to dictionary"))
             refreshInputView()
             return
         }
@@ -3304,9 +3310,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             if (replacesWhole) connection.deleteSurroundingText(original.length, 0)
             connection.commitText(text, 1)
         }
-        if (shouldAddRule && text != original) {
-            runNativeAction("记录纠错") {
-                OpenLessNative.nativeAddCorrectionRule(original, text)
+        if (shouldAddToDictionary && text != original) {
+            runNativeAction("加入词典") {
+                OpenLessNative.nativeAddVocabularyWord(text)
             }
         }
         // A sub-span correction leaves the surrounding text's exact new
