@@ -348,11 +348,18 @@ class OpenLessApplication : Application() {
         private const val REQUEST_POST_NOTIFICATIONS = 9103
 
         // Kept in sync by hand with every restart-cause key actually used
-        // across the app (OpenLessRuntimeService's "sticky"/"actkill"/
-        // "rtexit", OpenLessBackendWarmupActivity's "warmup",
-        // OpenLessImeService's "mictap", and this file's own MAIN/
-        // ACCESSIBILITY/"unclean") — resetRestartStatsOnVersionBump() needs
-        // the full list to zero everything out on a fresh build.
+        // across the app (OpenLessRuntimeService's "sticky"/"actkill"/its
+        // four "actkill_<reason>" sub-categories/"rtexit",
+        // OpenLessBackendWarmupActivity's "warmup", OpenLessImeService's
+        // "mictap", and this file's own MAIN/ACCESSIBILITY/"unclean") —
+        // resetRestartStatsOnVersionBump() needs the full list to zero
+        // everything out on a fresh build. The four actkill_* entries were
+        // missing here for a while: "actkill" itself got zeroed on every
+        // version bump but its sub-categories didn't, so they kept
+        // accumulating across bumps within the same day while the total
+        // reset out from under them — e.g. actkill_finishing reading
+        // higher than actkill itself, which should never happen since
+        // both are only ever incremented together (OpenLessRuntimeService).
         private val ALL_RESTART_CATEGORIES = listOf(
             OpenLessProcessRestartStats.MAIN,
             OpenLessProcessRestartStats.ACCESSIBILITY,
@@ -360,6 +367,10 @@ class OpenLessApplication : Application() {
             "warmup",
             "mictap",
             "actkill",
+            "actkill_self",
+            "actkill_config",
+            "actkill_finishing",
+            "actkill_os",
             "rtexit",
             "unclean",
             "heartbeat",

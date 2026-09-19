@@ -88,6 +88,7 @@ Manifest 合并脚本：
 | "0"（麦克风）键长按进入语音模式改用可调延时 | `keyboardKey()` 新增 `longPressAction`/`longPressDelayMs` 参数，用自建 `Handler.postDelayed` 取代系统 `setOnLongClickListener`（系统长按判定固定约 500ms，无法按键单独调整）；"0"键延时设为 900ms，且一旦识别到上划手势就立刻 `removeCallbacks` 取消这次长按——起因是原来"0"键长按 500ms 直接进入语音模式，手指按下后稍作停顿再开始上划，长按会先于上划阈值触发，导致"0"键上划实际从未生效过 |
 | 笔画气泡颜色多轮反馈微调（在上面几行提交之后又调了几轮） | 背景：暗色主题从 `rgb(52,52,54)`（刻意比候选/编码区卡片背景 `58,58,58` 更深）改成方向相反的"比候选行更浅"——`rgb(80,80,84)` 再到最终 `rgb(96,96,100)`，边框同步调亮到 `rgb(128,128,133)`；浅色主题也从原来比候选行背景更深的 `C8C8CC` 改成更浅的 `rgb(246,246,249)`（边框 `rgb(210,210,215)`）。字色：候选字高亮与气泡文字暗色主题下从 `Color.rgb(153, 26, 40)`（动作栏同款红）加亮到 `Color.rgb(190, 45, 60)`，同一色相只是更亮，浅色主题维持动作栏原色不变 |
 | 话筒键划动手势重做：两个方向都改成"松手才生效"+ 实时视觉反馈 | 原来上划进 RAW 模式（`rawModeArmed`）和下划取消录音（`cancelDictation()`）都是划过 24dp 阈值那一刻在 `ACTION_MOVE` 里立刻生效，容易划太快/抖一下就误触。两个手势统一改成：阈值最终定为 30dp（上划中途试过 40dp）；判定不再是一次性锁存，而是每次 `ACTION_MOVE` 重新计算的实时布尔值（`swipeUpActive`/`swipeDownActive`），手指缩回阈值以内会跟着退出"待触发"状态；真正生效（进 RAW / 取消）只在 `ACTION_UP` 时看当前布尔值是否仍为真。配套实时视觉：`VoiceButton` 新增 `armedForRawSwipe`（待机胶囊背景过渡成浅绿 `rgb(200,230,201)`）和 `armedForCancel`（录音时波形颜色过渡成浅红 `rgb(255,150,150)`），都是 120ms `ValueAnimator` 缓动，松手（不管有没有真的触发）统一再缓动回原色，不是瞬间跳变；每次越过阈值（不论方向）触发一次 `performKeyHaptic()`，真正触发 RAW/取消那一刻仍是原有的 `performDoubleKeyHaptic()`。中途还试过给待机话筒图标本身加同步的变黄+上移几 dp 效果，用户反馈后整批回退，只保留胶囊/波形背景色这一种反馈方式 |
+| 修复：`actkill` 细分重启统计跟总数脱节 | 用户从键盘设置页截图发现 `actkill_finishing`（59）比 `actkill` 总数（16）还大，逻辑上不该发生——两者本该在 `OpenLessRuntimeService.kt` 里原子地一起 +1。根因是 `OpenLessApplication.ALL_RESTART_CATEGORIES`（版本号变化时清零哪些 key 的白名单，注释里写明"要手动同步"）没跟上后来新增的 `actkill_self`/`actkill_config`/`actkill_finishing`/`actkill_os` 四个细分 key，导致 `actkill` 总数每次调试构建升版本号都清零，四个细分计数却完全不清零，在同一天多次构建之间持续累加、跟总数脱节。已在 1.68 把四个 key 补进白名单 |
 
 开发流程：每次改动后用 `npm run copy:android-scaffolding` 同步 → `gradlew app:assembleArm64Debug -x app:rustBuildArm64Debug`（Kotlin-only 改动跳过 Rust 重编译）→ `adb install -r` 装机 → 通过 `adb exec-out screencap` 或用户反馈截图核对真机效果；涉及尺寸争议时用 `adb shell wm density` + 实测 px 反推 dp，避免凭空猜测布局问题。
 
@@ -119,10 +120,10 @@ Manifest 合并脚本：
 | `warmup` | `OpenLessBackendWarmupActivity.kt:316`（`launchWarmup()`） | `ensureBackendReady()` 发现后端未就绪或 Activity Context 未注册，发起静默唤醒 |
 | `mictap` | `OpenLessImeService.kt:2416`（`toggleDictation()`） | 用户点麦克风时 `isBackendReady()` 为 false（用户可见的"服务未就绪"症状） |
 | `sticky` | `OpenLessRuntimeService.kt:24` | `onStartCommand()` 收到 null Intent —— `START_STICKY` 服务被系统杀死后自动重启的官方信号，是"进程真的被杀过"最强的证据 |
-| `actkill` | `OpenLessRuntimeService.kt:28` | 收到 `ACTION_RUNTIME_ACTIVITY_DESTROYED`（`OpenLessBackendWarmupActivity.onDestroy()` 发出）——系统回收了宿主 Activity 的窗口，不一定代表进程本身也被杀 |
+| `actkill` | `OpenLessRuntimeService.kt:28` | 收到 `ACTION_RUNTIME_ACTIVITY_DESTROYED`（`OpenLessBackendWarmupActivity.onDestroy()` 发出）——系统回收了宿主 Activity 的窗口，不一定代表进程本身也被杀。同一次调用还会带一个 `reason`（`self`/`config`/`finishing`/`os`，`OpenLessBackendWarmupActivity.kt` 的 `onDestroy()` 判断），一并记一条 `actkill_<reason>` 细分计数，跟 `actkill` 本身原子地一起 +1 |
 | `rtexit` | `OpenLessRuntimeService.kt:32` | 收到 `ACTION_RUNTIME_EXITED`——Tauri 的 `RunEvent::Exit` 实际触发了，理论上应该始终为 0（`mobile_runtime.rs` 的 `RunEvent::ExitRequested` + `prevent_exit()` 修复如果还生效的话） |
 
-所有计数每次 `OpenLessBuildInfo.VERSION` 变化时清零（见上方"安装时间显示"），键盘设置页只展示"今天"的累计值。
+所有计数每次 `OpenLessBuildInfo.VERSION` 变化时清零（见上方"安装时间显示"），键盘设置页只展示"今天"的累计值——**但这依赖 `OpenLessApplication.ALL_RESTART_CATEGORIES` 手动维护的白名单**，四个 `actkill_<reason>` 细分 key 加入代码后一度漏掉没同步进这份白名单，导致 `actkill` 总数每次版本号变化都清零、四个细分计数却完全不清零，在同一天内多次调试构建之间越攒越多、跟总数脱节（用户截图实测 `actkill_finishing` 累计到 59，同期 `actkill` 总数只有 16）。已在 1.68 修复（把四个 key 补进白名单）。
 
 ## 构建与 CI
 
