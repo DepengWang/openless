@@ -73,6 +73,10 @@ class OpenLessBackendWarmupActivity : MainActivity() {
                 warmupHandler.postDelayed(sendToBackground, WEBVIEW_READY_POLL_INTERVAL_MS)
                 return@Runnable
             }
+            android.util.Log.i(
+                "OpenLessBackendWarmupActivity",
+                "sendToBackground firing waitedMs=$webViewReadyWaitElapsedMs webViewReady=$webViewReady",
+            )
             // Tauri/Rust runtime is owned by this Activity. Keep it alive as the
             // single UI/runtime host, but never relaunch the editor's package here:
             // a package launch intent only knows that app's launcher Activity, which
@@ -118,9 +122,71 @@ class OpenLessBackendWarmupActivity : MainActivity() {
      * time). Only called for a genuine settings-open, not for silent
      * warmup — no one is looking at the window then, so there's nothing to
      * fix and no reason to pay for a reload.
+     *
+     * A plain reload() alone isn't reliable on its own: on-device restart
+     * stats showed this same singleTask instance's task getting destroyed
+     * and silently re-warmed by the OS's background task killer 16-17+
+     * times in a single day — enough repeated freeze/reclaim cycles that
+     * the WebView's native render surface can end up in a state reload()
+     * doesn't recover (the page reports itself loaded, but no new frame is
+     * ever composited). Two earlier escalations (toggling the WebView's
+     * own visibility; recreate()ing the Activity) were both gated on
+     * `WebView.progress` reaching 100, and on-device logging proved that
+     * gate never actually fired — progress tracks page *load* (network/DOM),
+     * which reload() on an already-navigated URL can report as instantly
+     * "done" regardless of whether the compositor ever produces a new
+     * visible frame, so the escalation code was silently dead. This uses
+     * postVisualStateCallback() instead: a real "a frame reflecting the
+     * WebView's current state has been produced" signal from the
+     * compositor itself, not a load-progress proxy — no dependency on
+     * progress, and no WebViewClient override needed (Tauri/Wry installs
+     * its own client for the JS<->Rust bridge; postVisualStateCallback is a
+     * plain WebView method, not a client callback, so it doesn't touch
+     * that). If the callback doesn't fire within a grace window, that's
+     * real evidence the compositor itself is stuck, and recreate() runs
+     * this Activity's own onCreate() again from scratch (the exact,
+     * already-proven path every genuine cold app launch already takes) —
+     * a brief visible flash while it re-inits, so reserved for when this
+     * signal says something is actually wrong, not run on every open.
+     * recreatedForStuckWebView (a companion field, since recreate()
+     * replaces this whole instance) survives into the fresh instance's own
+     * reloadWebViewForSettings() call so that one doesn't immediately
+     * re-arm the same escalation and recreate() again in a loop if the new
+     * WebView is also just being genuinely slow.
      */
     private fun reloadWebViewForSettings() {
-        webViewRef?.post { webViewRef?.reload() }
+        val webView = webViewRef ?: return
+        val skipEscalationThisTime = recreatedForStuckWebView
+        recreatedForStuckWebView = false
+        webView.post {
+            webView.reload()
+            if (!skipEscalationThisTime) verifyVisualStateOrRecreate(webView)
+        }
+    }
+
+    private fun verifyVisualStateOrRecreate(webView: android.webkit.WebView) {
+        var compositorResponded = false
+        webView.postVisualStateCallback(
+            0L,
+            object : android.webkit.WebView.VisualStateCallback() {
+                override fun onComplete(requestId: Long) {
+                    compositorResponded = true
+                }
+            },
+        )
+        warmupHandler.postDelayed(
+            {
+                if (webViewRef === webView && !compositorResponded) {
+                    android.util.Log.w(
+                        "OpenLessBackendWarmupActivity",
+                        "postVisualStateCallback didn't fire within ${WEBVIEW_RELOAD_VERIFY_TIMEOUT_MS}ms; recreating the Activity for a fresh WebView",
+                    )
+                    recreatedForStuckWebView = true
+                    recreate()
+                }
+            },
+            WEBVIEW_RELOAD_VERIFY_TIMEOUT_MS,
+        )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -151,6 +217,12 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         // reading only this Intent's own extras, depends on onNewIntent()
         // winning that race, which is not guaranteed.
         settingsRequested = launchedFromLauncher || intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false) || settingsOpenPending
+        android.util.Log.i(
+            "OpenLessBackendWarmupActivity",
+            "onCreate settingsRequested=$settingsRequested launchedFromLauncher=$launchedFromLauncher " +
+                "hasExtra=${intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false)} settingsOpenPending=$settingsOpenPending " +
+                "cameFromSelfRecreate=$recreatedForStuckWebView",
+        )
         settingsOpenPending = false
         // Only when visibly opened for settings: a permission dialog here
         // during the invisible warmup path would get dragged to the
@@ -197,6 +269,11 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         if (launchedFromLauncher || intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false) || settingsOpenPending) {
             settingsRequested = true
             settingsOpenPending = false
+            android.util.Log.i(
+                "OpenLessBackendWarmupActivity",
+                "onNewIntent settingsRequested=true launchedFromLauncher=$launchedFromLauncher " +
+                    "hasExtra=${intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false)}",
+            )
             warmupHandler.removeCallbacks(sendToBackground)
             // Covers openSettingsIfRunning() bringing an already-alive
             // instance forward, and the launcher icon being tapped again
@@ -230,20 +307,57 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         android.util.Log.i("OpenLessBackendWarmupActivity", "POST_NOTIFICATIONS result granted=$granted")
     }
 
+    override fun onPause() {
+        super.onPause()
+        android.util.Log.i(
+            "OpenLessBackendWarmupActivity",
+            "onPause settingsRequested=$settingsRequested isChangingConfigurations=$isChangingConfigurations",
+        )
+    }
+
+    override fun onStop() {
+        super.onStop()
+        android.util.Log.i(
+            "OpenLessBackendWarmupActivity",
+            "onStop settingsRequested=$settingsRequested isChangingConfigurations=$isChangingConfigurations isFinishing=$isFinishing",
+        )
+    }
+
     override fun onDestroy() {
         warmupHandler.removeCallbacks(sendToBackground)
         if (activeInstance?.get() === this) {
             activeInstance = null
         }
-        // Only reachable here, not from onPause()/onStop(): this class never
-        // calls finish() on itself (see onBackPressed()), so onDestroy()
-        // firing means the *system* reclaimed this task — e.g. memory
-        // pressure, or "don't keep activities" — while the process (and
-        // OpenLessRuntimeService, its supervisor) is still alive. Routed
-        // through the service rather than calling ensureBackendReady()
+        // This used to assume onDestroy() firing here always meant "the
+        // system reclaimed this task" (this class never calls finish() on
+        // itself deliberately — see onBackPressed()) — that stopped being
+        // true once verifyVisualStateOrRecreate() started calling
+        // recreate() itself, which also runs this exact onDestroy(). The
+        // reason string below disambiguates the three real causes so the
+        // stats screen (and this log line) can tell apart "we did this to
+        // ourselves to fix a stuck WebView", "the OS just spun this Activity
+        // through a normal configuration change", and "the OS actually
+        // reclaimed the task" — only the last one is the thing all of this
+        // investigation has been chasing. Reads recreatedForStuckWebView
+        // rather than resetting it here: it's set right before recreate()
+        // and this onDestroy() runs synchronously as part of that same
+        // call, before the fresh instance's own onCreate()/
+        // reloadWebViewForSettings() gets a chance to consume it — resetting
+        // it here would make that later, real consumer see it as false.
+        val reason = when {
+            recreatedForStuckWebView -> "self"
+            isChangingConfigurations -> "config"
+            isFinishing -> "finishing"
+            else -> "os"
+        }
+        android.util.Log.w(
+            "OpenLessBackendWarmupActivity",
+            "onDestroy reason=$reason settingsRequested=$settingsRequested",
+        )
+        // Routed through the service rather than calling ensureBackendReady()
         // directly here: the service is what decides whether/when to
         // relaunch, this Activity dying is just one input to that decision.
-        OpenLessRuntimeService.notifyRuntimeActivityDestroyed(applicationContext)
+        OpenLessRuntimeService.notifyRuntimeActivityDestroyed(applicationContext, reason)
         super.onDestroy()
     }
 
@@ -255,6 +369,15 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         private const val REQUEST_POST_NOTIFICATIONS = 9102
         private const val WEBVIEW_READY_POLL_INTERVAL_MS = 60L
         private const val WEBVIEW_READY_MAX_WAIT_MS = 4000L
+        private const val WEBVIEW_RELOAD_VERIFY_TIMEOUT_MS = 2000L
+
+        // Set right before recreate() (see reloadWebViewForSettings()'s doc
+        // comment), consumed once by the fresh instance's own first
+        // reloadWebViewForSettings() call so a still-slow (not actually
+        // stuck) reload on the new instance can't immediately trigger a
+        // second recreate() and loop.
+        @Volatile
+        private var recreatedForStuckWebView = false
 
         // Set synchronously by openSettings()/openSettingsIfRunning() BEFORE
         // startActivity() is ever called, and consumed by onCreate()/
@@ -282,6 +405,7 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         fun openSettingsIfRunning(context: Context): Boolean {
             val activity = activeInstance?.get() ?: return false
             if (activity.isFinishing || activity.isDestroyed) return false
+            android.util.Log.i("OpenLessBackendWarmupActivity", "openSettingsIfRunning: reusing live instance")
             settingsOpenPending = true
             // Also applied directly to the live instance right here, not
             // left to onNewIntent() delivery timing: this is the common
@@ -311,6 +435,7 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         fun openSettings(context: Context) {
             settingsOpenPending = true
             if (openSettingsIfRunning(context)) return
+            android.util.Log.i("OpenLessBackendWarmupActivity", "openSettings: no live instance, starting fresh")
             context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {
                 putExtra(EXTRA_SHOW_SETTINGS, true)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

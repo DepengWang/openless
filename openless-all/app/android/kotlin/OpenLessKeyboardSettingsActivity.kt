@@ -170,6 +170,72 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             ),
         )
 
+        content.addView(sectionLabel(ui("后台运行", "Background")))
+        // OEM background-task killers (observed on-device: this app's own
+        // settings Activity gets reclaimed by the system 16+ times/day even
+        // with a foreground service running) largely ignore that
+        // protection but do respect the standard "ignore battery
+        // optimizations" exemption — offering a direct link to it here is
+        // the most effective single thing a user can do about the restart
+        // counts below. isIgnoringBatteryOptimizations() re-reads live each
+        // time this screen builds, so returning here after granting it in
+        // system settings shows the up-to-date state without extra wiring.
+        val powerManager = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        if (powerManager.isIgnoringBatteryOptimizations(packageName)) {
+            content.addView(
+                TextView(this).apply {
+                    text = ui("已加入电池优化白名单", "Already exempt from battery optimization")
+                    textSize = 13f
+                    setTextColor(tone(Color.rgb(134, 239, 172), Color.rgb(21, 128, 61)))
+                },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(14)
+                },
+            )
+        } else {
+            content.addView(
+                TextView(this).apply {
+                    text = ui(
+                        "系统电量管理可能频繁回收键盘的后台进程，导致设置页偶尔黑屏或响应变慢。加入电池优化白名单可以减少这种情况——效果因系统而异。",
+                        "The system's battery manager may repeatedly reclaim the keyboard's background process, occasionally causing a black settings screen or slow responses. Exempting it from battery optimization can reduce this — effectiveness varies by device.",
+                    )
+                    textSize = 13f
+                    setTextColor(tone(Color.rgb(200, 200, 200), Color.rgb(70, 70, 75)))
+                },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(8)
+                },
+            )
+            content.addView(
+                TextView(this).apply {
+                    text = ui("去允许后台活动 →", "Allow background activity →")
+                    textSize = 15f
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    setTextColor(tone(Color.rgb(94, 234, 212), Color.rgb(15, 118, 110)))
+                    isClickable = true
+                    setOnClickListener {
+                        val direct = android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = android.net.Uri.parse("package:$packageName")
+                        }
+                        val fallback = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = android.net.Uri.parse("package:$packageName")
+                        }
+                        runCatching { startActivity(direct) }
+                            // A handful of heavily customized OEM systems
+                            // block or silently no-op this specific system
+                            // intent — the general app-details screen at
+                            // least lands the user in the right area, one
+                            // tap further from the actual toggle, instead
+                            // of nothing happening on tap.
+                            .onFailure { runCatching { startActivity(fallback) } }
+                    }
+                },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(14)
+                },
+            )
+        }
+
         content.addView(sectionLabel(ui("进程重启统计（今天）", "Process restarts (today)")))
         // Short, purposefully un-translated keys (not meant to be pretty —
         // meant to be pasted into a screenshot and read back verbatim).
@@ -186,9 +252,19 @@ class OpenLessKeyboardSettingsActivity : Activity() {
         //                  the warmup Activity
         //   mictap       - user tapped the mic and toggleDictation() found
         //                  the backend not ready (the user-visible symptom)
-        //   actkill      - OpenLessBackendWarmupActivity.onDestroy() fired
-        //                  (system reclaimed the host Activity's window;
-        //                  doesn't necessarily mean the process itself died)
+        //   actkill      - OpenLessBackendWarmupActivity.onDestroy() fired,
+        //                  total across all reasons below (doesn't
+        //                  necessarily mean the process itself died)
+        //   actkill_self   - onDestroy() from our own recreate() call
+        //                    (verifyVisualStateOrRecreate()'s WebView
+        //                    recovery), not the system
+        //   actkill_config - onDestroy() from a configuration change
+        //                    (rotation/density/locale) — expected, harmless
+        //   actkill_finishing - isFinishing was true (unexpected; this
+        //                       Activity never calls finish() on itself
+        //                       deliberately)
+        //   actkill_os     - none of the above: the only sub-category that
+        //                    is actually the system reclaiming this task
         //   rtexit       - Tauri's RunEvent::Exit actually fired despite
         //                  ExitRequested being prevented (see
         //                  mobile_runtime.rs) — should stay at 0 if that fix
@@ -204,7 +280,11 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             Triple("sticky", "sticky", "系统杀后恢复"),
             Triple("warmup", "warmup", "后端唤醒"),
             Triple("mictap", "mictap", "点击时未就绪"),
-            Triple("actkill", "actkill", "界面被系统回收"),
+            Triple("actkill", "actkill", "界面被回收(合计)"),
+            Triple("actkill_self", "  ├self", "· 自己recreate()修复"),
+            Triple("actkill_config", "  ├config", "· 配置变化(无害)"),
+            Triple("actkill_finishing", "  ├finish", "· isFinishing(异常)"),
+            Triple("actkill_os", "  └os", "· 真正被系统回收"),
             Triple("rtexit", "rtexit", "后端异常退出"),
             Triple("unclean", "unclean", "上次异常退出"),
             Triple("heartbeat", "heartbeat", "心跳自愈"),

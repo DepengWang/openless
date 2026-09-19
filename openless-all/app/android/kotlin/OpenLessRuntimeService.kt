@@ -24,8 +24,19 @@ class OpenLessRuntimeService : Service() {
             OpenLessProcessRestartStats(this, "sticky").recordStart()
         }
         if (intent?.action == ACTION_RUNTIME_ACTIVITY_DESTROYED) {
-            Log.w(TAG, "runtime host activity was destroyed by the system; re-checking backend")
+            // reason disambiguates *why* onDestroy() fired — added because
+            // the plain "actkill" total conflated at least three different
+            // causes (self-triggered recreate() for a stuck WebView, a
+            // config change, and genuine unexplained OS reclamation) into
+            // one number, making it impossible to tell from the stats
+            // screen alone whether "actkill" was ever actually the OS
+            // killing something. Recorded as its own sub-category
+            // alongside (not instead of) the original "actkill" so
+            // existing dashboards/screenshots keep meaning the same thing.
+            val reason = intent.getStringExtra(EXTRA_DESTROY_REASON) ?: "unknown"
+            Log.w(TAG, "runtime host activity was destroyed (reason=$reason); re-checking backend")
             OpenLessProcessRestartStats(this, "actkill").recordStart()
+            OpenLessProcessRestartStats(this, "actkill_$reason").recordStart()
         }
         if (intent?.action == ACTION_RUNTIME_EXITED) {
             Log.w(TAG, "Tauri RunEvent::Exit fired; recording and re-checking backend")
@@ -96,6 +107,7 @@ class OpenLessRuntimeService : Service() {
         private const val NOTIFICATION_ID = 42002
         private const val TAG = "OpenLessRuntimeService"
         private const val ACTION_RUNTIME_ACTIVITY_DESTROYED = "com.openless.app.action.RUNTIME_ACTIVITY_DESTROYED"
+        private const val EXTRA_DESTROY_REASON = "reason"
 
         // String literal duplicated on the Rust side (mobile_runtime.rs's
         // RunEvent::Exit handler) rather than shared as a constant — Rust
@@ -112,10 +124,20 @@ class OpenLessRuntimeService : Service() {
          * Activity deciding for itself. The action is only for logging here
          * today; onStartCommand() already re-checks on every start
          * regardless of why it was started.
+         *
+         * @param reason one of "self" (our own recreate() call, see
+         *   OpenLessBackendWarmupActivity.verifyVisualStateOrRecreate()),
+         *   "config" (isChangingConfigurations was true — a rotation/
+         *   density/locale change, not a kill), "finishing" (isFinishing
+         *   was true — unexpected, this Activity never calls finish() on
+         *   itself deliberately), or "os" (none of the above — the only
+         *   case that's actually the system reclaiming this task).
          */
-        fun notifyRuntimeActivityDestroyed(context: android.content.Context) {
+        fun notifyRuntimeActivityDestroyed(context: android.content.Context, reason: String) {
             context.startService(
-                Intent(context, OpenLessRuntimeService::class.java).setAction(ACTION_RUNTIME_ACTIVITY_DESTROYED),
+                Intent(context, OpenLessRuntimeService::class.java)
+                    .setAction(ACTION_RUNTIME_ACTIVITY_DESTROYED)
+                    .putExtra(EXTRA_DESTROY_REASON, reason),
             )
         }
     }

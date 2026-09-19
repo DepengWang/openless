@@ -220,6 +220,26 @@ Every item below is one more layer sedimented into a default — a capability yo
 - Dictionary entries are injected as Volcengine ASR `context.hotwords` and as semantic hints during polish; hits accumulate per session.
 - Platform-native global hotkey: CGEventTap on macOS, low-level keyboard hook (`WH_KEYBOARD_LL`) on Windows.
 
+### Android input method
+
+Android is a Tauri mobile host with a native `InputMethodService` layered on top. The Android build currently provides:
+
+- Four input modes: voice, stroke, clipboard, and English keyboard.
+- Offline Chinese stroke dictionaries, frequency-ranked candidates, phrase association, simplified/traditional output, number/symbol panels, and per-target-app local personalization.
+- Persistent clipboard history with recent/text/number/link filters, favorites, deletion, direct insertion, selection expansion, voice replacement, and correction actions.
+- A floating dictation capsule with tap/long-press activation, dragging, swipe actions, translation, style-pack switching, QA launch, and recording cancellation.
+- Tiered text insertion through the Android accessibility bridge, optional Shizuku support, and clipboard fallback when direct insertion is unavailable.
+- A foreground runtime supervisor and one tracked Tauri host Activity. The Activity is reused and moved to the background during warmup so the Rust/Tauri runtime can retain the Activity context required by the Android mobile runtime.
+- Android Keystore-backed credential storage, permission checks, in-app update support, and restart-cause diagnostics.
+
+Android has additional system dependencies that desktop builds do not: microphone and notification permissions, IME enablement, overlay permission for the floating capsule, and optional accessibility/Shizuku permission for cross-application insertion. OEM task management and WebView/HWUI behavior can also affect background recovery. The runtime supervisor reduces duplicate-start and Activity-destruction risks, but it cannot guarantee survival after a native crash or arbitrary vendor process reclamation.
+
+The Android implementation is currently beta-quality. A successful APK build or contract test is not a substitute for real-device verification. Before a release, test ordinary native fields, WeChat and mini-program fields, background/foreground transitions, recording start/stop/cancel, Activity reclamation, process restart, and every enabled insertion tier. See [Android architecture](docs/architecture.md), [Android implementation plan](docs/android-mobile-apk-overlay-plan.md), and [desktop/Android acceptance](docs/2.0-desktop-acceptance.md).
+
+### Data and privacy boundaries
+
+OpenLess is local-first, not universally local-only. Credentials, settings, dictionaries, Android stroke personalization, and local history are stored on the device when possible. If a cloud ASR or polish provider, Marketplace, cloud synchronization, cursor context, or remote-input feature is enabled, the corresponding audio, text, context, or metadata is sent to that configured service. Users should review the selected provider and its retention policy before enabling those features.
+
 ## Download & install (end users)
 
 Go to [Releases](../../releases) and download:
@@ -406,12 +426,25 @@ See [AGENTS.md](AGENTS.md) for repository rules and [Architecture](docs/architec
 
 ## Roadmap
 
-Planned but not yet shipped:
+The following status is intentionally separated so that documentation does not present experiments or platform-specific features as universally available:
+
+### In progress / validation required
+
+- Android runtime lifecycle and cross-application insertion need continued real-device validation across OEMs, Android versions, WeChat mini-programs, and low-memory conditions.
+- Android input-panel code should be split into smaller controllers and UI components without changing the existing IME behavior.
+- Clipboard history needs a documented retention/privacy policy and more robust atomic persistence.
+
+### Planned but not yet shipped
 
 - Cross-session style memory: polish learns the user's tone over time ([#46](../../issues/46)).
 - Snippets (no UI or trigger logic yet).
-- History enhancements: copy button, search, re-polish, re-insert.
 - A "Paste last result" hotkey.
+
+History already includes several search, copy, re-polish, and re-insert paths; remaining gaps should be tracked as individual issues rather than described as one unimplemented feature.
+
+### Release gate
+
+Do not treat source inspection, a generated APK, or a green contract test as proof of Android production readiness. Record the tested commit, device model, Android version, ABI, enabled permissions, selected ASR/provider, insertion tier, cold-start result, and crash/exit evidence for each release candidate.
 
 ## Maintainer release checklist
 
