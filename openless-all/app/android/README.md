@@ -108,6 +108,12 @@ Manifest 合并脚本：
 
 **注意**：排查早期还发现过一次 `adb install -r` 重装导致的一次性黑屏（`ActivityThread: Package [com.openless.app] reported as REPLACED, but missing application info. Assuming REMOVED.`），这是重装时旧 WebView 渲染进程还没被系统完全回收造成的开发流程副作用，`adb shell am force-stop com.openless.app` 可以清掉，不是代码问题，真实用户走应用商店/App 内更新不会遇到。
 
+**2026-09-20 更新：黑屏在真机上又出现了，尚未排查**。现象描述是"过一段时间之后长按 Logo 打开设置页又是黑屏"——跟上面两个原因的表面症状（Activity 能弹出、内容区纯黑）一致，但触发条件里"过一段时间"这个说法目前还没有对应到具体机制，需要重新确认：
+
+1. 是上面原因一/原因二的**回归**（比如某次改动意外绕过了 `settingsOpenPending` 或 `reloadWebViewForSettings()`），还是一个**没被覆盖到的新场景**（比如两次修复都是在"静默唤醒 vs 用户主动打开"这条路径上验证的，"过一段时间"具体指多久、期间设备是否息屏/App 是否被切到过后台、是否发生过 Runtime Service 重启，都还没有对照过）。
+2. 重新走一遍上面的排查方法：`adb logcat` 抓 `onSurfaceShowChange`/`settingsRequested`/`Async freezing`/`sync unfroze` 这几个关键字，`adb exec-out screencap` 截图确认确实是纯黑（不是别的黑屏/白屏原因），再看这次是卡在原因一那种"窗口被收回后台"，还是卡在原因二那种"窗口在前台但 WebView 没重新合成"，或者是两个都排除后的第三种原因。
+3. 在得出结论前不要假设是"同一个 bug 又犯了"——`reloadWebViewForSettings()`/`settingsOpenPending` 这两个修复本身有没有被后续改动动过、或者这次复现的具体操作路径是否真的会经过它们，都需要先用证据确认。
+
 ## 重启原因统计代码位置一览（`OpenLessProcessRestartStats`，供交叉验证）
 
 8 个分类，`recordStart()` 调用点：
