@@ -456,48 +456,88 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             isClickable = true
             setOnClickListener { toggleDictation() }
             contentDescription = ui("OpenLess 语音听写", "OpenLess dictation")
-            // Swipe down while actively recording cancels outright (same
-            // effect as cancelDictation(), already used elsewhere for this
-            // exact purpose) instead of stopping normally and running the
-            // usual thinking/polish step on a recording the user is
-            // discarding. Swipe up while already recording just arms
-            // rawModeArmed — recording keeps going, a normal tap still ends
-            // it, only now skipping the LLM polish step for this utterance
-            // once it does (see toggleDictation()'s recording-stop branch).
-            // Swipe up from idle (not yet recording) instead starts
-            // recording immediately with rawModeArmed pre-armed, so a single
-            // continuous up-swipe from the ready state is "record, no
-            // polish" without a separate initial tap. requestDisallow... is
-            // claimed unconditionally on DOWN (not only once a threshold is
+            // Both swipe gestures follow the same pattern: a LIVE boolean
+            // re-evaluated every ACTION_MOVE (not a one-way latch), a
+            // matching live visual on VoiceButton (capsule green for
+            // swipe-up-to-raw, waveform light red for swipe-down-to-
+            // cancel — both ease back the moment the finger drops back
+            // below their own threshold), a single haptic tick on every
+            // crossing in either direction, and the actual action (cancel
+            // / enter raw mode) only committed on release, gated on
+            // whichever one is still active at that instant. Nothing
+            // commits mid-drag any more — swipe down used to cancel the
+            // moment the threshold was first crossed during the move, but
+            // that gave no chance to back out of an accidental trigger,
+            // same reasoning as the swipe-up threshold's own move-to-
+            // release change earlier.
+            //
+            // requestDisallowInterceptTouchEvent is still claimed
+            // unconditionally on DOWN (not only once a threshold is
             // crossed), matching buildEnglishCharKey()'s same fix earlier
             // this session: without it, a downward drag here is
             // indistinguishable from the enclosing SwipeModeContainer's own
             // "long downward drag dismisses the keyboard" gesture, and that
-            // ancestor can steal the sequence before our own dp(24) check
+            // ancestor can steal the sequence before our own dp(30) check
             // ever sees the full distance.
             var downY = 0f
+            var swipeUpActive = false
+            var swipeDownActive = false
             setOnTouchListener { view, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         downY = event.y
+                        swipeUpActive = false
+                        swipeDownActive = false
                         view.parent?.requestDisallowInterceptTouchEvent(true)
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        if (recording && event.y - downY >= dp(24)) {
+                        if (recording) {
+                            val active = event.y - downY >= dp(30)
+                            if (active != swipeDownActive) {
+                                swipeDownActive = active
+                                voiceButton?.armedForCancel = active
+                                performKeyHaptic()
+                            }
+                        }
+                        val active = downY - event.y >= dp(30)
+                        if (active != swipeUpActive) {
+                            swipeUpActive = active
+                            voiceButton?.armedForRawSwipe = active
+                            // One tick every time the threshold is
+                            // crossed, either direction — entering AND
+                            // leaving the armed zone both get felt, not
+                            // just the eventual release.
+                            performKeyHaptic()
+                        }
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        if (swipeDownActive) {
                             performDoubleKeyHaptic()
                             cancelDictation()
-                        } else if (recording && !rawModeArmed && downY - event.y >= dp(24)) {
-                            rawModeArmed = true
-                            performDoubleKeyHaptic()
-                            updateBackendLinkIndicator()
-                        } else if (!recording && !processing && downY - event.y >= dp(24)) {
-                            toggleDictation()
-                            if (recording) {
+                        } else if (swipeUpActive) {
+                            if (recording && !rawModeArmed) {
                                 rawModeArmed = true
                                 performDoubleKeyHaptic()
                                 updateBackendLinkIndicator()
+                            } else if (!recording && !processing) {
+                                toggleDictation()
+                                if (recording) {
+                                    rawModeArmed = true
+                                    performDoubleKeyHaptic()
+                                    updateBackendLinkIndicator()
+                                }
                             }
                         }
+                        swipeUpActive = false
+                        swipeDownActive = false
+                        voiceButton?.armedForRawSwipe = false
+                        voiceButton?.armedForCancel = false
+                    }
+                    MotionEvent.ACTION_CANCEL -> {
+                        swipeUpActive = false
+                        swipeDownActive = false
+                        voiceButton?.armedForRawSwipe = false
+                        voiceButton?.armedForCancel = false
                     }
                 }
                 false
@@ -1565,10 +1605,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             translationZ = 0f
             setPadding(dp(9), 0, dp(9), 0)
             if (isFirst) {
-                // Same literal as the action rail's own background
-                // (Color.rgb(153, 26, 40)) — unconditional of theme there
-                // too, so no tone()/strokeEncodeAccentColor branching here.
-                setTextColor(Color.rgb(153, 26, 40))
+                // Same red as the action rail's own background
+                // (Color.rgb(153, 26, 40)), brightened a touch for dark
+                // theme only — same hue, just a bit lighter so it reads
+                // more clearly against a dark panel; light theme keeps the
+                // exact action-rail red.
+                setTextColor(if (isDarkTheme) Color.rgb(190, 45, 60) else Color.rgb(153, 26, 40))
                 setTypeface(typeface, android.graphics.Typeface.BOLD)
             }
         }
@@ -4407,29 +4449,30 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 invalidate()
             }
         private val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            // Dark theme: a hair lighter than the panel's own background
-            // (48,48,48) but noticeably darker than the stroke encode/
-            // candidate row's own card background (58,58,58,
-            // buildEncodeAreaBackground()) — the flat C8C8CC light gray
-            // read as glaringly bright against a dark keyboard. Light
-            // theme keeps the original clearly-visible-but-not-white gray.
-            color = if (darkTheme) Color.rgb(52, 52, 54) else Color.rgb(0xC8, 0xC8, 0xCC)
+            // Lighter than the stroke encode/candidate row's own card
+            // background in both themes (buildEncodeAreaBackground():
+            // 58,58,58 dark / 228,228,232 light) rather than darker — a
+            // darker-than-the-card bubble read as low-contrast/blended-in;
+            // sitting a step lighter than that card makes the bubble read
+            // as its own raised surface instead.
+            color = if (darkTheme) Color.rgb(96, 96, 100) else Color.rgb(246, 246, 249)
         }
         private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = 2f
-            // A lighter outline than the dark body so the bubble still
-            // reads as its own shape against the similarly-dark panel
-            // background, without being bright itself.
-            color = if (darkTheme) Color.rgb(92, 92, 96) else Color.rgb(0xA8, 0xA8, 0xAE)
+            // Dark theme: a lighter outline than the body for definition
+            // against a similarly-dark panel. Light theme: a slightly
+            // darker outline than the now near-white body, since a lighter
+            // outline there would have no contrast against anything.
+            color = if (darkTheme) Color.rgb(128, 128, 133) else Color.rgb(210, 210, 215)
         }
         // Same red as the right-hand action rail's ←/↵/清除/123 keys and
         // the stroke candidate row's own selected/first candidate
-        // (candidateItemView() — Color.rgb(153, 26, 40)) — unconditional of
-        // theme there too, so darkTheme (still taken by the constructor for
-        // bodyPaint/borderPaint above) plays no part in this color.
+        // (candidateItemView()), brightened for dark theme by the same
+        // amount as candidateItemView()'s own dark-theme branch — the two
+        // stay in sync since they're tuned together.
         private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(153, 26, 40)
+            color = if (darkTheme) Color.rgb(190, 45, 60) else Color.rgb(153, 26, 40)
             textAlign = Paint.Align.CENTER
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             // FILL_AND_STROKE over DEFAULT_BOLD's own fill adds a touch more
@@ -4810,6 +4853,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val idlePillColor = if (darkTheme) Color.rgb(54, 54, 54) else Color.rgb(225, 225, 228)
         private val idleIconColor = if (darkTheme) Color.WHITE else Color.rgb(60, 60, 64)
+        // Light green, shown blended into the capsule behind the mic icon
+        // while a swipe-up-to-raw-mode gesture is past its commit
+        // threshold — same value in both themes (a status color, not a
+        // themed surface).
+        private val swipeArmedPillColor = Color.rgb(200, 230, 201)
+        // Light red, blended into the waveform bars while a swipe-down-to-
+        // cancel gesture is past its commit threshold — same value in both
+        // themes, mirroring swipeArmedPillColor's own choice.
+        private val cancelArmedWaveformColor = Color.rgb(255, 150, 150)
         private val waveformColor = if (darkTheme) Color.rgb(222, 222, 222) else Color.rgb(70, 70, 74)
         private val processingDotColors = if (darkTheme) {
             intArrayOf(
@@ -4841,6 +4893,60 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 invalidate()
             }
 
+        // Live "would releasing now enter raw mode?" indicator — the
+        // setter only starts an ease toward the target (see
+        // pillArmedAmount below); it doesn't jump straight there, so
+        // rapid on/off toggling right at the dp(30) threshold doesn't
+        // flicker instantly between the two colors.
+        var armedForRawSwipe: Boolean = false
+            set(value) {
+                if (field == value) return
+                field = value
+                pillArmedAnimator?.cancel()
+                pillArmedAnimator = android.animation.ValueAnimator.ofFloat(pillArmedAmount, if (value) 1f else 0f).apply {
+                    duration = 120L
+                    addUpdateListener { pillArmedAmount = it.animatedValue as Float }
+                    start()
+                }
+            }
+        private var pillArmedAmount: Float = 0f
+            set(value) {
+                field = value
+                invalidate()
+            }
+        private var pillArmedAnimator: android.animation.ValueAnimator? = null
+
+        // Same pattern as armedForRawSwipe/pillArmedAmount above, applied
+        // to the recording waveform instead of the idle capsule — swipe
+        // DOWN past the threshold while recording tints the waveform bars
+        // light red instead of the capsule turning green.
+        var armedForCancel: Boolean = false
+            set(value) {
+                if (field == value) return
+                field = value
+                waveformCancelAnimator?.cancel()
+                waveformCancelAnimator = android.animation.ValueAnimator.ofFloat(waveformCancelAmount, if (value) 1f else 0f).apply {
+                    duration = 120L
+                    addUpdateListener { waveformCancelAmount = it.animatedValue as Float }
+                    start()
+                }
+            }
+        private var waveformCancelAmount: Float = 0f
+            set(value) {
+                field = value
+                invalidate()
+            }
+        private var waveformCancelAnimator: android.animation.ValueAnimator? = null
+
+        private fun lerpColor(from: Int, to: Int, amount: Float): Int {
+            val t = amount.coerceIn(0f, 1f)
+            return Color.rgb(
+                (Color.red(from) + (Color.red(to) - Color.red(from)) * t).toInt(),
+                (Color.green(from) + (Color.green(to) - Color.green(from)) * t).toInt(),
+                (Color.blue(from) + (Color.blue(to) - Color.blue(from)) * t).toInt(),
+            )
+        }
+
         private var phase = 0f
         private val animator = object : Runnable {
             override fun run() {
@@ -4857,6 +4963,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
         override fun onDetachedFromWindow() {
             removeCallbacks(animator)
+            pillArmedAnimator?.cancel()
+            waveformCancelAnimator?.cancel()
             super.onDetachedFromWindow()
         }
 
@@ -4881,7 +4989,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             val radius = pillHeight * 0.5f
             // 录音/思考状态只显示动画，完全移除胶囊背景；待机状态保留话筒按钮。
             if (!isRecording && !isProcessing) {
-                paint.color = idlePillColor
+                paint.color = lerpColor(idlePillColor, swipeArmedPillColor, pillArmedAmount)
                 canvas.drawRoundRect(left, top, right, bottom, radius, radius, paint)
             }
 
@@ -4925,6 +5033,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 val envelopeCenter = (barCount - 1) / 2f
                 val gap = width * 0.86f / (barCount - 1)
                 val startX = centerX - gap * (barCount - 1) / 2f
+                val currentWaveformColor = lerpColor(waveformColor, cancelArmedWaveformColor, waveformCancelAmount)
                 for (index in 0 until barCount) {
                     val x = startX + index * gap
                     val distanceFromCenter = kotlin.math.abs(index - envelopeCenter) / envelopeCenter
@@ -4934,7 +5043,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     ).toFloat()
                     val halfHeight = minOf(height * 0.95f, dp(66).toFloat()) *
                         (0.035f + live * 0.965f) * envelope * flow
-                    paint.color = waveformColor
+                    paint.color = currentWaveformColor
                     paint.strokeWidth = dp(3).toFloat()
                     canvas.drawLine(x, centerY - halfHeight, x, centerY + halfHeight, paint)
                 }
