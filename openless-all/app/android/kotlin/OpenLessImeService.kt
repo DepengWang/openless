@@ -106,6 +106,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private var state = "idle"
     private var currentMessage = "点击开始说话"
     private var status: TextView? = null
+    // Single shared top-level preview bubble for every key across the
+    // English and stroke keyboards (see wrapWithKeyPreviewOverlay()) — reset
+    // on every panel rebuild since it lives inside that panel's own root
+    // View tree, same lifecycle as voiceButton/status below. Null in panels
+    // that never show a key preview (voice, clipboard, edit); callers use
+    // the safe-call operator so that's a no-op rather than a crash.
+    private var keyPreviewOverlay: KeyPreviewOverlay? = null
     private var voiceButton: VoiceButton? = null
     // Silence-detection for the main voice panel: if the mic capture never
     // reports a meaningful level for a while after recording starts, the
@@ -417,8 +424,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // triggered from Voice mode, so this ordering issue never showed up
         // before the clipboard flow started reusing the same panel.
         if (editingDictationResult) return buildEditPanel()
-        if (inputMode == InputMode.ENGLISH) return buildKeyboardView()
-        if (inputMode == InputMode.STROKE) return if (strokeNumberMode) buildStrokeNumberView() else buildStrokeView()
+        if (inputMode == InputMode.ENGLISH) return wrapWithKeyPreviewOverlay(buildKeyboardView())
+        if (inputMode == InputMode.STROKE) return wrapWithKeyPreviewOverlay(if (strokeNumberMode) buildStrokeNumberView() else buildStrokeView())
         if (inputMode == InputMode.CLIPBOARD) return if (clipboardHistoryMode) buildClipboardHistoryView() else buildClipboardView()
         val panel = SwipeModeContainer(this) { direction -> swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
@@ -968,6 +975,29 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * #+= state and README's "英文键盘 iOS 17 布局" entry for the full
      * rationale.
      */
+    /**
+     * Wraps a panel root in a plain FrameLayout with a KeyPreviewOverlay as
+     * its second (top-drawn) child, so every key preview bubble in that
+     * panel renders above the whole keyboard — unclipped by the panel's own
+     * clipChildren/candidate-row/mode-toggle bounds — without taking part in
+     * its layout at all. The wrapper takes on the panel's own layoutParams
+     * (every panel already sets its own fixed MATCH_PARENT x dp(300)) so
+     * this changes nothing about the panel's measured size; the panel then
+     * fills the wrapper exactly as it used to fill the IME window directly.
+     */
+    private fun wrapWithKeyPreviewOverlay(content: View): View {
+        val host = FrameLayout(this).apply {
+            layoutParams = content.layoutParams ?: ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
+            clipChildren = false
+            clipToPadding = false
+        }
+        host.addView(content, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val overlay = KeyPreviewOverlay(this, isDarkTheme)
+        keyPreviewOverlay = overlay
+        host.addView(overlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        return host
+    }
+
     private fun buildKeyboardView(): View {
         val root = SwipeModeContainer(this) { direction -> swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
@@ -1273,16 +1303,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     currentInputConnection?.commitText(" ", 1)
                 }, swipeUpAction = {
                     currentInputConnection?.commitText("0", 1)
-                }, swipePreview = "0", microphoneIcon = true).apply {
-                    setOnLongClickListener {
-                        inputMode = InputMode.VOICE
-                        saveInputMode(inputMode)
-                        clearStrokes()
-                        refreshInputView()
-                        if (!recording) toggleDictation()
-                        true
-                    }
-                } else {
+                }, swipePreview = "0", microphoneIcon = true, longPressDelayMs = 900L, longPressAction = {
+                    inputMode = InputMode.VOICE
+                    saveInputMode(inputMode)
+                    clearStrokes()
+                    refreshInputView()
+                    if (!recording) toggleDictation()
+                }) else {
                     val swipeDigit = label.substringBefore("\n").takeIf { it.length == 1 && it[0].isDigit() }
                     keyboardKey(label, 1f, action = {
                     when (code) {
@@ -1523,9 +1550,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * label, matching a stroke candidate bar rather than a row of separate
      * buttons. Height always comes from the parent row (MATCH_PARENT) so it
      * can never itself grow the fixed 36dp candidate row. The selected/first
-     * candidate is marked by color+weight only (the encode row's own light
-     * blue, bold) — no size, background, border or shadow change, so it
-     * can't shift candidate width/spacing or row height.
+     * candidate is marked by color+weight only (the same red as the right-
+     * hand action rail's ←/↵/清除/123 keys, bold) — no size, background,
+     * border or shadow change, so it can't shift candidate width/spacing or
+     * row height.
      */
     private fun candidateItemView(label: String, isFirst: Boolean, action: () -> Unit): TextView {
         return keyboardKey(label, 1f, action = action).apply {
@@ -1537,7 +1565,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             translationZ = 0f
             setPadding(dp(9), 0, dp(9), 0)
             if (isFirst) {
-                setTextColor(strokeEncodeAccentColor)
+                // Same literal as the action rail's own background
+                // (Color.rgb(153, 26, 40)) — unconditional of theme there
+                // too, so no tone()/strokeEncodeAccentColor branching here.
+                setTextColor(Color.rgb(153, 26, 40))
                 setTypeface(typeface, android.graphics.Typeface.BOLD)
             }
         }
@@ -1693,6 +1724,41 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             marginStart = dp(8)
             marginEnd = dp(8)
         })
+
+        // Most-recent-two-clips quick-tap strip — sized to match the stroke
+        // panel's own encode+candidate area (24dp+36dp = 60dp total) so the
+        // two panels' headers land at the same height, bordered by three
+        // thin divider lines (top/middle/bottom) rather than a colored
+        // background, matching the plain-divider treatment already used for
+        // the English candidate bar. The action grid below (row1/row2)
+        // shrinks by this same 60dp automatically since it only ever asks
+        // for "whatever space is left" (weight=1f each), so it keeps its
+        // two rows equal height to each other without any extra code here.
+        fun recentClipRow(entry: ClipboardEntry?): TextView = TextView(this).apply {
+            text = entry?.text ?: ""
+            textSize = 14f
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setTextColor(tone(Color.rgb(230, 230, 230), Color.rgb(30, 30, 34)))
+            setPadding(dp(10), 0, dp(10), 0)
+            if (entry != null) {
+                isClickable = true
+                setOnClickListener {
+                    currentInputConnection?.commitText(entry.text, 1)
+                    OpenLessClipboardHistory.recordCopy(this@OpenLessImeService, entry.text)
+                    refreshInputView()
+                }
+            }
+        }
+        val recentClips = OpenLessClipboardHistory.load(this)
+        val recentClipsColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        recentClipsColumn.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
+        recentClipsColumn.addView(recentClipRow(recentClips.getOrNull(0)), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        recentClipsColumn.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
+        recentClipsColumn.addView(recentClipRow(recentClips.getOrNull(1)), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        recentClipsColumn.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
+        root.addView(recentClipsColumn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(60)))
 
         // Arrow keys and the Select toggle work as one unit: while selection
         // mode is on, the arrows extend the selection instead of just moving
@@ -2222,6 +2288,17 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         repeatAction: (() -> Unit)? = null,
         swipeUpAction: (() -> Unit)? = null,
         swipePreview: String? = null,
+        // A single-shot delayed action, separate from
+        // repeatOnLongPress/repeatAction — used by the voice/mic key, whose
+        // long-press (switch to Voice mode) needs a longer fuse than the
+        // system's fixed ~500ms long-click timeout so a swipe-up gesture
+        // that pauses briefly before moving isn't preempted by it (see
+        // ACTION_MOVE below, which cancels this the moment the swipe-up
+        // threshold is crossed). setOnLongClickListener's timeout isn't
+        // adjustable per-view, so this schedules/cancels its own Handler
+        // callback instead of relying on it.
+        longPressAction: (() -> Unit)? = null,
+        longPressDelayMs: Long = 500L,
         microphoneIcon: Boolean = false,
         strokeIconCode: String? = null,
         graphicCode: String? = null,
@@ -2273,9 +2350,31 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             elevation = dp(5).toFloat()
             translationZ = dp(1).toFloat()
             contentDescription = label.ifBlank { ui("空格", "Space") }
+            // Retargetable like buildEnglishCharKey()'s tap preview: any
+            // sibling key built with its own swipeUpAction/swipePreview
+            // carries that pair here as its tag, so a swipe-up gesture that
+            // drags sideways onto a different key (e.g. across the stroke
+            // grid's digit shortcuts) can look up and commit THAT key's own
+            // digit instead of the one originally pressed.
+            tag = if (swipeUpAction != null && swipePreview != null) Pair(swipeUpAction, swipePreview) else null
             var suppressNextClick = false
+            var downX = 0f
             var downY = 0f
-            var swipePopup: android.widget.PopupWindow? = null
+            var swipePreviewShown = false
+            // A one-way latch, same as swipePreviewShown: once the finger
+            // has dragged sideways far enough from where it started, the
+            // gesture is treated as a deliberate retarget-drag for the
+            // rest of this touch sequence, not re-checked drag-by-drag.
+            // Before that latch trips, trackedView never changes even if
+            // the finger's raw position happens to land inside another
+            // key's real hit bounds — a plain swipe straight up (whose own
+            // vertical travel easily reaches a neighboring row) must not
+            // silently relabel itself just because it crossed into that
+            // row's territory with no real sideways intent.
+            var horizontalDragArmed = false
+            var trackedView: View = this
+            @Suppress("UNCHECKED_CAST")
+            fun swipeSpecOf(view: View): Pair<() -> Unit, String>? = view.tag as? Pair<() -> Unit, String>
             setOnClickListener {
                 if (suppressNextClick) {
                     suppressNextClick = false
@@ -2301,10 +2400,66 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     true
                 }
             }
+            val longPressHandler = if (longPressAction != null) Handler(Looper.getMainLooper()) else null
+            var longPressRunnable: Runnable? = null
+
+            // Hit-tests every swipe-capable sibling in this key's own row
+            // group, climbing to the row's own parent so a drag can
+            // retarget across rows too — same approach as
+            // buildEnglishCharKey()'s findTrackTargetAt, just keyed off a
+            // Pair(swipeUpAction, swipePreview) tag instead of a char tag.
+            //
+            // Vertical slop is deliberately tiny here (unlike the English
+            // version's generous dp(24)): the grid's rows sit almost flush
+            // against each other (~1dp margin, each row only ~1/4 of the
+            // grid's own height), so a large slop makes adjacent rows'
+            // hit zones overlap deeply — a plain straight swipe UP (whose
+            // whole point is to travel well past the pressed key, still
+            // within the same key's column) would then immediately
+            // "retarget" to the row above just from that expected vertical
+            // travel, with no real leftward/rightward drag at all. A
+            // near-zero vertical slop means only a finger that has
+            // genuinely reached a different row's real bounds retargets;
+            // once the finger is past every row (still swiping straight
+            // up), no row matches and findSwipeTargetAt falls back to
+            // returning trackedView — i.e. the original key stays selected
+            // for a simple swipe, exactly matching a single-key swipe-up's
+            // intent.
+            fun findSwipeTargetAt(rawX: Float, rawY: Float): View {
+                val row = parent as? ViewGroup ?: return this
+                val group = row.parent as? ViewGroup
+                val candidateRows = if (group != null) {
+                    (0 until group.childCount).mapNotNull { index ->
+                        (group.getChildAt(index) as? ViewGroup)?.takeIf { candidate ->
+                            (0 until candidate.childCount).any { candidate.getChildAt(it).tag is Pair<*, *> }
+                        }
+                    }
+                } else {
+                    listOf(row)
+                }
+                for (candidateRow in candidateRows) {
+                    for (index in 0 until candidateRow.childCount) {
+                        val sibling = candidateRow.getChildAt(index)
+                        if (sibling.tag !is Pair<*, *>) continue
+                        val loc = IntArray(2)
+                        sibling.getLocationOnScreen(loc)
+                        if (rawX >= loc[0] - dp(6) && rawX < loc[0] + sibling.width + dp(6) &&
+                            rawY >= loc[1] - dp(2) && rawY < loc[1] + sibling.height + dp(2)
+                        ) {
+                            return sibling
+                        }
+                    }
+                }
+                return trackedView
+            }
+
             setOnTouchListener { view, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
+                        downX = event.x
                         downY = event.y
+                        horizontalDragArmed = false
+                        trackedView = view
                         view.animate()
                             .scaleX(0.97f)
                             .scaleY(0.97f)
@@ -2313,45 +2468,95 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                             .setDuration(65L)
                             .start()
                         performKeyHaptic()
+                        if (longPressHandler != null && longPressAction != null) {
+                            val runnable = Runnable {
+                                longPressAction.invoke()
+                                suppressNextClick = true
+                            }
+                            longPressRunnable = runnable
+                            longPressHandler.postDelayed(runnable, longPressDelayMs)
+                        }
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        if (swipePopup == null && swipeUpAction != null && swipePreview != null && downY - event.y >= dp(10)) {
-                            // Same iOS-style bubble as buildEnglishCharKey()'s
-                            // press preview (KeyPreviewBubbleView: rounded
-                            // body + downward arrow + red text) instead of
-                            // the old plain gray box — shown only for the
-                            // digit-swipe keys (0-9), since swipeUpAction/
-                            // swipePreview are only ever set for those, and
-                            // anchored to the key itself via showAsDropDown()
-                            // so the arrow actually points at the key being
-                            // swiped, unlike the old fixed top-of-screen box.
-                            val bubbleView = KeyPreviewBubbleView(this@OpenLessImeService, isDarkTheme)
-                            val keyTextSizePx = (view as TextView).textSize
-                            bubbleView.label = swipePreview
-                            bubbleView.fixedTextSizePx = keyTextSizePx
-                            // Doubled: the finger is still sliding upward
-                            // when this shows, so the taller arrow buys the
-                            // digit more clearance before the finger reaches it.
-                            bubbleView.arrowHeightFraction = 0.64f
-                            val bubbleWidthPx = dp(44)
-                            val bubbleHeightPx = dp(70)
-                            swipePopup = android.widget.PopupWindow(bubbleView, bubbleWidthPx, bubbleHeightPx, false).apply {
-                                isClippingEnabled = false
-                                elevation = dp(6).toFloat()
-                                showAsDropDown(view, (view.width - bubbleWidthPx) / 2, -(view.height + bubbleHeightPx))
+                        if (swipeUpAction != null && swipePreview != null) {
+                            if (!swipePreviewShown && downY - event.y >= dp(10)) {
+                                // Armed only once the initial swipe-up
+                                // actually clears the threshold, not on
+                                // every key's plain DOWN (that would also
+                                // swallow the panel-switch swipe that
+                                // legitimately starts on top of a
+                                // non-swiping key) — so dragging across the
+                                // grid to retarget isn't stolen by
+                                // SwipeModeContainer's own swipe intercept
+                                // mid-gesture.
+                                view.parent?.requestDisallowInterceptTouchEvent(true)
+                                // Cancels the voice/mic key's own delayed
+                                // longPressAction (switch to Voice mode) the
+                                // moment a swipe-up is recognized — a no-op
+                                // for every other key (longPressRunnable is
+                                // only ever set when longPressAction != null).
+                                longPressRunnable?.let { longPressHandler?.removeCallbacks(it) }
+                                swipePreviewShown = true
+                            }
+                            if (swipePreviewShown) {
+                                // Retargeting itself is gated behind a
+                                // second, separate threshold: the finger
+                                // must have moved at least dp(10)
+                                // horizontally from where it first went
+                                // down, not merely landed inside another
+                                // key's hit bounds. A plain swipe straight
+                                // up travels well past the pressed key's
+                                // own row by design (that vertical distance
+                                // is the whole gesture), which — with no
+                                // sideways intent at all — would otherwise
+                                // still land inside a neighboring row's real
+                                // bounds and silently relabel the bubble
+                                // (e.g. "0" swiped straight up briefly
+                                // reading as "8", the key directly above
+                                // it). Once this latches on, though, any
+                                // further drag — down, sideways, or across
+                                // rows — keeps retargeting and following
+                                // the finger for the rest of the gesture;
+                                // release always commits whichever key is
+                                // currently tracked (see ACTION_UP).
+                                if (!horizontalDragArmed && kotlin.math.abs(event.x - downX) >= dp(10)) {
+                                    horizontalDragArmed = true
+                                }
+                                if (horizontalDragArmed) {
+                                    val target = findSwipeTargetAt(event.rawX, event.rawY)
+                                    if (target !== trackedView) {
+                                        trackedView = target
+                                        // Same haptic as a normal key press,
+                                        // so retargeting onto a new key
+                                        // reads as landing on that key, not
+                                        // just a silent label swap.
+                                        performKeyHaptic()
+                                    }
+                                }
+                                val spec = swipeSpecOf(trackedView)
+                                if (spec != null) {
+                                    // Pinned to the tracked key's own actual
+                                    // on-screen position, a fixed gap above
+                                    // it (see KeyPreviewOverlay.showSwipePreview()) —
+                                    // not to the finger's current height.
+                                    keyPreviewOverlay?.showSwipePreview(spec.second, trackedView)
+                                }
                             }
                         }
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        if (event.actionMasked == MotionEvent.ACTION_UP && swipeUpAction != null && downY - event.y >= dp(10)) {
-                            swipeUpAction.invoke()
+                        if (event.actionMasked == MotionEvent.ACTION_UP && swipePreviewShown) {
+                            swipeSpecOf(trackedView)?.first?.invoke()
                             suppressNextClick = true
                         }
+                        longPressRunnable?.let { longPressHandler?.removeCallbacks(it) }
                         repeatHandler?.let { handler ->
                             repeatRunnable?.let { handler.removeCallbacks(it) }
                         }
-                        swipePopup?.dismiss()
-                        swipePopup = null
+                        if (swipePreviewShown) {
+                            keyPreviewOverlay?.hide()
+                            swipePreviewShown = false
+                        }
                         view.animate()
                             .scaleX(1f)
                             .scaleY(1f)
@@ -2436,34 +2641,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             translationZ = dp(1).toFloat()
             contentDescription = charFor(this)
             var trackedView: View = this
-            var popup: android.widget.PopupWindow? = null
-            var bubble: KeyPreviewBubbleView? = null
 
-            // Anchored via showAsDropDown()/update(anchor, ...), not
-            // showAtLocation() with a manually computed absolute (x, y):
-            // that's what showCandidateOverlay() already uses successfully
-            // for the stroke panel's own floating candidate list, and an
-            // IME's own window turns out not to reliably render a popup
-            // positioned by raw screen coordinates — the bubble silently
-            // never appeared on-device with that approach.
+            // Shown via the shared top-level KeyPreviewOverlay (see
+            // wrapWithKeyPreviewOverlay()) instead of a per-key PopupWindow —
+            // a single overlay reused by every key means dragging onto a
+            // different key just repositions the same bubble instead of
+            // tearing one popup down and standing up another.
             fun showBubbleFor(target: View) {
-                val bubbleView = bubble ?: KeyPreviewBubbleView(this@OpenLessImeService, isDarkTheme).also { bubble = it }
-                bubbleView.label = charFor(target)
-                val bubbleWidthPx = dp(44)
-                val bubbleHeightPx = dp(70)
-                val xoff = (target.width - bubbleWidthPx) / 2
-                val yoff = -(target.height + bubbleHeightPx)
-                val existing = popup
-                if (existing != null && existing.isShowing) {
-                    existing.update(target, xoff, yoff, bubbleWidthPx, bubbleHeightPx)
-                } else {
-                    android.widget.PopupWindow(bubbleView, bubbleWidthPx, bubbleHeightPx, false).apply {
-                        isClippingEnabled = false
-                        elevation = dp(6).toFloat()
-                        popup = this
-                        showAsDropDown(target, xoff, yoff)
-                    }
-                }
+                keyPreviewOverlay?.showTapPreview(charFor(target), target)
             }
 
             // Hit-tests every char-key row in this key's own row group (not
@@ -2533,12 +2718,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                         showBubbleFor(trackedView)
                     }
                     MotionEvent.ACTION_UP -> {
-                        popup?.dismiss()
+                        keyPreviewOverlay?.hide()
                         view.animate().scaleX(1f).scaleY(1f).translationZ(0f).alpha(1f).setDuration(90L).start()
                         commitEnglishChar(charFor(trackedView))
                     }
                     MotionEvent.ACTION_CANCEL -> {
-                        popup?.dismiss()
+                        keyPreviewOverlay?.hide()
                         view.animate().scaleX(1f).scaleY(1f).translationZ(0f).alpha(1f).setDuration(90L).start()
                     }
                 }
@@ -2600,12 +2785,22 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // lines with nothing between them.
         val wrapper = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         englishCandidateBarContainer = wrapper
-        wrapper.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
+        wrapper.addView(
+            buildDivider(),
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
+                marginStart = dp(1)
+                marginEnd = dp(1)
+            },
+        )
         val container = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
         wrapper.addView(container, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36)))
         wrapper.addView(
             buildDivider(),
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply { bottomMargin = dp(2) },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
+                marginStart = dp(1)
+                marginEnd = dp(1)
+                bottomMargin = dp(2)
+            },
         )
         val scroll = object : android.widget.HorizontalScrollView(this) {
             override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
@@ -3774,8 +3969,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         private val textBounds = android.graphics.Rect()
         private val chevronPath = Path()
 
-        private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
         // Continuous [0, modes.size - 1] position of the selected pill, in
         // segment units — settles on the selected index, but slides through
         // fractional values mid-animation. This view is a fresh instance on
@@ -3842,15 +4035,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             // well inside the track's rounded corners even at the first/
             // last segment, so no extra clip path is needed the way the
             // sharp-cornered version required one.
-            // Fixed 5dp (not h-proportional anymore) so the pill's own
-            // height comes out to exactly 28dp (h=38dp - 2*5dp) per an
-            // explicit dp spec, rather than whatever h*0.14 happens to be.
-            val pillInsetV = dp(5).toFloat()
-            // Fixed 53dp width (an explicit dp spec, not a segmentWidth
-            // fraction anymore), centered within its segment — decoupled
-            // from segmentWidth so a future outer-track width change alone
-            // doesn't also resize the pill.
-            val pillWidth = dp(53).toFloat()
+            // Proportional again, not fixed dp — carries forward the exact
+            // ratio the last explicit dp spec settled on (5dp inset / 38dp
+            // track height, 53dp pill / 60dp segment width at the 240dp
+            // outer track width in use then), so the pill keeps this same
+            // look if the outer track's own width/height are ever tuned
+            // again, instead of needing a matching manual dp recompute.
+            val pillInsetV = h * (5f / 38f)
+            val pillWidth = segmentWidth * (53f / 60f)
             val pillCenterX = segmentWidth * (indicatorPosition + 0.5f)
             val pillLeft = pillCenterX - pillWidth / 2f
             val pillRight = pillCenterX + pillWidth / 2f
@@ -4187,14 +4379,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * text closely enough without measuring actual text layout bounds.
      */
     /**
-     * The English keyboard's key-press preview bubble — a rounded rect
-     * showing the character about to be committed, with a downward-pointing
-     * arrow whose tip lands at the bubble's horizontal center (positioned
-     * over the pressed key by the caller). Plain Canvas drawing, matching
-     * every other custom key glyph in this file (ShiftKeyView,
-     * ActionSymbolView, etc.) — no new dependency, no separate heavyweight
-     * window beyond the single PopupWindow instance the caller already uses
-     * for the existing swipe-preview mechanic elsewhere in this file.
+     * The one key-press preview bubble shared by every keyboard (English
+     * and stroke) — a short, wide "floating keycap": a rounded rect with a
+     * short stubby arrow, soft light-gray body and near-black text, no
+     * accent color. Always sized/positioned by its owner (KeyPreviewOverlay)
+     * rather than by itself; this class only draws. Plain Canvas drawing,
+     * matching every other custom key glyph in this file (ShiftKeyView,
+     * ActionSymbolView, etc.) — no new dependency.
      */
     private class KeyPreviewBubbleView(
         context: android.content.Context,
@@ -4205,77 +4396,243 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 field = value
                 invalidate()
             }
-        // Non-null (the stroke keyboard's plain-text bubbles — 通配/分词/
-        // ：/；/符号/繁) matches the actual pressed key's own font size
-        // (TextView.getTextSize(), already resolved to raw pixels, so no
-        // sp->px conversion is needed here) instead of the default size
-        // derived from the bubble's own height, which buildEnglishCharKey()
-        // still relies on and is left untouched.
+        // Non-null (the stroke keyboard's swipe-up digit preview) matches
+        // the actual pressed key's own font size (TextView.getTextSize(),
+        // already resolved to raw pixels, so no sp->px conversion is
+        // needed here) instead of the default size derived from the
+        // bubble's own height, which the English tap preview still relies on.
         var fixedTextSizePx: Float? = null
             set(value) {
                 field = value
                 invalidate()
             }
         private val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            // Lighter than a plain mid-gray so the bubble reads clearly
-            // against a dark keyboard background — the original rgb(120,120,126)
-            // sat too close to the surrounding dark theme's own key color.
-            color = if (darkTheme) Color.rgb(196, 196, 202) else Color.WHITE
+            // Dark theme: a hair lighter than the panel's own background
+            // (48,48,48) but noticeably darker than the stroke encode/
+            // candidate row's own card background (58,58,58,
+            // buildEncodeAreaBackground()) — the flat C8C8CC light gray
+            // read as glaringly bright against a dark keyboard. Light
+            // theme keeps the original clearly-visible-but-not-white gray.
+            color = if (darkTheme) Color.rgb(52, 52, 54) else Color.rgb(0xC8, 0xC8, 0xCC)
         }
         private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = 2f
-            color = if (darkTheme) Color.rgb(224, 224, 228) else Color.rgb(206, 206, 210)
+            // A lighter outline than the dark body so the bubble still
+            // reads as its own shape against the similarly-dark panel
+            // background, without being bright itself.
+            color = if (darkTheme) Color.rgb(92, 92, 96) else Color.rgb(0xA8, 0xA8, 0xAE)
         }
-        // Same red as the stroke panel's own action rail (←/↵/清除/123
-        // keys), unconditional of theme there too — see buildStrokeView().
+        // Same red as the right-hand action rail's ←/↵/清除/123 keys and
+        // the stroke candidate row's own selected/first candidate
+        // (candidateItemView() — Color.rgb(153, 26, 40)) — unconditional of
+        // theme there too, so darkTheme (still taken by the constructor for
+        // bodyPaint/borderPaint above) plays no part in this color.
         private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.rgb(153, 26, 40)
             textAlign = Paint.Align.CENTER
             typeface = android.graphics.Typeface.DEFAULT_BOLD
+            // FILL_AND_STROKE over DEFAULT_BOLD's own fill adds a touch more
+            // weight than the typeface alone — there's no heavier built-in
+            // weight to switch to without bundling a custom font.
+            style = Paint.Style.FILL_AND_STROKE
+            strokeWidth = 1.4f
         }
         private val outline = Path()
 
-        // Settable instead of the plain constant it defaults to: the stroke
-        // keyboard's swipe-up digit preview doubles this (see keyboardKey()'s
-        // ACTION_MOVE) to push the readable body further from the key, since
-        // that bubble appears while the finger is still sliding upward past
-        // it — buildEnglishCharKey()'s press preview never drags away like
-        // that, so it keeps the default.
-        var arrowHeightFraction: Float = ARROW_HEIGHT_FRACTION
-            set(value) {
-                field = value
-                invalidate()
-            }
-
-        private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+        private fun dp(value: Int): Float = value * resources.displayMetrics.density
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             val w = width.toFloat()
             val h = height.toFloat()
             if (w <= 0f || h <= 0f) return
-            val arrowHeight = h * arrowHeightFraction
+            val arrowHeight = dp(ARROW_HEIGHT_DP)
+            val arrowHalfWidth = dp(ARROW_WIDTH_DP) / 2f
             val bodyBottom = h - arrowHeight
-            val radius = dp(12).toFloat()
+            // Also capped by the flat run left on either side of the arrow
+            // notch (w/2 - arrowHalfWidth) — at the narrowest bubble widths
+            // this is tighter than bodyBottom/2, and skipping it would let
+            // the bottom-corner arcs overrun the notch and self-intersect.
+            val radius = dp(CORNER_RADIUS_DP)
+                .coerceAtMost(bodyBottom / 2f)
+                .coerceAtMost((w / 2f - arrowHalfWidth).coerceAtLeast(0f))
             val cx = w / 2f
-            val arrowHalfWidth = w * 0.25f
+            // One continuous outline (all four corners rounded to the same
+            // radius, short triangular notch at the bottom center) so a
+            // stroked border never shows a seam where the arrow meets the
+            // body.
             outline.reset()
-            outline.addRoundRect(0f, 0f, w, bodyBottom, radius, radius, Path.Direction.CW)
-            outline.moveTo(cx - arrowHalfWidth, bodyBottom - 1f)
+            outline.moveTo(radius, 0f)
+            outline.lineTo(w - radius, 0f)
+            outline.arcTo(android.graphics.RectF(w - 2f * radius, 0f, w, 2f * radius), -90f, 90f)
+            outline.lineTo(w, bodyBottom - radius)
+            outline.arcTo(android.graphics.RectF(w - 2f * radius, bodyBottom - 2f * radius, w, bodyBottom), 0f, 90f)
+            outline.lineTo(cx + arrowHalfWidth, bodyBottom)
             outline.lineTo(cx, h)
-            outline.lineTo(cx + arrowHalfWidth, bodyBottom - 1f)
+            outline.lineTo(cx - arrowHalfWidth, bodyBottom)
+            outline.lineTo(radius, bodyBottom)
+            outline.arcTo(android.graphics.RectF(0f, bodyBottom - 2f * radius, 2f * radius, bodyBottom), 90f, 90f)
+            outline.lineTo(0f, radius)
+            outline.arcTo(android.graphics.RectF(0f, 0f, 2f * radius, 2f * radius), 180f, 90f)
             outline.close()
             canvas.drawPath(outline, bodyPaint)
             canvas.drawPath(outline, borderPaint)
-            textPaint.textSize = fixedTextSizePx ?: (bodyBottom * 0.55f)
+            textPaint.textSize = fixedTextSizePx ?: (bodyBottom * 0.5f)
             val metrics = textPaint.fontMetrics
-            val textY = bodyBottom * 0.4f - (metrics.ascent + metrics.descent) / 2f
+            val textY = bodyBottom / 2f - (metrics.ascent + metrics.descent) / 2f
             canvas.drawText(label, cx, textY, textPaint)
         }
 
+        companion object {
+            const val ARROW_HEIGHT_DP = 12
+            const val ARROW_WIDTH_DP = 22
+            const val CORNER_RADIUS_DP = 4
+            const val BODY_HEIGHT_DP = 48
+            const val TOTAL_HEIGHT_DP = BODY_HEIGHT_DP + ARROW_HEIGHT_DP
+        }
+    }
+
+    /**
+     * Single top-level overlay hosting the one KeyPreviewBubbleView shared
+     * by every key in a panel (see wrapWithKeyPreviewOverlay()). Added as
+     * the last (topmost-drawn) child of the FrameLayout that wraps a
+     * panel's own root, so the bubble renders above the whole keyboard —
+     * unaffected by the panel's own clipChildren/candidate-row/mode-toggle
+     * bounds — without taking part in that panel's layout: it never
+     * changes size, position, or measurement of anything else, and it
+     * never intercepts touch (dispatchTouchEvent always returns false, so
+     * every gesture falls straight through to whatever key is underneath).
+     */
+    private class KeyPreviewOverlay(
+        context: android.content.Context,
+        darkTheme: Boolean,
+    ) : FrameLayout(context) {
+        private val bubble = KeyPreviewBubbleView(context, darkTheme).apply {
+            alpha = 0f
+            visibility = View.GONE
+        }
+
+        init {
+            isClickable = false
+            isFocusable = false
+            clipChildren = false
+            clipToPadding = false
+            addView(bubble, LayoutParams(0, 0))
+        }
+
+        // A pure visual layer: never claims a touch sequence, regardless of
+        // where the bubble is currently drawn, so a stroke swipe or an
+        // English drag-retarget already in progress is never disturbed by
+        // the preview appearing on top of it.
+        override fun onInterceptTouchEvent(ev: MotionEvent): Boolean = false
+        override fun dispatchTouchEvent(ev: MotionEvent): Boolean = false
+
+        private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+        private fun relativeLocation(target: View): IntArray {
+            val targetLoc = IntArray(2)
+            target.getLocationOnScreen(targetLoc)
+            val selfLoc = IntArray(2)
+            getLocationOnScreen(selfLoc)
+            return intArrayOf(targetLoc[0] - selfLoc[0], targetLoc[1] - selfLoc[1])
+        }
+
+        private fun placeBubble(centerX: Int, top: Int, bubbleWidth: Int, bubbleHeight: Int) {
+            val maxLeft = (width - bubbleWidth - dp(4)).coerceAtLeast(dp(4))
+            val left = (centerX - bubbleWidth / 2).coerceIn(dp(4), maxLeft)
+            val clampedTop = top.coerceAtLeast(dp(2))
+            val params = bubble.layoutParams as LayoutParams
+            params.width = bubbleWidth
+            params.height = bubbleHeight
+            params.leftMargin = left
+            params.topMargin = clampedTop
+            bubble.layoutParams = params
+        }
+
+        /**
+         * TAP preview (English/number/symbol keys): centered directly above
+         * the anchor key, sized relative to it, with the default
+         * proportional-to-body text size (fixedTextSizePx left null).
+         */
+        fun showTapPreview(text: String, anchor: View) {
+            val loc = relativeLocation(anchor)
+            val bubbleWidth = (anchor.width * BUBBLE_WIDTH_RATIO).toInt().coerceAtLeast(dp(40))
+            val bubbleHeight = dp(KeyPreviewBubbleView.TOTAL_HEIGHT_DP)
+            bubble.fixedTextSizePx = null
+            bubble.label = text
+            val centerX = loc[0] + anchor.width / 2
+            val top = loc[1] - bubbleHeight - dp(TAP_GAP_DP)
+            placeBubble(centerX, top, bubbleWidth, bubbleHeight)
+            show()
+        }
+
+        /**
+         * SWIPE preview (stroke digit swipe-up): pinned to the actual
+         * anchor key's own on-screen position, same as showTapPreview —
+         * not to the finger's current height. It used to float a fixed
+         * distance above the raw touch point instead, which looked right
+         * for a straight vertical swipe on one key but drifted away from
+         * the real key as soon as a drag retargeted sideways or across
+         * rows (the bubble's X snapped to the new key while its Y stayed
+         * tied to wherever the finger happened to be).
+         *
+         * Text size is a fixed constant here, not the tracked key's own
+         * face text size — the "0" digit's key is the microphone icon key,
+         * whose own face text is much smaller than every other digit key's
+         * (10sp vs 17sp, since it's mostly an icon), so sizing off the key
+         * made "0"'s bubble read noticeably smaller than the other nine.
+         */
+        fun showSwipePreview(text: String, anchor: View) {
+            val loc = relativeLocation(anchor)
+            val bubbleWidth = (anchor.width * BUBBLE_WIDTH_RATIO).toInt().coerceAtLeast(dp(40))
+            val bubbleHeight = dp(KeyPreviewBubbleView.TOTAL_HEIGHT_DP)
+            bubble.fixedTextSizePx = dp(SWIPE_TEXT_SIZE_DP).toFloat()
+            bubble.label = text
+            val centerX = loc[0] + anchor.width / 2
+            // 20dp further above the key than the tap preview's own gap —
+            // a separate constant so this doesn't also shift
+            // showTapPreview's gap for the English/number keys.
+            val top = loc[1] - bubbleHeight - dp(SWIPE_GAP_DP)
+            placeBubble(centerX, top, bubbleWidth, bubbleHeight)
+            show()
+        }
+
+        /** Updates the bubble's text in place — no hide/show, no re-animation. */
+        fun updateText(text: String) {
+            bubble.label = text
+        }
+
+        // No fade animation: a fast tap's down-to-up gap is often shorter
+        // than any fade would take, so an animated show/hide left the
+        // bubble stuck mid-fade — either never reaching full opacity
+        // (looked "too transparent to read") or reversing before it ever
+        // became visible at all. Popping straight to alpha=1 (matching the
+        // pre-refactor PopupWindow, which never animated either)
+        // guarantees the bubble is fully opaque the instant it shows,
+        // regardless of tap speed.
+        private fun show() {
+            bubble.animate().cancel()
+            bubble.alpha = 1f
+            bubble.scaleX = 1f
+            bubble.scaleY = 1f
+            bubble.visibility = View.VISIBLE
+        }
+
+        fun hide() {
+            bubble.animate().cancel()
+            bubble.visibility = View.GONE
+        }
+
         private companion object {
-            const val ARROW_HEIGHT_FRACTION = 0.32f
+            const val BUBBLE_WIDTH_RATIO = 1.2f
+            const val TAP_GAP_DP = 3
+            const val SWIPE_GAP_DP = TAP_GAP_DP + 20
+            // Bigger than the default proportional size the tap preview
+            // falls back to (bodyBottom * 0.5, ~24dp-equivalent here) and,
+            // being a flat constant rather than derived from any one key's
+            // own face size, the same for every digit including "0".
+            const val SWIPE_TEXT_SIZE_DP = 22
         }
     }
 
