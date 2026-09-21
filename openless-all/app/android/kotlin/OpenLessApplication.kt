@@ -371,6 +371,11 @@ class OpenLessApplication : Application() {
             "rtexit",
             "unclean",
             "heartbeat",
+            // OpenLessBackendWarmupActivity.restartProcessAsLastResort() —
+            // the "main" webview window's Tauri-side label got permanently
+            // stuck (see its doc comment) and this self-triggered kill was
+            // the only way out short of the user force-stopping manually.
+            "stuckwindow",
         )
     }
 }

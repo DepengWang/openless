@@ -103,13 +103,34 @@ class OpenLessBackendWarmupActivity : MainActivity() {
     private var webViewRef: android.webkit.WebView? = null
 
     // See onCreate()'s settingsRequested branch and onWebViewCreate() below.
+    //
+    // A single stuck instance is finished and left for the next Logo tap to
+    // retry (see below) — but on-device testing found that once Wry/Tauri's
+    // Android CreateWebView dispatch silently fails once, the "main" window
+    // label it partially registered can never be freed again: destroy()/
+    // close() only clear tauri-runtime-wry's own internal window reference,
+    // while Tauri's higher-level WindowManager only drops a window's label
+    // in response to a genuine platform WindowEvent::Destroyed — which
+    // never fires for a WebView that was never actually created. Every
+    // later ensureMainWebviewWindow() call then hits a permanent "a webview
+    // with label `main` already exists" error, with no way to clear it from
+    // here (that removal logic is private to the tauri crate). Confirmed by
+    // repeated identical failures across many retries in one test session,
+    // recovering only after the whole process was killed and relaunched.
+    // Once consecutiveStuckCount crosses the threshold, this mirrors that
+    // manual recovery automatically instead of leaving the user stuck.
     private val webViewCreationWatchdog = Runnable {
         if (webViewRef != null || isFinishing || isDestroyed) return@Runnable
+        consecutiveStuckCount += 1
         android.util.Log.w(
             "OpenLessBackendWarmupActivity",
             "webView never created within ${WEBVIEW_CREATION_WATCHDOG_MS}ms; finishing stuck instance " +
-                "activityHash=${System.identityHashCode(this)}",
+                "activityHash=${System.identityHashCode(this)} consecutiveStuckCount=$consecutiveStuckCount",
         )
+        if (consecutiveStuckCount >= STUCK_RESTART_THRESHOLD) {
+            restartProcessAsLastResort(applicationContext)
+            return@Runnable
+        }
         finishAndRemoveTask()
     }
 
@@ -130,6 +151,7 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         super.onWebViewCreate(webView)
         webViewRef = webView
         warmupHandler.removeCallbacks(webViewCreationWatchdog)
+        consecutiveStuckCount = 0
         android.util.Log.i(
             "OpenLessBackendWarmupActivity",
             "onWebViewCreate webView=${System.identityHashCode(webView)} activityHash=${System.identityHashCode(this)} " +
@@ -568,6 +590,22 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         // it as genuinely stuck rather than just slow.
         private const val WEBVIEW_CREATION_WATCHDOG_MS = 4000L
 
+        // See webViewCreationWatchdog's doc comment: once this many
+        // consecutive fresh instances in a row never got a WebView, the
+        // "main" window label is presumed permanently stuck (confirmed
+        // on-device: every later attempt failed identically until the
+        // whole process was killed and relaunched) — no point letting the
+        // user keep tapping Logo into the same dead end.
+        private const val STUCK_RESTART_THRESHOLD = 2
+        @Volatile
+        private var consecutiveStuckCount = 0
+        private const val LAST_PROCESS_RESTART_KEY = "last_stuck_process_restart_wall_time"
+        // Purely a crash-loop guard in case this same stuck state somehow
+        // recurs immediately after relaunch — restartProcessAsLastResort()
+        // itself has no way to know whether the relaunch actually fixed
+        // anything, only that it happened.
+        private const val PROCESS_RESTART_COOLDOWN_MS = 60_000L
+
         // Set synchronously by openSettings()/openSettingsIfRunning() BEFORE
         // startActivity() is ever called, and consumed by onCreate()/
         // onNewIntent() — a settings request is "in flight" the instant one
@@ -763,6 +801,63 @@ class OpenLessBackendWarmupActivity : MainActivity() {
                     android.util.Log.w("OpenLessBackendWarmupActivity", "failed to launch warmup", launchError)
                 }
             }, 120L)
+        }
+
+        /**
+         * Last-resort recovery for the permanently-stuck "main" window
+         * label state (see webViewCreationWatchdog's doc comment) — Tauri's
+         * AppHandle.restart() is desktop-only (spawns a new process via
+         * Command::new(current_exe), meaningless on Android, and would just
+         * exit(0) the process with nothing to bring it back), so this does
+         * the Android-native equivalent directly: schedule an alarm to
+         * relaunch the launcher Activity a moment after this process is
+         * gone, then kill the process outright. OpenLessRuntimeService's
+         * dictation/IME state is lost same as any other process kill (the
+         * same thing already happens whenever the OS reclaims this process
+         * in the background) — the alternative is leaving the user stuck on
+         * a black settings screen with no way back except doing this
+         * exact same recovery manually.
+         */
+        private fun restartProcessAsLastResort(context: Context) {
+            val runtimePrefs = context.getSharedPreferences("openless_runtime", Context.MODE_PRIVATE)
+            val wallNow = System.currentTimeMillis()
+            val lastRestart = runtimePrefs.getLong(LAST_PROCESS_RESTART_KEY, 0L)
+            if (wallNow >= lastRestart && wallNow - lastRestart < PROCESS_RESTART_COOLDOWN_MS) {
+                android.util.Log.w(
+                    "OpenLessBackendWarmupActivity",
+                    "stuck main window label but process restart is on cooldown; finishing instance only",
+                )
+                return
+            }
+            runtimePrefs.edit().putLong(LAST_PROCESS_RESTART_KEY, wallNow).apply()
+            android.util.Log.e(
+                "OpenLessBackendWarmupActivity",
+                "main window label permanently stuck after $STUCK_RESTART_THRESHOLD consecutive failures; restarting process",
+            )
+            OpenLessProcessRestartStats(context, "stuckwindow").recordStart()
+            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                ?.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP) }
+            if (launchIntent != null) {
+                val pendingIntent = android.app.PendingIntent.getActivity(
+                    context,
+                    0,
+                    launchIntent,
+                    android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_CANCEL_CURRENT,
+                )
+                // Plain set(), not setExactAndAllowWhileIdle(): API 31+ gates
+                // exact alarms behind the SCHEDULE_EXACT_ALARM permission,
+                // which this app doesn't otherwise need — relaunch timing
+                // within a second or two either way is fine here.
+                val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+                alarmManager.set(
+                    android.app.AlarmManager.ELAPSED_REALTIME,
+                    android.os.SystemClock.elapsedRealtime() + 500L,
+                    pendingIntent,
+                )
+            } else {
+                android.util.Log.e("OpenLessBackendWarmupActivity", "no launch intent found; process will not auto-relaunch")
+            }
+            android.os.Process.killProcess(android.os.Process.myPid())
         }
     }
 }
