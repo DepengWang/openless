@@ -95,10 +95,32 @@ pub fn ensure_main_webview_window() -> Result<(), String> {
     let app = APP_HANDLE
         .get()
         .ok_or_else(|| "AppHandle not yet registered".to_string())?;
-    let already_exists = app.get_webview_window("main").is_some();
-    log::info!("[android-native] ensure_main_webview_window: already_exists={already_exists}");
-    if already_exists {
-        return Ok(());
+    // This only ever runs from a fresh OpenLessBackendWarmupActivity.onCreate()
+    // (see its call site) — which Kotlin only reaches after openSettings()
+    // already decided no live instance exists (openSettingsIfRunning()
+    // failed). So any "main" record found here is necessarily stale: on-device
+    // logs showed Tauri's own WindowManager can keep a "main" entry around
+    // even after Wry's activity_id-keyed bookkeeping (WEBVIEW_ATTRIBUTES/
+    // CONTEXTS/ACTIVITY_PROXY) has already been cleared for the dead Activity
+    // — trusting "already exists" as "nothing to do" here left the window
+    // permanently un-rebuilt for the new activity_id (silent black screen,
+    // no error, nothing to catch). Always close-then-rebuild instead.
+    if let Some(stale) = app.get_webview_window("main") {
+        // destroy(), not close(): close() emits a CloseRequested event and
+        // waits on the event loop to actually drop the window from Tauri's
+        // WindowManager, which on-device logs showed had not happened yet by
+        // the time the immediately-following build() ran ("a webview with
+        // label `main` already exists"). destroy() is documented as
+        // "does not emit any events and force close the window instead" —
+        // synchronous, no event-loop round trip to wait on.
+        let destroyed = stale.destroy();
+        log::info!(
+            "[android-native] ensure_main_webview_window: destroyed stale main window record ok={}",
+            destroyed.is_ok()
+        );
+        if app.get_webview_window("main").is_some() {
+            log::warn!("[android-native] ensure_main_webview_window: main window record still present after destroy()");
+        }
     }
     let result =
         tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
