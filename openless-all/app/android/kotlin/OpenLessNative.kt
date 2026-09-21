@@ -50,28 +50,36 @@ object OpenLessNative {
     @JvmStatic external fun nativeRemoveVocabularyWord(phrase: String)
 
     /**
-     * Registers this Activity as the one with_android_env() (every
+     * Registers this Context as the one with_android_env() (every
      * Rust->Kotlin JNI call, including dictation/waveform capsule updates)
      * routes through — replaces whatever was registered before, since a
-     * GlobalRef stays valid for its Activity's whole lifecycle (unlike a
-     * once-per-process cached context, or tao's own live-but-resumed-only
-     * tracked Activity). Call from onCreate(); pair with
-     * nativeUnregisterActivityContext() in onDestroy().
+     * GlobalRef stays valid for the registrant's whole lifecycle. Despite
+     * the name, this was never actually Activity-specific on the Rust side
+     * (register_active_activity() in jni.rs just stores a generic JObject),
+     * and no longer requires one here either: OpenLessRuntimeService now
+     * registers itself, not OpenLessBackendWarmupActivity — a foreground
+     * Service that starts/stops in lockstep with the IME being active is a
+     * far more stable registrant than an Activity that spends nearly its
+     * entire life backgrounded via moveTaskToBack() and can be reclaimed by
+     * the OS at any point during that (see OpenLessRuntimeService.onCreate()
+     * for the current registrant, and OpenLessProcessRestartStats' "actkill"
+     * history for what depending on the Activity instead used to cost).
+     * Call from onCreate(); pair with nativeUnregisterActivityContext() in
+     * onDestroy().
      */
-    @JvmStatic external fun nativeRegisterActivityContext(activity: android.app.Activity)
+    @JvmStatic external fun nativeRegisterActivityContext(context: android.content.Context)
 
-    /** Clears the registration from nativeRegisterActivityContext() — only takes effect if `activity` is still the currently-registered one. */
-    @JvmStatic external fun nativeUnregisterActivityContext(activity: android.app.Activity)
+    /** Clears the registration from nativeRegisterActivityContext() — only takes effect if `context` is still the currently-registered one. */
+    @JvmStatic external fun nativeUnregisterActivityContext(context: android.content.Context)
 
     /**
-     * True once some MainActivity-family instance has called
-     * nativeRegisterActivityContext() and nothing has unregistered it
-     * since. The Rust backend can stay perfectly healthy for a long time
-     * after its last registered Activity is destroyed (that's the whole
-     * point of Phase 1/2's recovery design) — requireBackendContract()
-     * alone can't see that gap, since it only checks whether the backend
-     * itself is running, not whether there's still an Activity around for
-     * it to notify.
+     * True once some registrant (see nativeRegisterActivityContext()) has
+     * called it and nothing has unregistered since. The Rust backend can
+     * stay perfectly healthy for a long time after its last registered
+     * Context is gone (that's the whole point of Phase 1/2's recovery
+     * design) — requireBackendContract() alone can't see that gap, since it
+     * only checks whether the backend itself is running, not whether
+     * there's still something around for it to notify.
      */
     @JvmStatic external fun nativeHasRegisteredActivityContext(): Boolean
 

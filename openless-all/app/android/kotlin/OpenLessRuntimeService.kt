@@ -14,6 +14,25 @@ import android.util.Log
 class OpenLessRuntimeService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
+    // Registers this Service (not an Activity) as the Context every
+    // Rust->Kotlin JNI call routes through — see
+    // OpenLessNative.nativeRegisterActivityContext()'s doc comment for why.
+    // This Service starts in onCreate()/onCreateInputView() and is stopped
+    // in OpenLessImeService.onDestroy(), so the registration stays valid
+    // for as long as the IME itself is alive, independent of whether
+    // OpenLessBackendWarmupActivity (background warmup / settings host)
+    // exists, is backgrounded, or has been reclaimed by the OS.
+    override fun onCreate() {
+        super.onCreate()
+        runCatching { OpenLessNative.nativeRegisterActivityContext(this) }
+            .onFailure { error -> Log.w(TAG, "register runtime service context failed", error) }
+    }
+
+    override fun onDestroy() {
+        runCatching { OpenLessNative.nativeUnregisterActivityContext(this) }
+        super.onDestroy()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // A null intent here is the OS's own restart-after-death signal for
         // a START_STICKY service (documented Service.onStartCommand()
