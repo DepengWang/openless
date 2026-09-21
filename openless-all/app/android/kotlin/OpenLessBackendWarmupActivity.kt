@@ -406,6 +406,25 @@ class OpenLessBackendWarmupActivity : MainActivity() {
 
     @Suppress("DEPRECATION", "MissingSuperCall")
     override fun onBackPressed() {
+        overridePendingTransition(0, 0)
+        if (settingsRequested) {
+            // Trial change, being verified on-device for a HWUI/native-mutex
+            // regression before trusting it: closing settings now finishes
+            // this instance outright instead of moveTaskToBack()-hiding it.
+            // The old worry (see below) was specifically about backgrounding
+            // *mid cold-start init* — sendToBackground()'s own early-return
+            // (`if (settingsRequested) return@Runnable`) already means
+            // moveTaskToBack() was never reachable here while settings was
+            // open anyway, so this isn't adding a new code path so much as
+            // replacing the one genuinely reachable one. Now that a fresh
+            // rebuild reliably gets a real WebView (activity_id collision
+            // fixed, see ensureMainWebviewWindow's call site above, with
+            // webViewCreationWatchdog as a backup), a clean finish + rebuild
+            // is simpler than reattaching a WebView across a Surface that
+            // moveTaskToBack() tore down.
+            finishAndRemoveTask()
+            return
+        }
         // This Activity is the single, process-lifetime Tauri/Rust host and must
         // never actually finish() while the process is alive: finishing destroys
         // the window Surface (unlike moveTaskToBack, which only hides it), and
@@ -413,7 +432,6 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         // "destroyed mutex" abort. The default back behavior would finish() this
         // Activity once there is no more back-stack, so always background it
         // instead — skipping super.onBackPressed() is intentional here.
-        overridePendingTransition(0, 0)
         moveTaskToBack(true)
     }
 
