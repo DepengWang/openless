@@ -590,13 +590,16 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         // it as genuinely stuck rather than just slow.
         private const val WEBVIEW_CREATION_WATCHDOG_MS = 4000L
 
-        // See webViewCreationWatchdog's doc comment: once this many
-        // consecutive fresh instances in a row never got a WebView, the
-        // "main" window label is presumed permanently stuck (confirmed
-        // on-device: every later attempt failed identically until the
-        // whole process was killed and relaunched) — no point letting the
-        // user keep tapping Logo into the same dead end.
-        private const val STUCK_RESTART_THRESHOLD = 2
+        // See webViewCreationWatchdog's doc comment. Originally 2 (require
+        // back-to-back failures before escalating), but on-device feedback
+        // was that a single stuck instance already reads as "broken" to the
+        // user — they don't wait through a second 4s cycle, they just
+        // switch to the launcher icon instead (a full cold process start,
+        // which sidesteps this rebuild path entirely and always works).
+        // Restarting on the very first failure trades that manual detour
+        // for an automatic one; the 60s cooldown below still guards against
+        // a restart loop if this somehow becomes frequent.
+        private const val STUCK_RESTART_THRESHOLD = 1
         @Volatile
         private var consecutiveStuckCount = 0
         private const val LAST_PROCESS_RESTART_KEY = "last_stuck_process_restart_wall_time"
