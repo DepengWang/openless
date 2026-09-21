@@ -48,6 +48,16 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // stops (skip the LLM polish step). Reset whenever a fresh recording
     // starts or is cancelled, so it never leaks into a later utterance.
     private var rawModeArmed = false
+        set(value) {
+            field = value
+            voiceButton?.rawModeActive = value
+            // The RAW gesture changes the mode while the recording prompt is
+            // already visible. Refresh the text color immediately in both
+            // directions so yellow cannot leak into the next normal session.
+            status?.setTextColor(
+                if (state == "speaking" && value) LINK_COLOR_RECORDING_RAW else statusNormalColor,
+            )
+        }
     private var inputMode = InputMode.VOICE
     private var englishLayer = EnglishLayer.LETTERS
     // The word currently being typed on the English keyboard — appended to
@@ -106,6 +116,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private var state = "idle"
     private var currentMessage = "点击开始说话"
     private var status: TextView? = null
+    private var statusNormalColor = Color.GRAY
     // Single shared top-level preview bubble for every key across the
     // English and stroke keyboards (see wrapWithKeyPreviewOverlay()) — reset
     // on every panel rebuild since it lives inside that panel's own root
@@ -248,7 +259,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         return runCatching { simplifiedToTraditional.transliterate(text) }.getOrDefault(text)
     }
 
-    // The 5th stroke has no plain-text glyph in the encode preview — it's
+        // The 5th stroke has no plain-text glyph in the encode preview — it's
     // drawn as the same shape as the "5" key's own icon (an ImageSpan), so
     // the preview and the key read as the same stroke instead of the bare
     // "乙" character.
@@ -440,11 +451,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             ViewGroup.LayoutParams.MATCH_PARENT,
             dp(38),
         ))
+        statusNormalColor = tone(Color.rgb(190, 190, 190), Color.rgb(110, 110, 115))
         status = TextView(this).apply {
             text = displayStatus(currentMessage)
             textSize = 16f
             gravity = android.view.Gravity.CENTER
-            setTextColor(tone(Color.rgb(190, 190, 190), Color.rgb(110, 110, 115)))
+            setTextColor(statusNormalColor)
             setPadding(0, dp(6), 0, dp(4))
         }
         panel.addView(status, LinearLayout.LayoutParams(
@@ -847,10 +859,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             setTextColor(tone(Color.WHITE, Color.rgb(30, 30, 34)))
         }
+        statusNormalColor = tone(Color.rgb(160, 160, 160), Color.rgb(120, 120, 125))
         status = TextView(this).apply {
             text = displayStatus(currentMessage)
             textSize = 12f
-            setTextColor(tone(Color.rgb(160, 160, 160), Color.rgb(120, 120, 125)))
+            setTextColor(statusNormalColor)
             setPadding(0, dp(2), 0, 0)
         }
         textStack.addView(title, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -1767,22 +1780,41 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             marginEnd = dp(8)
         })
 
-        // Most-recent-two-clips quick-tap strip — sized to match the stroke
-        // panel's own encode+candidate area (24dp+36dp = 60dp total) so the
-        // two panels' headers land at the same height, bordered by three
-        // thin divider lines (top/middle/bottom) rather than a colored
+        // Most-recent-four-clips quick-tap strip. The four rows use circled
+        // Unicode digits (①②③④) for their prefixes; the glyphs come from
+        // Android's normal font fallback rather than a hand-drawn canvas
+        // shape. The prefixes are white while the clip text uses the same
+        // candidate accent color as the stroke panel. The action grid below
+        // shrinks by the strip's fixed height automatically.
+        // Thin divider lines separate the rows rather than a colored
         // background, matching the plain-divider treatment already used for
-        // the English candidate bar. The action grid below (row1/row2)
-        // shrinks by this same 60dp automatically since it only ever asks
-        // for "whatever space is left" (weight=1f each), so it keeps its
-        // two rows equal height to each other without any extra code here.
-        fun recentClipRow(entry: ClipboardEntry?): TextView = TextView(this).apply {
-            text = entry?.text ?: ""
+        // the English candidate bar.
+        val circledIndices = listOf('①', '②', '③', '④')
+        fun recentClipRow(index: Int, entry: ClipboardEntry?): TextView = TextView(this).apply {
+            text = entry?.let {
+                android.text.SpannableStringBuilder().apply {
+                    append(circledIndices[index])
+                    append(' ')
+                    setSpan(
+                        android.text.style.ForegroundColorSpan(Color.WHITE),
+                        0,
+                        2,
+                        android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                    append(it.text)
+                    setSpan(
+                        android.text.style.ForegroundColorSpan(strokeEncodeAccentColor),
+                        2,
+                        length,
+                        android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                }
+            } ?: ""
             textSize = 14f
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
             gravity = android.view.Gravity.CENTER_VERTICAL
-            setTextColor(tone(Color.rgb(230, 230, 230), Color.rgb(30, 30, 34)))
+            setTextColor(strokeEncodeAccentColor)
             setPadding(dp(10), 0, dp(10), 0)
             if (entry != null) {
                 isClickable = true
@@ -1796,11 +1828,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val recentClips = OpenLessClipboardHistory.load(this)
         val recentClipsColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         recentClipsColumn.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
-        recentClipsColumn.addView(recentClipRow(recentClips.getOrNull(0)), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        recentClipsColumn.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
-        recentClipsColumn.addView(recentClipRow(recentClips.getOrNull(1)), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        recentClipsColumn.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
-        root.addView(recentClipsColumn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(60)))
+        for (index in 0 until 4) {
+            recentClipsColumn.addView(
+                recentClipRow(index, recentClips.getOrNull(index)),
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
+            )
+            recentClipsColumn.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
+        }
+        root.addView(recentClipsColumn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(92)))
 
         // Arrow keys and the Select toggle work as one unit: while selection
         // mode is on, the arrows extend the selection instead of just moving
@@ -3157,7 +3192,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             if (!editingDictationResult) {
                 lastDictationText = null
             }
-            setState("speaking", "再次点击结束")
+            setState("speaking", "再次点击结束 · 下划取消")
             runNativeAction("开始听写") { OpenLessNative.nativeStartDictationForIme() }
         }
     }
@@ -3198,12 +3233,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private fun runBackendHeartbeatCheck() {
         val ready = isBackendReady()
         backendLinkHealthy = ready
+        lastHeartbeatElapsedRealtime = android.os.SystemClock.elapsedRealtime()
+        lastHeartbeatReady = ready
+        // Always repaint the currently mounted indicator. Previously this was
+        // skipped while recording/processing, and a recovery could remain
+        // visually stale until the user switched panels and rebuilt the View.
+        updateBackendLinkIndicator()
         if (!ready) {
             OpenLessProcessRestartStats(this, "heartbeat").recordStart()
             ensureBackendReady()
-        }
-        if (!recording && !processing) {
-            updateBackendLinkIndicator()
         }
     }
 
@@ -3313,7 +3351,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     voiceLinkWarning?.text = ui("检测到麦克风无声音，点击重启应用", "No mic audio detected — tap to restart the app")
                     voiceLinkWarning?.visibility = View.VISIBLE
                 }
-                setState("speaking", "再次点击结束")
+                setState("speaking", "再次点击结束 · 下划取消")
             }
             "transcribing" -> {
                 // Guarded by the same "was still recording" check as
@@ -3389,6 +3427,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private fun updateStatus(message: String) {
         currentMessage = message
         status?.text = displayStatus(message)
+        status?.setTextColor(
+            if (state == "speaking" && rawModeArmed) LINK_COLOR_RECORDING_RAW else statusNormalColor,
+        )
         voiceButton?.isRecording = recording
         voiceButton?.isProcessing = processing
         updateDictationResultControls()
@@ -3608,7 +3649,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         if (!englishUi) return message
         return when (message) {
             "点击开始说话" -> "Tap to speak"
-            "再次点击结束" -> "Tap again to finish"
+            "再次点击结束 · 下划取消" -> "Tap again to finish · Swipe down to cancel"
             "正在思考" -> "Thinking"
             "已完成", "已上屏" -> "Done"
             "已取消" -> "Cancelled"
@@ -4853,11 +4894,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val idlePillColor = if (darkTheme) Color.rgb(54, 54, 54) else Color.rgb(225, 225, 228)
         private val idleIconColor = if (darkTheme) Color.WHITE else Color.rgb(60, 60, 64)
-        // Light green, shown blended into the capsule behind the mic icon
-        // while a swipe-up-to-raw-mode gesture is past its commit
-        // threshold — same value in both themes (a status color, not a
-        // themed surface).
-        private val swipeArmedPillColor = Color.rgb(200, 230, 201)
+        // Match the raw-mode recording indicator exactly, so the swipe-up
+        // preview and the resulting raw recording state use one consistent
+        // orange-yellow accent.
+        private val swipeArmedPillColor = LINK_COLOR_RECORDING_RAW
         // Light red, blended into the waveform bars while a swipe-down-to-
         // cancel gesture is past its commit threshold — same value in both
         // themes, mirroring swipeArmedPillColor's own choice.
@@ -4882,6 +4922,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 invalidate()
             }
         var isProcessing: Boolean = false
+            set(value) {
+                field = value
+                invalidate()
+            }
+
+        var rawModeActive: Boolean = false
             set(value) {
                 field = value
                 invalidate()
@@ -5019,7 +5065,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 return
             }
             if (isRecording) {
-                // Monochrome waveform: quiet input stays compact while speech
+                // The normal waveform is monochrome; RAW recording uses the
+                // same orange-yellow accent as the RAW indicator and the
+                // swipe-up preview. Quiet input stays compact while speech
                 // expands the bars clearly with the live microphone level.
                 // Longer bar group (17 vs the original 9) with a genuine
                 // left-flowing traveling wave — as `phase` advances, the sine
@@ -5033,7 +5081,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 val envelopeCenter = (barCount - 1) / 2f
                 val gap = width * 0.86f / (barCount - 1)
                 val startX = centerX - gap * (barCount - 1) / 2f
-                val currentWaveformColor = lerpColor(waveformColor, cancelArmedWaveformColor, waveformCancelAmount)
+                val rawWaveformColor = if (rawModeActive) LINK_COLOR_RECORDING_RAW else waveformColor
+                val currentWaveformColor = lerpColor(rawWaveformColor, cancelArmedWaveformColor, waveformCancelAmount)
                 for (index in 0 until barCount) {
                     val x = startX + index * gap
                     val distanceFromCenter = kotlin.math.abs(index - envelopeCenter) / envelopeCenter
@@ -5098,6 +5147,25 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // urgent states — which keep the original brisker cadence.
         private const val BACKEND_LINK_PULSE_DURATION_MS = 900L
         private const val BACKEND_LINK_READY_PULSE_DURATION_MS = 1800L
+
+        @Volatile
+        private var lastHeartbeatElapsedRealtime = 0L
+        @Volatile
+        private var lastHeartbeatReady: Boolean? = null
+
+        /** Runtime/heartbeat state shown in native keyboard settings for diagnosis. */
+        fun backendDebugSnapshot(): String {
+            val service = activeInstance?.get()
+                ?: return "ime=none heartbeat=none"
+            val heartbeat = lastHeartbeatReady?.let { if (it) "ready" else "not-ready" } ?: "none"
+            val ageMs = if (lastHeartbeatElapsedRealtime == 0L) {
+                -1L
+            } else {
+                (android.os.SystemClock.elapsedRealtime() - lastHeartbeatElapsedRealtime).coerceAtLeast(0L)
+            }
+            return "ime=present recording=${service.recording} processing=${service.processing} " +
+                "backend=${heartbeat} ageMs=$ageMs indicator=${service.backendLinkIndicator != null}"
+        }
 
         /**
          * Opts a view out of Android's system gesture navigation (back/home

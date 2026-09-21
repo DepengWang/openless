@@ -349,17 +349,23 @@ class OpenLessApplication : Application() {
 
         // Kept in sync by hand with every restart-cause key actually used
         // across the app (OpenLessRuntimeService's "sticky"/"actkill"/its
-        // four "actkill_<reason>" sub-categories/"rtexit",
+        // "actkill_<reason>" sub-categories/"rtexit",
         // OpenLessBackendWarmupActivity's "warmup", OpenLessImeService's
         // "mictap", and this file's own MAIN/ACCESSIBILITY/"unclean") —
         // resetRestartStatsOnVersionBump() needs the full list to zero
-        // everything out on a fresh build. The four actkill_* entries were
+        // everything out on a fresh build. The actkill_* entries were
         // missing here for a while: "actkill" itself got zeroed on every
         // version bump but its sub-categories didn't, so they kept
         // accumulating across bumps within the same day while the total
         // reset out from under them — e.g. actkill_finishing reading
         // higher than actkill itself, which should never happen since
         // both are only ever incremented together (OpenLessRuntimeService).
+        // actkill_self was one of the four sub-categories added along with
+        // this fix, then removed again shortly after (along with the
+        // recreate()-based settings-reload escalation it tracked, see
+        // OpenLessBackendWarmupActivity's onDestroy()) — this app never
+        // calls Activity.recreate() on itself any more, so that reason can
+        // no longer occur.
         private val ALL_RESTART_CATEGORIES = listOf(
             OpenLessProcessRestartStats.MAIN,
             OpenLessProcessRestartStats.ACCESSIBILITY,
@@ -367,7 +373,6 @@ class OpenLessApplication : Application() {
             "warmup",
             "mictap",
             "actkill",
-            "actkill_self",
             "actkill_config",
             "actkill_finishing",
             "actkill_os",

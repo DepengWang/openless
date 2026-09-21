@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -22,6 +24,14 @@ import android.widget.TextView
  * they're added.
  */
 class OpenLessKeyboardSettingsActivity : Activity() {
+    private val debugHandler = Handler(Looper.getMainLooper())
+    private var debugStatusView: TextView? = null
+    private val debugStatusRunnable = object : Runnable {
+        override fun run() {
+            debugStatusView?.text = liveDebugStatus()
+            debugHandler.postDelayed(this, 1000L)
+        }
+    }
     private val prefs by lazy { getSharedPreferences("openless_ime_ui", Context.MODE_PRIVATE) }
     private val englishUi by lazy {
         val locale = prefs.getString("locale", null) ?: resources.configuration.locales[0].toLanguageTag()
@@ -44,6 +54,21 @@ class OpenLessKeyboardSettingsActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(buildContent())
+        debugHandler.post(debugStatusRunnable)
+    }
+
+    override fun onDestroy() {
+        debugHandler.removeCallbacks(debugStatusRunnable)
+        super.onDestroy()
+    }
+
+    private fun liveDebugStatus(): String {
+        val native = runCatching {
+            val json = org.json.JSONObject(OpenLessNative.nativeBackendSnapshot())
+            "rustOk=${json.optBoolean("ok")} contract=${json.optString("contractVersion", "?")}"
+        }.getOrElse { "rust=error" }
+        return "${OpenLessBackendWarmupActivity.debugSnapshot()}\n" +
+            "${OpenLessImeService.backendDebugSnapshot()} $native"
     }
 
     private fun buildContent(): View {
@@ -255,9 +280,6 @@ class OpenLessKeyboardSettingsActivity : Activity() {
         //   actkill      - OpenLessBackendWarmupActivity.onDestroy() fired,
         //                  total across all reasons below (doesn't
         //                  necessarily mean the process itself died)
-        //   actkill_self   - onDestroy() from our own recreate() call
-        //                    (verifyVisualStateOrRecreate()'s WebView
-        //                    recovery), not the system
         //   actkill_config - onDestroy() from a configuration change
         //                    (rotation/density/locale) — expected, harmless
         //   actkill_finishing - isFinishing was true (unexpected; this
@@ -281,7 +303,6 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             Triple("warmup", "warmup", "后端唤醒"),
             Triple("mictap", "mictap", "点击时未就绪"),
             Triple("actkill", "actkill", "界面被回收(合计)"),
-            Triple("actkill_self", "  ├self", "· 自己recreate()修复"),
             Triple("actkill_config", "  ├config", "· 配置变化(无害)"),
             Triple("actkill_finishing", "  ├finish", "· isFinishing(异常)"),
             Triple("actkill_os", "  └os", "· 真正被系统回收"),
@@ -302,6 +323,16 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             )
         }
         content.addView(View(this), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(14)))
+
+        content.addView(sectionLabel(ui("实时调试状态", "Live debug state")))
+        debugStatusView = TextView(this).apply {
+            text = liveDebugStatus()
+            textSize = 11f
+            typeface = monospace
+            setTextColor(tone(Color.rgb(200, 200, 200), Color.rgb(70, 70, 75)))
+            setPadding(0, 0, 0, dp(14))
+        }
+        content.addView(debugStatusView)
 
         content.addView(sectionLabel(ui("个人偏好数据", "Personal preference data")))
         val personalFrequency = StrokeUserFrequency(this)
