@@ -102,6 +102,17 @@ class OpenLessBackendWarmupActivity : MainActivity() {
     private var settingsRequested = false
     private var webViewRef: android.webkit.WebView? = null
 
+    // See onCreate()'s settingsRequested branch and onWebViewCreate() below.
+    private val webViewCreationWatchdog = Runnable {
+        if (webViewRef != null || isFinishing || isDestroyed) return@Runnable
+        android.util.Log.w(
+            "OpenLessBackendWarmupActivity",
+            "webView never created within ${WEBVIEW_CREATION_WATCHDOG_MS}ms; finishing stuck instance " +
+                "activityHash=${System.identityHashCode(this)}",
+        )
+        finishAndRemoveTask()
+    }
+
     // See requestSettingsReattach()/maybePerformPendingSettingsReattach()/
     // performWebViewReattach() below. settingsOpenRequestId increments on
     // every settings-open (cold onCreate() or warm onNewIntent()), purely
@@ -118,6 +129,7 @@ class OpenLessBackendWarmupActivity : MainActivity() {
     override fun onWebViewCreate(webView: android.webkit.WebView) {
         super.onWebViewCreate(webView)
         webViewRef = webView
+        warmupHandler.removeCallbacks(webViewCreationWatchdog)
         android.util.Log.i(
             "OpenLessBackendWarmupActivity",
             "onWebViewCreate webView=${System.identityHashCode(webView)} activityHash=${System.identityHashCode(this)} " +
@@ -310,6 +322,7 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         // for a never-seen-before activity_id). See
         // OpenLessNative.nativeEnsureMainWebviewWindow()'s doc comment.
         runCatching { OpenLessNative.nativeEnsureMainWebviewWindow() }
+            .onSuccess { ok -> android.util.Log.i("OpenLessBackendWarmupActivity", "ensureMainWebviewWindow ok=$ok") }
             .onFailure { error -> android.util.Log.w("OpenLessBackendWarmupActivity", "ensure main webview window failed", error) }
         activeInstance = java.lang.ref.WeakReference(this)
         // with_android_env()'s JNI Context registration is no longer this
@@ -365,6 +378,20 @@ class OpenLessBackendWarmupActivity : MainActivity() {
                 "OpenLessBackendWarmupActivity",
                 "settings open via cold onCreate requestId=$settingsOpenRequestId — no reattach needed",
             )
+            // Safety net: nativeEnsureMainWebviewWindow() above can report
+            // success while the actual WebView creation still silently
+            // never reaches this Activity (observed on-device even with a
+            // genuinely unique activity_id — some deeper Tauri/Wry window-
+            // creation dispatch issue not yet root-caused). Left alone,
+            // this Activity stays alive forever with webViewRef == null: a
+            // permanent black screen, and every later openSettings() call
+            // just redelivers to this same broken instance via
+            // onNewIntent() (never onCreate() again), so it can never
+            // recover on its own. Finishing it here instead — cancelled by
+            // onWebViewCreate() the moment a real WebView does show up —
+            // means the next Logo tap creates a genuinely fresh instance
+            // (with its own new activity_id) rather than being stuck.
+            warmupHandler.postDelayed(webViewCreationWatchdog, WEBVIEW_CREATION_WATCHDOG_MS)
         }
 
         // 不再修改窗口透明度或触摸属性。主 Activity 必须以正常窗口完成
@@ -475,19 +502,20 @@ class OpenLessBackendWarmupActivity : MainActivity() {
 
     override fun onDestroy() {
         warmupHandler.removeCallbacks(sendToBackground)
+        warmupHandler.removeCallbacks(webViewCreationWatchdog)
         if (activeInstance?.get() === this) {
             activeInstance = null
         }
-        // This class never calls finish() or recreate() on itself
-        // (onBackPressed() always backgrounds instead — see above; the old
-        // stuck-WebView recreate() escalation that used to make this
-        // ambiguous is gone, see performWebViewReattach()'s doc comment),
-        // so onDestroy() firing here should only ever mean a real
-        // configuration change or the OS reclaiming the task — the
-        // "self"/recreate()-triggered category this used to also
-        // distinguish is gone along with it (see OpenLessApplication's
-        // ALL_RESTART_CATEGORIES and OpenLessKeyboardSettingsActivity's
-        // restart-stats table, both trimmed back to three reasons here).
+        // onBackPressed() always backgrounds rather than finishing (see
+        // above), and the old stuck-WebView recreate() escalation is gone
+        // (see performWebViewReattach()'s doc comment) — but
+        // webViewCreationWatchdog above now *does* call
+        // finishAndRemoveTask() deliberately, for a narrower reason: this
+        // instance's WebView silently never got created at all. That still
+        // reports as "finishing" below, same as any other unexpected
+        // isFinishing; it isn't split into its own category since it's
+        // rare enough that OpenLessKeyboardSettingsActivity's restart-stats
+        // table doesn't need a fourth bucket for it yet.
         val reason = when {
             isChangingConfigurations -> "config"
             isFinishing -> "finishing"
@@ -509,9 +537,18 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         private var activeInstance: java.lang.ref.WeakReference<OpenLessBackendWarmupActivity>? = null
 
         private const val EXTRA_SHOW_SETTINGS = "com.openless.app.extra.SHOW_SETTINGS"
+        // Same literal wry's WryActivity.kt uses for its own private
+        // ACTIVITY_ID_KEY (top-level `private val`, file-scoped in Kotlin —
+        // not visible here even though it's the same package, hence the
+        // duplicated literal rather than a shared reference).
+        private const val WRY_ACTIVITY_ID_KEY = "__wryActivityId"
         private const val REQUEST_POST_NOTIFICATIONS = 9102
         private const val WEBVIEW_READY_POLL_INTERVAL_MS = 60L
         private const val WEBVIEW_READY_MAX_WAIT_MS = 4000L
+        // Successful onWebViewCreate() has always landed within ~300ms on
+        // device even under load; this is generous headroom before treating
+        // it as genuinely stuck rather than just slow.
+        private const val WEBVIEW_CREATION_WATCHDOG_MS = 4000L
 
         // Set synchronously by openSettings()/openSettingsIfRunning() BEFORE
         // startActivity() is ever called, and consumed by onCreate()/
@@ -578,6 +615,19 @@ class OpenLessBackendWarmupActivity : MainActivity() {
             android.util.Log.i("OpenLessBackendWarmupActivity", "openSettings: no live instance, starting fresh")
             context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {
                 putExtra(EXTRA_SHOW_SETTINGS, true)
+                // Explicit __wryActivityId, matching what WryActivity's own
+                // startActivity(cls) helper does — WITHOUT this, WryActivity.
+                // onCreate()'s `intent.extras?.getInt(ACTIVITY_ID_KEY) ?: hashCode()`
+                // silently resolves to 0 for *every* Intent here, because
+                // Bundle.getInt() returns 0 (not null) for a missing key once
+                // extras is non-null (which it always is once EXTRA_SHOW_SETTINGS
+                // is set above) — so every rebuilt instance collided on the same
+                // activity_id=0, racing its dying predecessor's async cleanup for
+                // that same id and intermittently losing (confirmed via a wry
+                // patch: android_setup()/InnerWebView::new() both logged
+                // activity_id=0 for every fresh rebuild). A real random id per
+                // launch makes each instance's Wry-side records genuinely its own.
+                putExtra(WRY_ACTIVITY_ID_KEY, kotlin.random.Random.nextInt())
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
             })

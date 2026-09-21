@@ -142,13 +142,11 @@ class OpenLessRuntimeService : Service() {
          * today; onStartCommand() already re-checks on every start
          * regardless of why it was started.
          *
-         * @param reason one of "self" (our own recreate() call, see
-         *   OpenLessBackendWarmupActivity.verifyVisualStateOrRecreate()),
-         *   "config" (isChangingConfigurations was true — a rotation/
-         *   density/locale change, not a kill), "finishing" (isFinishing
-         *   was true — unexpected, this Activity never calls finish() on
-         *   itself deliberately), or "os" (none of the above — the only
-         *   case that's actually the system reclaiming this task).
+         * @param reason one of "config" (isChangingConfigurations was true —
+         *   a rotation/density/locale change, not a kill), "finishing"
+         *   (isFinishing was true — unexpected, this Activity never calls
+         *   finish() on itself deliberately), or "os" (none of the above —
+         *   the only case that's actually the system reclaiming this task).
          */
         fun notifyRuntimeActivityDestroyed(context: android.content.Context, reason: String) {
             context.startService(

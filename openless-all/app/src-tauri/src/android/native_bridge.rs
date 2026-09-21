@@ -95,11 +95,16 @@ pub fn ensure_main_webview_window() -> Result<(), String> {
     let app = APP_HANDLE
         .get()
         .ok_or_else(|| "AppHandle not yet registered".to_string())?;
-    if app.get_webview_window("main").is_some() {
+    let already_exists = app.get_webview_window("main").is_some();
+    log::info!("[android-native] ensure_main_webview_window: already_exists={already_exists}");
+    if already_exists {
         return Ok(());
     }
-    tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-        .build()
+    let result =
+        tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+            .build();
+    log::info!("[android-native] ensure_main_webview_window: build ok={}", result.is_ok());
+    result
         .map(|_| ())
         .map_err(|error| format!("rebuild main webview window: {error}"))
 }
