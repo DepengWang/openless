@@ -236,6 +236,45 @@ Android has additional system dependencies that desktop builds do not: microphon
 
 The Android implementation is currently beta-quality. A successful APK build or contract test is not a substitute for real-device verification. Before a release, test ordinary native fields, WeChat and mini-program fields, background/foreground transitions, recording start/stop/cancel, Activity reclamation, process restart, and every enabled insertion tier. See [Android architecture](docs/architecture.md), [Android implementation plan](docs/android-mobile-apk-overlay-plan.md), and [desktop/Android acceptance](docs/2.0-desktop-acceptance.md).
 
+### Android development handoff (2026-09-21)
+
+This section is the current handoff summary for continued Android work. The detailed investigation log and historical fixes are maintained in [`openless-all/app/android/README.md`](openless-all/app/android/README.md).
+
+#### Current implementation state
+
+- The Android input method already covers voice, stroke, clipboard, and English input, with floating-capsule controls, multiple insertion tiers, provider selection, local history, personalization, and runtime diagnostics.
+- The Android runtime uses a foreground supervisor and one tracked Tauri host Activity. The host Activity is reused during warmup and moved to the background so the Rust/Tauri mobile runtime can retain the Activity context it needs.
+- The settings page includes a real-time diagnostic panel showing Activity, WebView, IME, backend, heartbeat, and Rust/runtime state. This panel is intended for device diagnosis and must be validated against logcat and screenshots rather than treated as proof that a visible frame was rendered.
+- The current Android lifecycle branch contains uncommitted lifecycle, heartbeat, diagnostic-panel, and version-sync changes. Before any integration work, preserve these changes and split them into small logical commits.
+
+#### Known unresolved risks
+
+- After the app has remained in the background for some time, opening Settings by tapping the logo can occasionally show a black WebView. In some cases the app appears to recover after an automatic process restart; in other cases returning from another app exposes the previously hidden black window before the foreground app becomes visible.
+- A `postVisualStateCallback()` response is not sufficient evidence that a non-black frame reached the current Android `Surface`. The current diagnostic panel can report a healthy Activity/WebView while the visible frame is still invalid.
+- The same lifecycle failure can interrupt the recording chain or leave the breathing indicator stale until another UI transition causes a refresh. This needs to be correlated with Activity/WebView/Surface events, audio-recorder state, process state, and heartbeat timestamps.
+- The Android source tree and generated Tauri Android tree must remain synchronized. A successful Gradle build, generated APK, or contract test alone is not sufficient; every lifecycle change requires a real-device test.
+
+#### Development priorities
+
+1. **P0 — Make black-screen and lifecycle recovery deterministic.** Reproduce the issue with repeated logo opens, background/foreground transitions, switching to Camera/Dialer/Alipay, and returning to OpenLess. Capture logcat and screenshots around Activity creation/destruction, WebView creation/destruction, Surface changes, process freezing/unfreezing, and warmup/background transitions. Keep one Tauri host and avoid adding a second Tauri runtime or restarting the Rust runtime as a first-line workaround.
+2. **P0 — Restore recording and indicator state reliably.** Separate backend liveness from UI visibility and from recorder state. After recovery, explicitly resynchronize the recorder, heartbeat, breathing indicator, and input-panel state; verify that the audio chain is not silently detached when the Activity or WebView changes.
+3. **P1 — Add repeatable Android regression tests.** Provide an ADB-driven smoke loop for logo/settings, app switching, foreground/background recovery, recording start/stop/cancel, IME enablement, and every insertion tier. Record device model, Android version, ABI, permissions, tested commit, and exit/crash evidence.
+4. **P1 — Reduce lifecycle complexity.** Split the Android input-panel and runtime code into small controllers/state machines without changing user-visible IME behavior. Make the debug panel feature-gated or clearly diagnostic-only for release builds, and keep counters meaningful across process restarts.
+5. **P2 — Continue product hardening.** Improve settings load performance, clipboard retention/privacy documentation, offline/provider fallback behavior, OEM battery-management guidance, accessibility, and cross-version WebView compatibility. Only pursue these after the P0 lifecycle and recording paths are stable.
+
+#### Mainline integration policy
+
+Mainline updates can be integrated, but Android changes should not be merged as one large branch operation:
+
+- Core/Rust-only commits are normally the easiest to merge.
+- React/frontend changes are usually manageable but still require Android settings smoke tests.
+- Android Activity, Service, Manifest, generated Android, and lifecycle files have a high conflict risk and require manual review.
+- Do not merge or rebase with a dirty working tree. First preserve the current device-tested changes as small commits, then create a temporary integration branch.
+- Integrate core changes first, then manually reconcile `openless-all/app/android` with `openless-all/app/src-tauri/gen/android`, run the Android copy/generation step, build, install, and repeat the real-device lifecycle tests.
+- Follow the repository release flow: feature branch → `beta` via PR → `main` only after the beta validation gate. Do not open Android development PRs directly against `main`.
+
+The current Android lifecycle work is not considered complete until the black-screen scenario and the related recording/indicator recovery have passed repeated real-device tests. New feature work should avoid masking or bypassing this gate.
+
 ### Data and privacy boundaries
 
 OpenLess is local-first, not universally local-only. Credentials, settings, dictionaries, Android stroke personalization, and local history are stored on the device when possible. If a cloud ASR or polish provider, Marketplace, cloud synchronization, cursor context, or remote-input feature is enabled, the corresponding audio, text, context, or metadata is sent to that configured service. Users should review the selected provider and its retention policy before enabling those features.

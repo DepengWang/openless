@@ -102,91 +102,202 @@ class OpenLessBackendWarmupActivity : MainActivity() {
     private var settingsRequested = false
     private var webViewRef: android.webkit.WebView? = null
 
+    // See requestSettingsReattach()/maybePerformPendingSettingsReattach()/
+    // performWebViewReattach() below. settingsOpenRequestId increments on
+    // every settings-open (cold onCreate() or warm onNewIntent()), purely
+    // for correlating log lines — only the onNewIntent() (warm reuse) path
+    // ever sets pendingSettingsReattach, since a fresh onCreate() already
+    // gets a genuinely fresh WebView/Surface pairing with nothing to fix.
+    private var settingsOpenRequestId = 0L
+    private var pendingSettingsReattach = false
+    private var reattachedForRequestId = -1L
+    private var activityResumed = false
+
     // WryActivity's own hook, fired once when the WebView is first created
-    // for this Activity instance — kept for reloadWebViewForSettings().
+    // for this Activity instance.
     override fun onWebViewCreate(webView: android.webkit.WebView) {
         super.onWebViewCreate(webView)
         webViewRef = webView
+        android.util.Log.i(
+            "OpenLessBackendWarmupActivity",
+            "onWebViewCreate webView=${System.identityHashCode(webView)} activityHash=${System.identityHashCode(this)} " +
+                "isAttachedToWindow=${webView.isAttachedToWindow}",
+        )
+        // Diagnostic only — confirms a reattach (see performWebViewReattach())
+        // actually ran a real detach/attach cycle rather than just having
+        // its code path executed, and doubles as one of the triggers that
+        // re-checks maybePerformPendingSettingsReattach()'s conditions,
+        // since a reattach's own addView() causes this to fire too.
+        webView.addOnAttachStateChangeListener(object : android.view.View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: android.view.View) {
+                android.util.Log.i(
+                    "OpenLessBackendWarmupActivity",
+                    "webView attached requestId=$settingsOpenRequestId webView=${System.identityHashCode(v)} " +
+                        "windowVisibility=${v.windowVisibility} hasWindowFocus=${hasWindowFocus()} " +
+                        "parent=${System.identityHashCode(v.parent)}",
+                )
+                maybePerformPendingSettingsReattach("onViewAttachedToWindow")
+            }
+
+            override fun onViewDetachedFromWindow(v: android.view.View) {
+                android.util.Log.i(
+                    "OpenLessBackendWarmupActivity",
+                    "webView detached requestId=$settingsOpenRequestId webView=${System.identityHashCode(v)}",
+                )
+            }
+        })
     }
 
     /**
-     * Forces the WebView to repaint from scratch. On-device logs showed the
-     * OS freezing this Activity's WebView renderer process (a normal
-     * cached/background-process power-saving mechanism) while it sits
-     * backgrounded — which is true almost all the time, since
-     * sendToBackground() moves it behind other apps 180ms after every
-     * warmup launch. Unfreezing that renderer when the Activity comes back
-     * to the foreground does not always resume compositing, leaving a
-     * solid black surface even though the Activity itself and the Rust
-     * backend are both healthy (dictation/stroke input worked the whole
-     * time). Only called for a genuine settings-open, not for silent
-     * warmup — no one is looking at the window then, so there's nothing to
-     * fix and no reason to pay for a reload.
+     * Re-mounts the already-alive WebView onto the Activity's own content
+     * view: removes it from its parent, then — on the parent's own next
+     * Choreographer animation frame (the parent, not the WebView, since it
+     * stays attached to the window the whole time; posting on the
+     * just-detached WebView itself would queue into a run-queue that only
+     * flushes once *something else* reattaches it, i.e. never) — adds it
+     * back at the same index with the same LayoutParams, restoring scroll
+     * position and focus. This is a controlled experiment targeting a
+     * specific, evidence-backed correlation, not a proven fix: on-device
+     * logs show this Activity's outer Window Surface gets torn down
+     * (BLASTBufferQueue disconnect → destroySurface → NO_SURFACE) every
+     * time sendToBackground() calls moveTaskToBack() and a fresh Surface
+     * gets allocated the next time this singleTask instance is brought
+     * back via onNewIntent() — while the Activity, WebView, renderer
+     * process, and Rust runtime all stay alive throughout (confirmed via
+     * dumpsys: mHasSurface=true, isReadyForDisplay()=true,
+     * mDrawState=HAS_DRAWN by the time the black screen is reported, and
+     * the WebView renderer process itself never frozen or gone). The
+     * failure correlates with this WebView being reused across that
+     * Surface teardown/recreate cycle without ever going through a real
+     * View detach/attach of its own — Android does not document a
+     * guarantee that forcing one causes Chromium to recomposite onto the
+     * new Surface, so this needs real-device verification over many
+     * background/foreground cycles, not just a build that compiles.
      *
-     * A plain reload() alone isn't reliable on its own: on-device restart
-     * stats showed this same singleTask instance's task getting destroyed
-     * and silently re-warmed by the OS's background task killer 16-17+
-     * times in a single day — enough repeated freeze/reclaim cycles that
-     * the WebView's native render surface can end up in a state reload()
-     * doesn't recover (the page reports itself loaded, but no new frame is
-     * ever composited). Two earlier escalations (toggling the WebView's
-     * own visibility; recreate()ing the Activity) were both gated on
-     * `WebView.progress` reaching 100, and on-device logging proved that
-     * gate never actually fired — progress tracks page *load* (network/DOM),
-     * which reload() on an already-navigated URL can report as instantly
-     * "done" regardless of whether the compositor ever produces a new
-     * visible frame, so the escalation code was silently dead. This uses
-     * postVisualStateCallback() instead: a real "a frame reflecting the
-     * WebView's current state has been produced" signal from the
-     * compositor itself, not a load-progress proxy — no dependency on
-     * progress, and no WebViewClient override needed (Tauri/Wry installs
-     * its own client for the JS<->Rust bridge; postVisualStateCallback is a
-     * plain WebView method, not a client callback, so it doesn't touch
-     * that). If the callback doesn't fire within a grace window, that's
-     * real evidence the compositor itself is stuck, and recreate() runs
-     * this Activity's own onCreate() again from scratch (the exact,
-     * already-proven path every genuine cold app launch already takes) —
-     * a brief visible flash while it re-inits, so reserved for when this
-     * signal says something is actually wrong, not run on every open.
-     * recreatedForStuckWebView (a companion field, since recreate()
-     * replaces this whole instance) survives into the fresh instance's own
-     * reloadWebViewForSettings() call so that one doesn't immediately
-     * re-arm the same escalation and recreate() again in a loop if the new
-     * WebView is also just being genuinely slow.
+     * Deliberately NOT: reload()ing the page (resets JS/app state and
+     * doesn't address a Surface-binding problem), any postVisualStateCallback
+     * / WebView.progress based "did it actually render" detection (both
+     * proved unreliable — see the git history this replaced), or
+     * recreate()ing the Activity (walks WryActivity through a real
+     * onDestroy()/onCreate() cycle, notifying Rust of an Activity+WebView
+     * destroy/recreate it doesn't actually need, and this project has
+     * separately hit real JNI/Context staleness bugs around exactly that
+     * kind of Activity churn before).
      */
-    private fun reloadWebViewForSettings() {
-        val webView = webViewRef ?: return
-        val skipEscalationThisTime = recreatedForStuckWebView
-        recreatedForStuckWebView = false
-        webView.post {
-            webView.reload()
-            if (!skipEscalationThisTime) verifyVisualStateOrRecreate(webView)
+    private fun performWebViewReattach(webView: android.webkit.WebView, requestId: Long) {
+        val parent = webView.parent as? android.view.ViewGroup
+        if (parent == null) {
+            android.util.Log.w(
+                "OpenLessBackendWarmupActivity",
+                "reattach skipped requestId=$requestId: webView has no ViewGroup parent",
+            )
+            return
+        }
+        val index = parent.indexOfChild(webView)
+        if (index < 0) {
+            android.util.Log.w(
+                "OpenLessBackendWarmupActivity",
+                "reattach skipped requestId=$requestId: webView not found among its own parent's children",
+            )
+            return
+        }
+        val layoutParams = webView.layoutParams
+        val hadFocus = webView.hasFocus()
+        val scrollX = webView.scrollX
+        val scrollY = webView.scrollY
+        android.util.Log.i(
+            "OpenLessBackendWarmupActivity",
+            "reattach removeView requestId=$requestId webView=${System.identityHashCode(webView)} " +
+                "parent=${System.identityHashCode(parent)} index=$index hadFocus=$hadFocus",
+        )
+        parent.removeView(webView)
+        parent.postOnAnimation {
+            if (isFinishing || isDestroyed) {
+                android.util.Log.w(
+                    "OpenLessBackendWarmupActivity",
+                    "reattach addView skipped requestId=$requestId: activity finishing/destroyed",
+                )
+                return@postOnAnimation
+            }
+            parent.addView(webView, index, layoutParams)
+            webView.scrollTo(scrollX, scrollY)
+            if (hadFocus) webView.requestFocus()
+            // Wry's own onResume()/onPause() overrides already call this —
+            // see WryActivity.kt — so this is redundant insurance, not the
+            // thing actually expected to matter here; the cross-frame
+            // detach/attach above is.
+            webView.onResume()
+            webView.requestLayout()
+            webView.invalidate()
+            parent.requestLayout()
+            parent.invalidate()
+            android.util.Log.i(
+                "OpenLessBackendWarmupActivity",
+                "reattach addView complete requestId=$requestId webView=${System.identityHashCode(webView)}",
+            )
         }
     }
 
-    private fun verifyVisualStateOrRecreate(webView: android.webkit.WebView) {
-        var compositorResponded = false
-        webView.postVisualStateCallback(
-            0L,
-            object : android.webkit.WebView.VisualStateCallback() {
-                override fun onComplete(requestId: Long) {
-                    compositorResponded = true
-                }
-            },
+    /**
+     * Arms a pending reattach for the current settingsOpenRequestId and
+     * immediately checks whether it can run right away — a settings
+     * request arriving while the Activity is already resumed/focused
+     * shouldn't wait for a lifecycle callback that isn't coming again.
+     */
+    private fun requestSettingsReattach() {
+        settingsOpenRequestId += 1
+        pendingSettingsReattach = true
+        android.util.Log.i(
+            "OpenLessBackendWarmupActivity",
+            "requestSettingsReattach requestId=$settingsOpenRequestId",
         )
-        warmupHandler.postDelayed(
-            {
-                if (webViewRef === webView && !compositorResponded) {
-                    android.util.Log.w(
-                        "OpenLessBackendWarmupActivity",
-                        "postVisualStateCallback didn't fire within ${WEBVIEW_RELOAD_VERIFY_TIMEOUT_MS}ms; recreating the Activity for a fresh WebView",
-                    )
-                    recreatedForStuckWebView = true
-                    recreate()
-                }
-            },
-            WEBVIEW_RELOAD_VERIFY_TIMEOUT_MS,
+        maybePerformPendingSettingsReattach("requestSettingsReattach")
+    }
+
+    /**
+     * Only actually reattaches once every one of these is true, checked
+     * fresh on each call from whichever lifecycle/attach callback fires
+     * next (onResume/onWindowFocusChanged/the WebView's own attach
+     * listener) — no fixed delay, no polling, just re-evaluating real
+     * state every time something relevant changes:
+     *  - the Activity is resumed and has window focus (not just RESUMED —
+     *    window focus is what actually implies the Surface is usable);
+     *  - the WebView is attached to its window and that window is visible;
+     *  - the Activity isn't finishing/destroyed.
+     * reattachedForRequestId makes this idempotent per
+     * settingsOpenRequestId — onResume() and onWindowFocusChanged(true)
+     * can both fire for the same settings-open, and only the first one to
+     * see every condition satisfied should act.
+     */
+    private fun maybePerformPendingSettingsReattach(trigger: String) {
+        if (!pendingSettingsReattach) return
+        val requestId = settingsOpenRequestId
+        val webView = webViewRef
+        // Logged unconditionally (not just once conditions are all met) —
+        // the earlier version of this function returned silently on the
+        // first failing check, which made it impossible to tell from logs
+        // alone which of the five conditions was the blocker on a given
+        // trigger.
+        android.util.Log.i(
+            "OpenLessBackendWarmupActivity",
+            "maybePerformPendingSettingsReattach trigger=$trigger requestId=$requestId " +
+                "reattachedForRequestId=$reattachedForRequestId isFinishing=$isFinishing isDestroyed=$isDestroyed " +
+                "activityResumed=$activityResumed hasWindowFocus=${hasWindowFocus()} " +
+                "webView=${webView?.let { System.identityHashCode(it) }} " +
+                "webViewAttached=${webView?.isAttachedToWindow} webViewWindowVisibility=${webView?.windowVisibility}",
         )
+        if (reattachedForRequestId == requestId) return
+        if (isFinishing || isDestroyed) return
+        if (!activityResumed || !hasWindowFocus()) return
+        if (webView == null) return
+        if (!webView.isAttachedToWindow || webView.windowVisibility != android.view.View.VISIBLE) return
+        reattachedForRequestId = requestId
+        pendingSettingsReattach = false
+        android.util.Log.i(
+            "OpenLessBackendWarmupActivity",
+            "reattach conditions met trigger=$trigger requestId=$requestId webView=${System.identityHashCode(webView)}",
+        )
+        performWebViewReattach(webView, requestId)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -221,7 +332,7 @@ class OpenLessBackendWarmupActivity : MainActivity() {
             "OpenLessBackendWarmupActivity",
             "onCreate settingsRequested=$settingsRequested launchedFromLauncher=$launchedFromLauncher " +
                 "hasExtra=${intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false)} settingsOpenPending=$settingsOpenPending " +
-                "cameFromSelfRecreate=$recreatedForStuckWebView",
+                "activityHash=${System.identityHashCode(this)}",
         )
         settingsOpenPending = false
         // Only when visibly opened for settings: a permission dialog here
@@ -235,7 +346,16 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         // since there is nothing granted to manage.
         if (settingsRequested) {
             requestNotificationPermissionIfNeeded()
-            reloadWebViewForSettings()
+            // No reattach requested here (see requestSettingsReattach()):
+            // a fresh onCreate() means a fresh WebView on a fresh Window
+            // Surface, the exact pairing that's already proven to render
+            // correctly (a cold app launch always recovers) — nothing to
+            // fix. Only bumped for log correlation.
+            settingsOpenRequestId += 1
+            android.util.Log.i(
+                "OpenLessBackendWarmupActivity",
+                "settings open via cold onCreate requestId=$settingsOpenRequestId — no reattach needed",
+            )
         }
 
         // 不再修改窗口透明度或触摸属性。主 Activity 必须以正常窗口完成
@@ -282,11 +402,11 @@ class OpenLessBackendWarmupActivity : MainActivity() {
             // onCreate()'s own call to this never runs again for those
             // cases, so this is the only other place a visible moment happens.
             requestNotificationPermissionIfNeeded()
-            // The common case in practice: this Activity's WebView renderer
-            // has likely been sitting frozen in the background since
-            // whenever it was last silently warmed up — see
-            // reloadWebViewForSettings()'s doc comment.
-            reloadWebViewForSettings()
+            // The common case in practice: this singleTask instance's
+            // WebView has likely been sitting on a torn-down Window
+            // Surface since whenever sendToBackground() last backgrounded
+            // it — see performWebViewReattach()'s doc comment.
+            requestSettingsReattach()
         }
     }
 
@@ -307,8 +427,29 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         android.util.Log.i("OpenLessBackendWarmupActivity", "POST_NOTIFICATIONS result granted=$granted")
     }
 
+    override fun onResume() {
+        super.onResume()
+        activityResumed = true
+        android.util.Log.i(
+            "OpenLessBackendWarmupActivity",
+            "onResume requestId=$settingsOpenRequestId settingsRequested=$settingsRequested " +
+                "webView=${webViewRef?.let { System.identityHashCode(it) }}",
+        )
+        maybePerformPendingSettingsReattach("onResume")
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        android.util.Log.i(
+            "OpenLessBackendWarmupActivity",
+            "onWindowFocusChanged hasFocus=$hasFocus requestId=$settingsOpenRequestId",
+        )
+        if (hasFocus) maybePerformPendingSettingsReattach("onWindowFocusChanged")
+    }
+
     override fun onPause() {
         super.onPause()
+        activityResumed = false
         android.util.Log.i(
             "OpenLessBackendWarmupActivity",
             "onPause settingsRequested=$settingsRequested isChangingConfigurations=$isChangingConfigurations",
@@ -328,24 +469,17 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         if (activeInstance?.get() === this) {
             activeInstance = null
         }
-        // This used to assume onDestroy() firing here always meant "the
-        // system reclaimed this task" (this class never calls finish() on
-        // itself deliberately — see onBackPressed()) — that stopped being
-        // true once verifyVisualStateOrRecreate() started calling
-        // recreate() itself, which also runs this exact onDestroy(). The
-        // reason string below disambiguates the three real causes so the
-        // stats screen (and this log line) can tell apart "we did this to
-        // ourselves to fix a stuck WebView", "the OS just spun this Activity
-        // through a normal configuration change", and "the OS actually
-        // reclaimed the task" — only the last one is the thing all of this
-        // investigation has been chasing. Reads recreatedForStuckWebView
-        // rather than resetting it here: it's set right before recreate()
-        // and this onDestroy() runs synchronously as part of that same
-        // call, before the fresh instance's own onCreate()/
-        // reloadWebViewForSettings() gets a chance to consume it — resetting
-        // it here would make that later, real consumer see it as false.
+        // This class never calls finish() or recreate() on itself
+        // (onBackPressed() always backgrounds instead — see above; the old
+        // stuck-WebView recreate() escalation that used to make this
+        // ambiguous is gone, see performWebViewReattach()'s doc comment),
+        // so onDestroy() firing here should only ever mean a real
+        // configuration change or the OS reclaiming the task — the
+        // "self"/recreate()-triggered category this used to also
+        // distinguish is gone along with it (see OpenLessApplication's
+        // ALL_RESTART_CATEGORIES and OpenLessKeyboardSettingsActivity's
+        // restart-stats table, both trimmed back to three reasons here).
         val reason = when {
-            recreatedForStuckWebView -> "self"
             isChangingConfigurations -> "config"
             isFinishing -> "finishing"
             else -> "os"
@@ -369,15 +503,6 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         private const val REQUEST_POST_NOTIFICATIONS = 9102
         private const val WEBVIEW_READY_POLL_INTERVAL_MS = 60L
         private const val WEBVIEW_READY_MAX_WAIT_MS = 4000L
-        private const val WEBVIEW_RELOAD_VERIFY_TIMEOUT_MS = 2000L
-
-        // Set right before recreate() (see reloadWebViewForSettings()'s doc
-        // comment), consumed once by the fresh instance's own first
-        // reloadWebViewForSettings() call so a still-slow (not actually
-        // stuck) reload on the new instance can't immediately trigger a
-        // second recreate() and loop.
-        @Volatile
-        private var recreatedForStuckWebView = false
 
         // Set synchronously by openSettings()/openSettingsIfRunning() BEFORE
         // startActivity() is ever called, and consumed by onCreate()/
@@ -395,16 +520,16 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         @Volatile
         private var settingsOpenPending = false
 
-        /** The single Tauri host is still alive even while its task is in the background. */
+        /** The single Tauri host is usable only when its WebView still exists. */
         fun isRunning(): Boolean {
             val activity = activeInstance?.get() ?: return false
-            return !activity.isFinishing && !activity.isDestroyed
+            return !activity.isFinishing && !activity.isDestroyed && activity.webViewRef != null
         }
 
         /** Bring the existing Tauri host forward instead of creating a black second host. */
         fun openSettingsIfRunning(context: Context): Boolean {
             val activity = activeInstance?.get() ?: return false
-            if (activity.isFinishing || activity.isDestroyed) return false
+            if (activity.isFinishing || activity.isDestroyed || activity.webViewRef == null) return false
             android.util.Log.i("OpenLessBackendWarmupActivity", "openSettingsIfRunning: reusing live instance")
             settingsOpenPending = true
             // Also applied directly to the live instance right here, not
@@ -417,7 +542,6 @@ class OpenLessBackendWarmupActivity : MainActivity() {
             context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {
                 putExtra(EXTRA_SHOW_SETTINGS, true)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
             })
@@ -435,6 +559,16 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         fun openSettings(context: Context) {
             settingsOpenPending = true
             if (openSettingsIfRunning(context)) return
+            val staleActivity = activeInstance?.get()
+            if (staleActivity != null && !staleActivity.isFinishing && !staleActivity.isDestroyed) {
+                // Wry has already destroyed the old WebView/ActivityProxy in
+                // this state. Sending another Intent to the same singleTask
+                // instance only redelivers onNewIntent() to an empty black
+                // window. Remove that stale host first, then create a fresh
+                // Activity/WebView pairing in the still-live process.
+                replaceStaleActivityForSettings(context, staleActivity)
+                return
+            }
             android.util.Log.i("OpenLessBackendWarmupActivity", "openSettings: no live instance, starting fresh")
             context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {
                 putExtra(EXTRA_SHOW_SETTINGS, true)
@@ -442,6 +576,55 @@ class OpenLessBackendWarmupActivity : MainActivity() {
                 addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
             })
         }
+
+        private fun replaceStaleActivityForSettings(
+            context: Context,
+            staleActivity: OpenLessBackendWarmupActivity,
+        ) {
+            android.util.Log.w(
+                "OpenLessBackendWarmupActivity",
+                "openSettings: active Activity has no WebView; replacing stale host activity",
+            )
+            staleActivity.runOnUiThread {
+                if (!staleActivity.isFinishing && !staleActivity.isDestroyed) {
+                    staleActivity.finishAndRemoveTask()
+                }
+                Handler(Looper.getMainLooper()).postDelayed({
+                    if (activeInstance?.get() === staleActivity) {
+                        android.util.Log.w(
+                            "OpenLessBackendWarmupActivity",
+                            "openSettings: stale host still active after finish; deferring fresh launch",
+                        )
+                        return@postDelayed
+                    }
+                    runCatching {
+                        context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {
+                            putExtra(EXTRA_SHOW_SETTINGS, true)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                        })
+                    }.onFailure { error ->
+                        android.util.Log.e("OpenLessBackendWarmupActivity", "openSettings: fresh host launch failed", error)
+                    }
+                }, 250L)
+            }
+        }
+
+        /** Compact live lifecycle snapshot shown in native keyboard settings. */
+        fun debugSnapshot(): String {
+            val activity = activeInstance?.get()
+                ?: return "host=none activityContext=${nativeActivityContextState()}"
+            val webView = activity.webViewRef
+            return "host=present resumed=${activity.activityResumed} focus=${activity.hasWindowFocus()} " +
+                "finishing=${activity.isFinishing} destroyed=${activity.isDestroyed} " +
+                "webview=${webView != null} attached=${webView?.isAttachedToWindow ?: false} " +
+                "visible=${webView?.windowVisibility == android.view.View.VISIBLE} " +
+                "progress=${webView?.progress ?: -1} activityContext=${nativeActivityContextState()}"
+        }
+
+        private fun nativeActivityContextState(): String =
+            runCatching { OpenLessNative.nativeHasRegisteredActivityContext().toString() }
+                .getOrElse { "error" }
 
         private const val BACKEND_WARMUP_ATTEMPT_KEY = "backend_warmup_attempt_wall_time"
         private const val BACKEND_WARMUP_RETRY_DELAY_MS = 30_000L
@@ -489,17 +672,17 @@ class OpenLessBackendWarmupActivity : MainActivity() {
                 launchWarmup(context, now, backendError)
                 return
             }
-            // The Rust backend can stay perfectly healthy for a long time
-            // after its last registered Activity is destroyed — that
-            // Activity dying is meant to be survivable (Phase 1/2's whole
-            // point). But nothing else ever notices that gap and relaunches
-            // one, since requireBackendContract() only checks whether the
-            // backend itself is running: every notify_capsule_state() call
-            // (dictation/waveform status updates) is left permanently
-            // failing until something does. Treated the same as "backend
-            // not ready" here so it goes through the same relaunch + cooldown.
+            // A healthy Rust backend does not require a visible Activity.
+            // In particular, do not turn a missing Activity Context into a
+            // foreground Activity launch: that steals focus from Dialer,
+            // Camera, Alipay, etc. The next explicit settings/launcher open
+            // will register a fresh Activity Context when a UI is actually
+            // needed.
             if (!OpenLessNative.nativeHasRegisteredActivityContext()) {
-                launchWarmup(context, now, IllegalStateException("backend healthy but no Activity registered for JNI notifications"))
+                android.util.Log.i(
+                    "OpenLessBackendWarmupActivity",
+                    "backend healthy but no Activity context; leaving UI closed",
+                )
             }
         }
 

@@ -62,15 +62,13 @@ class OpenLessRuntimeService : Service() {
             stopSelf(startId)
             return START_NOT_STICKY
         }
-        // START_STICKY means the system can restart this service on its own —
-        // e.g. after killing it under memory pressure — with no IME
-        // interaction involved at all. Piggyback the backend warmup check on
-        // every start (including those system-triggered restarts) so a cold
-        // backend has a chance to finish warming up (and the foreground-
-        // stealing Activity that requires goes away) before the user is next
-        // looking at some other app's text field, instead of only ever
-        // reacting to that tap.
-        OpenLessBackendWarmupActivity.ensureBackendReady(this)
+        // START_STICKY keeps the backend service alive, but it must not launch
+        // a visible Tauri Activity merely because the service restarted or a
+        // previous Activity was destroyed. Doing so steals the foreground from
+        // the app the user is currently using and, after Wry has destroyed the
+        // old WebView, can create an empty black Activity. UI warmup remains
+        // explicitly initiated by the launcher/settings or the IME path when
+        // an input interaction actually requires it.
         return START_STICKY
     }
 
