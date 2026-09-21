@@ -9,5 +9,5 @@ package com.openless.app
  * count from a previous build isn't meaningful to keep comparing against.
  */
 object OpenLessBuildInfo {
-    const val VERSION = "1.78"
+    const val VERSION = "1.79"
 }

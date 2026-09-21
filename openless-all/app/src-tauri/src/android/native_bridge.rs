@@ -828,21 +828,28 @@ mod jni_exports {
         });
     }
 
-    // Registered from OpenLessBackendWarmupActivity.onCreate()/onDestroy()
-    // so with_android_env() (every Rust->Kotlin JNI call, including the
-    // dictation/waveform capsule notifications) always has a Context valid
-    // for that Activity's *whole* lifecycle, including while it sits
-    // backgrounded via moveTaskToBack() — see
-    // android::jni::android::ACTIVE_CONTEXT's doc comment for why neither
-    // of the two things tried before this held up.
+    // Registered from OpenLessRuntimeService.onCreate()/onDestroy() (a
+    // foreground Service that starts/stops in lockstep with the IME being
+    // active) so with_android_env() (every Rust->Kotlin JNI call, including
+    // the dictation/waveform capsule notifications) has a Context valid for
+    // that Service's whole lifecycle. This was previously registered from
+    // OpenLessBackendWarmupActivity instead — an Activity that spends
+    // nearly all its life backgrounded via moveTaskToBack() and can be
+    // reclaimed by the OS at any point during that, which is exactly one of
+    // the two failure modes this mechanism was already built to avoid (see
+    // android::jni::android::ACTIVE_CONTEXT's doc comment) — it just hadn't
+    // been pointed at a registrant stable enough to actually avoid it.
+    // register_active_activity()/unregister_active_activity() only ever
+    // stored a generic JObject, so this parameter never actually needed to
+    // be an Activity specifically.
     #[no_mangle]
     pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeRegisterActivityContext(
         env: *mut JNIEnv,
         _class: JClass,
-        activity: JObject,
+        context: JObject,
     ) {
-        let result = with_jni_context(env, activity, |env, activity| {
-            crate::android::jni::android::register_active_activity(env, activity)
+        let result = with_jni_context(env, context, |env, context| {
+            crate::android::jni::android::register_active_activity(env, context)
         });
         if let Err(error) = result {
             log::warn!("[android-native] register activity context failed: {error}");
@@ -853,10 +860,10 @@ mod jni_exports {
     pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeUnregisterActivityContext(
         env: *mut JNIEnv,
         _class: JClass,
-        activity: JObject,
+        context: JObject,
     ) {
-        let _ = with_jni_context(env, activity, |env, activity| {
-            crate::android::jni::android::unregister_active_activity(env, activity);
+        let _ = with_jni_context(env, context, |env, context| {
+            crate::android::jni::android::unregister_active_activity(env, context);
             Ok(())
         });
     }

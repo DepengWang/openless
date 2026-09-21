@@ -25,19 +25,16 @@ class OpenLessApplication : Application() {
         registerActivityLifecycleCallbacks(
             object : ActivityLifecycleCallbacks {
                 override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
-                    // Registers whichever MainActivity-family instance
-                    // (bare MainActivity from a launcher tap, or its
-                    // subclass OpenLessBackendWarmupActivity from IME/
-                    // Service-triggered warmup) as the Context
-                    // with_android_env() uses for every Rust->Kotlin JNI
-                    // call, including dictation/waveform capsule updates —
-                    // see OpenLessNative.nativeRegisterActivityContext()'s
-                    // doc comment for why this can't be hooked from just
-                    // one of those classes' own onCreate().
-                    if (activity is MainActivity) {
-                        runCatching { OpenLessNative.nativeRegisterActivityContext(activity) }
-                            .onFailure { error -> Log.w(TAG, "register activity context failed", error) }
-                    }
+                    // Registering the with_android_env() JNI Context used
+                    // to happen here for whichever MainActivity-family
+                    // instance was created — moved to
+                    // OpenLessRuntimeService.onCreate()/onDestroy() instead
+                    // (see OpenLessNative.nativeRegisterActivityContext()'s
+                    // doc comment): a Service that starts/stops in lockstep
+                    // with the IME being active is a far more stable
+                    // registrant than an Activity that spends nearly its
+                    // whole life backgrounded via moveTaskToBack() and can
+                    // be reclaimed by the OS at any point during that.
                 }
 
                 override fun onActivityStarted(activity: Activity) {
@@ -79,14 +76,9 @@ class OpenLessApplication : Application() {
                     Unit
 
                 override fun onActivityDestroyed(activity: Activity) {
-                    // Leaves a brief, safe "no context registered" gap
-                    // until the next MainActivity-family instance's
-                    // onActivityCreated() re-registers, rather than
-                    // leaving a soon-to-be-invalid GlobalRef around for
-                    // something to crash on.
-                    if (activity is MainActivity) {
-                        runCatching { OpenLessNative.nativeUnregisterActivityContext(activity) }
-                    }
+                    // Unregistering the with_android_env() JNI Context used
+                    // to happen here — see onActivityCreated() above and
+                    // OpenLessRuntimeService, which now owns this instead.
                 }
             }
         )

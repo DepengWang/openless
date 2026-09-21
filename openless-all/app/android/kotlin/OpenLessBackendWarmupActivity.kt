@@ -303,12 +303,12 @@ class OpenLessBackendWarmupActivity : MainActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         activeInstance = java.lang.ref.WeakReference(this)
-        // with_android_env()'s Activity Context registration (see
-        // OpenLessNative.nativeRegisterActivityContext()'s doc comment)
-        // happens from OpenLessApplication's app-wide ActivityLifecycleCallbacks
-        // (matched via `is MainActivity`, which this class extends) rather
-        // than here, so it also covers plain MainActivity if anything ever
-        // instantiates that directly again.
+        // with_android_env()'s JNI Context registration is no longer this
+        // Activity's concern at all — see
+        // OpenLessNative.nativeRegisterActivityContext()'s doc comment:
+        // OpenLessRuntimeService registers itself instead, since it's a
+        // far more stable registrant than an Activity that spends nearly
+        // its whole life backgrounded via moveTaskToBack().
         //
         // A direct launcher-icon tap arrives here as a plain ACTION_MAIN/
         // CATEGORY_LAUNCHER intent (no EXTRA_SHOW_SETTINGS) — treated the

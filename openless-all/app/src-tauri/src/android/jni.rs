@@ -8,12 +8,14 @@ pub mod android {
     use jni::JNIEnv;
     use jni::JavaVM;
 
-    // Registered from OpenLessBackendWarmupActivity.onCreate() (replaced,
-    // not just set-once) and cleared from its onDestroy(). A GlobalRef
-    // stays valid for its Activity's *entire* lifecycle — including while
-    // backgrounded via moveTaskToBack(), which is where this Activity
-    // spends nearly all its time by design — unlike either alternative
-    // tried before it:
+    // Registered from OpenLessRuntimeService.onCreate() (replaced, not just
+    // set-once) and cleared from its onDestroy(). A GlobalRef stays valid
+    // for its registrant's *entire* lifecycle. Previously registered from
+    // OpenLessBackendWarmupActivity instead — a real Context, but one that
+    // spends nearly all its life backgrounded via moveTaskToBack() and can
+    // be reclaimed by the OS at any point during that, which eventually
+    // reproduced a milder version of the same failure mode as the two
+    // alternatives already ruled out before either of them:
     //   - ndk_context::android_context() is populated exactly once per
     //     process (see mobile_runtime::initialize_android_ndk_context_for_audio(),
     //     needed only so cpal can find *a* context) and goes stale once
@@ -27,6 +29,9 @@ pub mod android {
     //     backgrounds itself, which made every notify_capsule_state() call
     //     fail (silently dropping dictation/waveform status updates)
     //     during completely ordinary, crash-free operation.
+    // A foreground Service that starts/stops in lockstep with the IME being
+    // active doesn't have either problem: it's never "backgrounded" the way
+    // an Activity is, and the OS is far less eager to reclaim it.
     static ACTIVE_CONTEXT: Mutex<Option<(JavaVM, GlobalRef)>> = Mutex::new(None);
 
     pub fn register_active_activity(env: &mut JNIEnv, activity: &JObject) -> Result<(), String> {
