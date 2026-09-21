@@ -114,6 +114,28 @@ Manifest 合并脚本：
 2. 重新走一遍上面的排查方法：`adb logcat` 抓 `onSurfaceShowChange`/`settingsRequested`/`Async freezing`/`sync unfroze` 这几个关键字，`adb exec-out screencap` 截图确认确实是纯黑（不是别的黑屏/白屏原因），再看这次是卡在原因一那种"窗口被收回后台"，还是卡在原因二那种"窗口在前台但 WebView 没重新合成"，或者是两个都排除后的第三种原因。
 3. 在得出结论前不要假设是"同一个 bug 又犯了"——`reloadWebViewForSettings()`/`settingsOpenPending` 这两个修复本身有没有被后续改动动过、或者这次复现的具体操作路径是否真的会经过它们，都需要先用证据确认。
 
+**2026-09-22 更新：找到了这次复发的真正根因（跟上面两个原因都无关），另外还发现了一个残留的、未彻底解决的深层问题。**
+
+背景：`OpenLessBackendWarmupActivity` 平时靠 `moveTaskToBack()` 常驻后台，但系统的最近任务清理机制会不定期真的把它销毁掉（`onDestroy reason=finishing`，跟切换 App、熄屏时间较长强相关）。销毁之后再点 Logo，走的是"冷启动重建一个新 Activity 实例"这条路径——这条路径此前从未被验证过，因为历史上只测过"复用已存活实例"这条路径。
+
+根因链（均已用真机 logcat + 直接阅读 Wry/Tao/Tauri 源码确认，不是猜测）：
+
+1. **`activity_id` 恒为 0**：Wry 的 `WryActivity.kt` 用 `intent.extras?.getInt(ACTIVITY_ID_KEY) ?: hashCode()` 决定每个 Activity 实例的唯一 id，但 `Bundle.getInt()` 在 key 不存在时返回 0（不是 null），只要 Intent 带了任何 extra（我们的 `EXTRA_SHOW_SETTINGS` 就是），`?:` 就永远不会走到 `hashCode()`。结果：每次"冷启动重建"出来的新 Activity，Wry 内部用来做 `WEBVIEW_ATTRIBUTES`/`ACTIVITY_PROXY`/`CONTEXTS` 索引的 `activity_id` 全都是 0，跟前一个（可能正在被异步清理的）实例撞车。修复：`openSettings()` 的"starting fresh"分支现在显式带上随机的 `__wryActivityId` extra（`OpenLessBackendWarmupActivity.kt`）。
+2. **`ensure_main_webview_window()`（新增的 Rust 命令，`android/native_bridge.rs`）**：既然 Wry 自己的 `android_setup()` 只在 `WEBVIEW_ATTRIBUTES` 里已有当前 `activity_id` 记录时才会发 `CreateWebView`，而"冷启动重建"出来的新 id 必然没有记录，就需要主动调用 `WebviewWindowBuilder::new(app, "main", ...).build()` 重建——这个命令从 `OpenLessBackendWarmupActivity.onCreate()` 幂等调用。
+3. **Wry 的 Android `CreateWebView` 分发路径原本完全静默**：`main_pipe.rs` 里找不到 `ACTIVITY_PROXY` 记录时只有一行 `#[cfg(debug_assertions)] eprintln!`（stderr，进不了 logcat），`mod.rs` 里对应的 `.expect("no available activity")` 一旦命中会直接 panic（跨 JNI 边界未定义行为）。本地 vendor 了一份 wry 0.55.1（`src-tauri/vendor/wry-0.55.1/`，通过 `Cargo.toml` 的 `[patch.crates-io]` 接入，做法跟已有的 `vendor/wayland-scanner` 一致），把这两处换成能进 logcat 的 `log::warn!`/`log::info!`，才让后续排查变得可能。
+4. **Tauri 自己的窗口注册表里会残留"僵尸 main 记录"**：`ensure_main_webview_window()` 一开始信任"`get_webview_window("main")` 有返回值 = 不用重建"，但真机日志证明这条记录可能是上一个已死实例留下的，跟当前 Activity 完全对不上——于是改成"发现就先摘掉再重建"。摘除一开始用 `close()`，后来发现 `close()`/`destroy()` 都只是把消息扔进 tao 事件循环的 proxy、立刻返回（**读 `tauri-runtime-wry` 源码确认**），并不会同步生效；真正会把这条记录从 Tauri 顶层 `AppManager` 的注册表里摘除的，是收到一个真正的平台级 `WindowEvent::Destroyed` 事件（`AppManager::on_window_close`，`tauri` crate 内部私有，应用代码完全够不到）——而如果 WebView 从来就没真正建出来过，这个事件永远不会发生。也就是说：**一旦触发过一次"WebView 建不出来"，这条 "main" 记录就永久卡死，之后每次重建都会报 `a webview with label "main" already exists`，真机连续验证过好几次、间隔几十秒也没自愈，只有强杀整个进程才能解开。**
+5. **仍未根治的深层问题**：`ensure_main_webview_window()` 的 `.build()` 返回 `Ok` **不能保证** WebView 真的建出来了——真机日志里出现过 `build ok=true` 之后 `InnerWebView::new`/`CreateWebView proceeding` 这两行诊断日志完全不出现的情况，说明 Wry/Tauri 在 Android 上 window 创建的实际执行是异步派发到 tao 事件循环线程的，`.build()` 的返回值只反映"消息排队成功"，不反映"真的执行完成"。这次没有继续往 `tauri-runtime-wry` 内部深挖（范围和风险都比 patch wry 大一截，而且这是横跨全平台的核心窗口管理代码，不是 Android 专属）。
+
+已落地的兜底方案（`OpenLessBackendWarmupActivity.kt`）：
+
+- `webViewCreationWatchdog`：`settingsRequested` 的冷启动如果 4 秒内 `onWebViewCreate()` 没来，判定为卡死，`finishAndRemoveTask()` 收尾（用户体感：黑一下自动退回，不用手动按返回）。
+- 连续卡死达到 `STUCK_RESTART_THRESHOLD`（2 次）时，判定"main"标签已经永久卡死，触发 `restartProcessAsLastResort()`——用 `AlarmManager` 安排 500ms 后重新拉起 launcher Activity，再 `Process.killProcess()` 自杀。**注意**：`tauri::AppHandle::restart()` 在这里完全不能用——它桌面端的实现是 `Command::new(当前可执行文件路径).spawn()` 再 `exit(0)`，Android 应用没有"当前可执行文件路径"这个概念，spawn 必然失败，最后只会执行那句 `exit(0)`，把进程杀掉且没有任何东西把它拉回来（读 `tauri` 源码 `process.rs` 确认后放弃这条路，改成 Kotlin 自己实现）。加了 60 秒冷却防止重启死循环，新增 `stuckwindow` 重启统计分类。
+- 顺带把 `onBackPressed()` 关闭设置页时的 `moveTaskToBack()` 换成了 `finishAndRemoveTask()`（之前不敢这么做是因为历史上 `finish()` 会跟 HWUI 渲染线程池的清理竞争、产生原生 "destroyed mutex" abort——但那个顾虑成立的前提"IME 依赖这个 Activity 常驻"已经在同一批改动里解除了，且真机反复测试确认关闭设置页时 `finish()` 没有再现那个原生崩溃）。
+
+**待验证的假设**：用户提出黑屏可能跟"之前是否在某个用 WebView 渲染输入框的 App 里打过字"相关（IME 跟目标 App 自己的 WebView"打架"）。目前复现路径（切 App / 熄屏一段时间后点 Logo）看起来跟点 Logo 前具体在哪个输入框无关，但样本量还不够排除，下次复现时应记录触发前具体在哪个 App、哪种输入框操作。
+
+对应提交：`ff4194c8`（activity_id 修复）、`fda57eaa`（同批次 wry 诊断 patch + watchdog）、`ecc6f7b0`（关闭设置页改 finish）、`38d43983`（destroy() 替换 close()）、`0b5921f4`（进程自重启兜底），均在 `feature/android-runtime-lifecycle` 分支。
+
 ## 重启原因统计代码位置一览（`OpenLessProcessRestartStats`，供交叉验证）
 
 8 个分类，`recordStart()` 调用点：
@@ -126,8 +148,9 @@ Manifest 合并脚本：
 | `warmup` | `OpenLessBackendWarmupActivity.kt:316`（`launchWarmup()`） | `ensureBackendReady()` 发现后端未就绪或 Activity Context 未注册，发起静默唤醒 |
 | `mictap` | `OpenLessImeService.kt:2416`（`toggleDictation()`） | 用户点麦克风时 `isBackendReady()` 为 false（用户可见的"服务未就绪"症状） |
 | `sticky` | `OpenLessRuntimeService.kt:24` | `onStartCommand()` 收到 null Intent —— `START_STICKY` 服务被系统杀死后自动重启的官方信号，是"进程真的被杀过"最强的证据 |
-| `actkill` | `OpenLessRuntimeService.kt:28` | 收到 `ACTION_RUNTIME_ACTIVITY_DESTROYED`（`OpenLessBackendWarmupActivity.onDestroy()` 发出）——系统回收了宿主 Activity 的窗口，不一定代表进程本身也被杀。同一次调用还会带一个 `reason`（`self`/`config`/`finishing`/`os`，`OpenLessBackendWarmupActivity.kt` 的 `onDestroy()` 判断），一并记一条 `actkill_<reason>` 细分计数，跟 `actkill` 本身原子地一起 +1 |
+| `actkill` | `OpenLessRuntimeService.kt:28` | 收到 `ACTION_RUNTIME_ACTIVITY_DESTROYED`（`OpenLessBackendWarmupActivity.onDestroy()` 发出）——系统回收了宿主 Activity 的窗口，不一定代表进程本身也被杀。同一次调用还会带一个 `reason`（`config`/`finishing`/`os`，`OpenLessBackendWarmupActivity.kt` 的 `onDestroy()` 判断——`finishing` 现在既覆盖用户关闭设置页时的主动 `finishAndRemoveTask()`，也覆盖 `webViewCreationWatchdog` 判定卡死时的自动 `finishAndRemoveTask()`），一并记一条 `actkill_<reason>` 细分计数，跟 `actkill` 本身原子地一起 +1 |
 | `rtexit` | `OpenLessRuntimeService.kt:32` | 收到 `ACTION_RUNTIME_EXITED`——Tauri 的 `RunEvent::Exit` 实际触发了，理论上应该始终为 0（`mobile_runtime.rs` 的 `RunEvent::ExitRequested` + `prevent_exit()` 修复如果还生效的话） |
+| `stuckwindow` | `OpenLessBackendWarmupActivity.kt`（`restartProcessAsLastResort()`） | "main" WebView 窗口标签永久卡死（见上方 2026-09-22 排查记录），主动自杀重启整个进程 |
 
 所有计数每次 `OpenLessBuildInfo.VERSION` 变化时清零（见上方"安装时间显示"），键盘设置页只展示"今天"的累计值——**但这依赖 `OpenLessApplication.ALL_RESTART_CATEGORIES` 手动维护的白名单**，四个 `actkill_<reason>` 细分 key 加入代码后一度漏掉没同步进这份白名单，导致 `actkill` 总数每次版本号变化都清零、四个细分计数却完全不清零，在同一天内多次调试构建之间越攒越多、跟总数脱节（用户截图实测 `actkill_finishing` 累计到 59，同期 `actkill` 总数只有 16）。已在 1.68 修复（把四个 key 补进白名单）。
 
