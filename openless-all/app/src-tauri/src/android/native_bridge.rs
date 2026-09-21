@@ -17,6 +17,8 @@ use crate::types::{CapsulePayload, CapsuleState};
 static COORDINATOR: OnceLock<Arc<Coordinator>> = OnceLock::new();
 static CORE_BACKEND: OnceLock<Arc<OpenLessBackend>> = OnceLock::new();
 static OVERLAY_VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "android")]
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +59,49 @@ pub fn register_android_coordinator(coordinator: Arc<Coordinator>) {
 
 pub fn register_android_backend(backend: Arc<OpenLessBackend>) {
     let _ = CORE_BACKEND.set(backend);
+}
+
+#[cfg(target_os = "android")]
+pub fn register_android_app_handle(app: tauri::AppHandle) {
+    let _ = APP_HANDLE.set(app);
+}
+
+/// Rebuilds the "main" WebviewWindow for a fresh `OpenLessBackendWarmupActivity`
+/// instance created after the OS truly destroyed the previous one (not a
+/// config change) — the settings-reopen black screen this fixes.
+///
+/// Wry's own `android_setup()` (src/android/mod.rs) only sends a
+/// `CreateWebView` message for an Activity instance whose `activity_id` is
+/// already a key in its `WEBVIEW_ATTRIBUTES` map — populated once, for
+/// whichever Activity happened to be first. A real Activity destroy erases
+/// that map entry (`main_pipe.rs`'s `OnDestroy` handler calls
+/// `destroy_webview()`), and a brand new Activity instance gets its own,
+/// never-seen-before `activity_id` (falls back to `hashCode()` — see
+/// `WryActivity.kt`), so it never matches and `onWebViewCreate()` never
+/// fires: a permanently black window, confirmed via on-device logcat.
+///
+/// Calling this after the new Activity's `onCreate()` mirrors exactly how
+/// the very first "main" window gets built at cold app start: Tao's
+/// `Window::new()` on Android (`tao::platform_impl::android`) resolves the
+/// target Activity via `next_available_activity()` — the first registered
+/// Activity that doesn't have a window yet — which is precisely this fresh
+/// instance (its own `onActivityCreate()` already registered it with
+/// `window_created: false` by the time this runs). No explicit Activity
+/// reference needs to cross the JNI boundary for this call.
+#[cfg(target_os = "android")]
+pub fn ensure_main_webview_window() -> Result<(), String> {
+    use tauri::Manager;
+
+    let app = APP_HANDLE
+        .get()
+        .ok_or_else(|| "AppHandle not yet registered".to_string())?;
+    if app.get_webview_window("main").is_some() {
+        return Ok(());
+    }
+    tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+        .build()
+        .map(|_| ())
+        .map_err(|error| format!("rebuild main webview window: {error}"))
 }
 
 pub fn notify_capsule_state(payload: &CapsulePayload) {
@@ -933,6 +978,23 @@ mod jni_exports {
         _class: JClass,
     ) {
         notify_overlay_destroyed();
+    }
+
+    /// Called from OpenLessBackendWarmupActivity.onCreate() on every fresh
+    /// instance — see ensure_main_webview_window()'s doc comment for why
+    /// this is what actually fixes the settings-reopen black screen.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeEnsureMainWebviewWindow(
+        _env: *mut JNIEnv,
+        _class: JClass,
+    ) -> jboolean {
+        match super::ensure_main_webview_window() {
+            Ok(()) => crate::android::jni::android::export_jboolean(true),
+            Err(error) => {
+                log::warn!("[android-native] ensure_main_webview_window failed: {error}");
+                crate::android::jni::android::export_jboolean(false)
+            }
+        }
     }
 }
 
