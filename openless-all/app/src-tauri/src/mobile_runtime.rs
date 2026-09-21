@@ -50,6 +50,7 @@ pub fn run() {
             {
                 crate::android::register_android_backend(core_backend);
                 crate::android::register_android_coordinator(coordinator.clone());
+                crate::android::register_android_app_handle(app.handle().clone());
                 coordinator.apply_android_overlay_on_startup();
             }
             Ok(())

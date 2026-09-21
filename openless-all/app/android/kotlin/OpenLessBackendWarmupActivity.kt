@@ -302,6 +302,15 @@ class OpenLessBackendWarmupActivity : MainActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Idempotent no-op when Wry's own cold-start CreateWebView already
+        // fired for this instance (the common, first-ever-Activity case) —
+        // only does real work for a fresh instance created after the
+        // previous one was truly destroyed, where Wry's android_setup()
+        // never sends CreateWebView on its own (no WEBVIEW_ATTRIBUTES entry
+        // for a never-seen-before activity_id). See
+        // OpenLessNative.nativeEnsureMainWebviewWindow()'s doc comment.
+        runCatching { OpenLessNative.nativeEnsureMainWebviewWindow() }
+            .onFailure { error -> android.util.Log.w("OpenLessBackendWarmupActivity", "ensure main webview window failed", error) }
         activeInstance = java.lang.ref.WeakReference(this)
         // with_android_env()'s JNI Context registration is no longer this
         // Activity's concern at all — see
@@ -559,55 +568,19 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         fun openSettings(context: Context) {
             settingsOpenPending = true
             if (openSettingsIfRunning(context)) return
-            val staleActivity = activeInstance?.get()
-            if (staleActivity != null && !staleActivity.isFinishing && !staleActivity.isDestroyed) {
-                // Wry has already destroyed the old WebView/ActivityProxy in
-                // this state. Sending another Intent to the same singleTask
-                // instance only redelivers onNewIntent() to an empty black
-                // window. Remove that stale host first, then create a fresh
-                // Activity/WebView pairing in the still-live process.
-                replaceStaleActivityForSettings(context, staleActivity)
-                return
-            }
+            // No live instance (activeInstance is null, or the one we have is
+            // finishing/destroyed/never got a WebView) — treat all of those
+            // uniformly as "the previous host is gone, start fresh". A fresh
+            // Activity's onCreate() now calls
+            // OpenLessNative.nativeEnsureMainWebviewWindow() itself (see
+            // above), which is what actually makes this reliable — no
+            // separate finish-then-relaunch dance needed here anymore.
             android.util.Log.i("OpenLessBackendWarmupActivity", "openSettings: no live instance, starting fresh")
             context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {
                 putExtra(EXTRA_SHOW_SETTINGS, true)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
             })
-        }
-
-        private fun replaceStaleActivityForSettings(
-            context: Context,
-            staleActivity: OpenLessBackendWarmupActivity,
-        ) {
-            android.util.Log.w(
-                "OpenLessBackendWarmupActivity",
-                "openSettings: active Activity has no WebView; replacing stale host activity",
-            )
-            staleActivity.runOnUiThread {
-                if (!staleActivity.isFinishing && !staleActivity.isDestroyed) {
-                    staleActivity.finishAndRemoveTask()
-                }
-                Handler(Looper.getMainLooper()).postDelayed({
-                    if (activeInstance?.get() === staleActivity) {
-                        android.util.Log.w(
-                            "OpenLessBackendWarmupActivity",
-                            "openSettings: stale host still active after finish; deferring fresh launch",
-                        )
-                        return@postDelayed
-                    }
-                    runCatching {
-                        context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {
-                            putExtra(EXTRA_SHOW_SETTINGS, true)
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
-                        })
-                    }.onFailure { error ->
-                        android.util.Log.e("OpenLessBackendWarmupActivity", "openSettings: fresh host launch failed", error)
-                    }
-                }, 250L)
-            }
         }
 
         /** Compact live lifecycle snapshot shown in native keyboard settings. */

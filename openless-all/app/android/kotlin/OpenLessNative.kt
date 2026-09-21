@@ -116,4 +116,14 @@ object OpenLessNative {
     @JvmStatic external fun nativeNotifyOverlayPermissionChanged(context: android.content.Context)
 
     @JvmStatic external fun nativeNotifyOverlayDestroyed()
+
+    /**
+     * Idempotent — safe to call from every OpenLessBackendWarmupActivity.onCreate().
+     * No-ops when the "main" WebviewWindow already exists; otherwise rebuilds it,
+     * attaching to whichever Activity instance most recently registered with Tao
+     * (this one). See android/native_bridge.rs's ensure_main_webview_window() doc
+     * comment for why a fresh Activity instance never gets onWebViewCreate()
+     * without this — the settings-reopen black screen fix.
+     */
+    @JvmStatic external fun nativeEnsureMainWebviewWindow(): Boolean
 }
