@@ -295,17 +295,6 @@ pub fn notify_overlay_destroyed() {
     log::info!("[android-native] overlay service destroyed — OVERLAY_VISIBLE reset");
 }
 
-pub fn overlay_trigger_mode_name() -> &'static str {
-    let Some(coordinator) = COORDINATOR.get() else {
-        return "background";
-    };
-    match coordinator.android_overlay_trigger() {
-        crate::types::AndroidOverlayTrigger::Background => "background",
-        crate::types::AndroidOverlayTrigger::Keyboard => "keyboard",
-        crate::types::AndroidOverlayTrigger::Always => "always",
-    }
-}
-
 fn spawn_start_dictation(translation: bool) {
     let Some(backend) = CORE_BACKEND.get().cloned() else {
         log::warn!("[android-native] core backend unavailable");
@@ -415,45 +404,6 @@ fn spawn_cancel_dictation() {
     });
 }
 
-/// Records a correction rule from the IME's "edit result" flow, so a
-/// misrecognition the user just fixed by hand also gets fixed automatically
-/// for future dictations. Uses the same CorrectionRuleStore desktop's
-/// Corrections settings page writes to.
-fn spawn_add_correction_rule(pattern: String, replacement: String) {
-    let Some(backend) = CORE_BACKEND.get().cloned() else {
-        log::warn!("[android-native] core backend unavailable");
-        return;
-    };
-    if pattern.is_empty() || replacement.is_empty() || pattern == replacement {
-        return;
-    }
-    tauri::async_runtime::spawn(async move {
-        // Idempotent by pattern: a rule for this exact wrong text should
-        // never exist twice. The clipboard swipe UI already gates "add" to
-        // only fire when no rule exists yet for that text, but that is only
-        // a UI-level hint — this is also reachable from the dictation "edit
-        // result" flow, so the actual duplicate-prevention guarantee belongs
-        // here, not in either caller.
-        match backend.list_correction_rules() {
-            Ok(existing) => {
-                for rule in existing.into_iter().filter(|rule| rule.pattern == pattern) {
-                    if let Err(error) = backend.remove_correction_rule(&rule.id) {
-                        log::warn!(
-                            "[android-native] remove stale correction rule before re-add failed: {error}"
-                        );
-                    }
-                }
-            }
-            Err(error) => {
-                log::warn!("[android-native] list_correction_rules before add failed: {error}");
-            }
-        }
-        if let Err(error) = backend.add_correction_rule(pattern, replacement) {
-            log::warn!("[android-native] add_correction_rule failed: {error}");
-        }
-    });
-}
-
 /// Records a spoken correction as a global Dictionary entry instead of a
 /// CorrectionRule — the IME's "edit result"/clipboard-correction flows used
 /// to auto-generate a pattern->replacement rule from every edit; that's now
@@ -497,37 +447,6 @@ fn correction_rule_patterns_json() -> String {
             "[]".to_string()
         }
     }
-}
-
-/// Removes every correction rule whose pattern exactly matches — the
-/// clipboard swipe-left "remove" action. Idempotent like the underlying
-/// store's remove(id): no match is a silent no-op.
-fn spawn_remove_correction_rule(pattern: String) {
-    let Some(backend) = CORE_BACKEND.get().cloned() else {
-        log::warn!("[android-native] core backend unavailable");
-        return;
-    };
-    if pattern.is_empty() {
-        return;
-    }
-    tauri::async_runtime::spawn(async move {
-        let ids: Vec<String> = match backend.list_correction_rules() {
-            Ok(rules) => rules
-                .into_iter()
-                .filter(|rule| rule.pattern == pattern)
-                .map(|rule| rule.id)
-                .collect(),
-            Err(error) => {
-                log::warn!("[android-native] list_correction_rules for remove failed: {error}");
-                return;
-            }
-        };
-        for id in ids {
-            if let Err(error) = backend.remove_correction_rule(&id) {
-                log::warn!("[android-native] remove_correction_rule failed: {error}");
-            }
-        }
-    });
 }
 
 /// Every existing Dictionary entry's phrase — same purpose as
@@ -645,19 +564,6 @@ fn spawn_switch_style_pack() {
     coordinator.switch_to_previous_style_pack();
 }
 
-fn spawn_open_qa_from_overlay() {
-    let Some(coordinator) = COORDINATOR.get().cloned() else {
-        log::warn!("[android-native] coordinator unavailable");
-        return;
-    };
-    log::info!("[android-native] open_qa_from_overlay requested");
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = coordinator.open_qa_from_overlay().await {
-            log::warn!("[android-native] open_qa_from_overlay failed: {error}");
-        }
-    });
-}
-
 fn spawn_finalize_qa_from_overlay() {
     let Some(coordinator) = COORDINATOR.get().cloned() else {
         log::warn!("[android-native] coordinator unavailable");
@@ -768,31 +674,6 @@ mod jni_exports {
     }
 
     #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeAddCorrectionRule(
-        env: *mut JNIEnv,
-        _class: JClass,
-        pattern: jstring,
-        replacement: jstring,
-    ) {
-        let mut jni_env = match JniEnv::from_raw(env) {
-            Ok(env) => env,
-            Err(error) => {
-                log::warn!("[android-native] attach JNI env for add_correction_rule failed: {error}");
-                return;
-            }
-        };
-        let pattern_str: String = jni_env
-            .get_string(&JString::from_raw(pattern))
-            .map(|value| value.into())
-            .unwrap_or_default();
-        let replacement_str: String = jni_env
-            .get_string(&JString::from_raw(replacement))
-            .map(|value| value.into())
-            .unwrap_or_default();
-        spawn_add_correction_rule(pattern_str, replacement_str);
-    }
-
-    #[no_mangle]
     pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeAddVocabularyWord(
         env: *mut JNIEnv,
         _class: JClass,
@@ -822,26 +703,6 @@ mod jni_exports {
             Ok(mut env) => crate::android::jni::android::export_jstring(&mut env, &response),
             Err(_) => std::ptr::null_mut(),
         }
-    }
-
-    #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeRemoveCorrectionRule(
-        env: *mut JNIEnv,
-        _class: JClass,
-        pattern: jstring,
-    ) {
-        let mut jni_env = match JniEnv::from_raw(env) {
-            Ok(env) => env,
-            Err(error) => {
-                log::warn!("[android-native] attach JNI env for remove_correction_rule failed: {error}");
-                return;
-            }
-        };
-        let pattern_str: String = jni_env
-            .get_string(&JString::from_raw(pattern))
-            .map(|value| value.into())
-            .unwrap_or_default();
-        spawn_remove_correction_rule(pattern_str);
     }
 
     #[no_mangle]
@@ -897,41 +758,11 @@ mod jni_exports {
     }
 
     #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeOpenQaFromOverlay(
-        _env: *mut JNIEnv,
-        _class: JClass,
-    ) {
-        spawn_open_qa_from_overlay();
-    }
-
-    #[no_mangle]
     pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeFinalizeQaFromOverlay(
         _env: *mut JNIEnv,
         _class: JClass,
     ) {
         spawn_finalize_qa_from_overlay();
-    }
-
-    #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeShowOverlay(
-        env: *mut JNIEnv,
-        _class: JClass,
-        context: JObject,
-    ) {
-        let _ = with_jni_context(env, context, |env, context| {
-            show_overlay_with_context(env, context)
-        });
-    }
-
-    #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeHideOverlay(
-        env: *mut JNIEnv,
-        _class: JClass,
-        context: JObject,
-    ) {
-        let _ = with_jni_context(env, context, |env, context| {
-            hide_overlay_with_context(env, context)
-        });
     }
 
     // Registered from OpenLessRuntimeService.onCreate()/onDestroy() (a
@@ -983,52 +814,6 @@ mod jni_exports {
         _class: JClass,
     ) -> jboolean {
         crate::android::jni::android::has_active_activity() as jboolean
-    }
-
-    #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeCanDrawOverlays(
-        env: *mut JNIEnv,
-        _class: JClass,
-        context: JObject,
-    ) -> jboolean {
-        let visible = with_jni_context(env, context, |env, context| {
-            crate::android::jni::android::can_draw_overlays(env, context)
-        })
-        .unwrap_or(false);
-        crate::android::jni::android::export_jboolean(visible)
-    }
-
-    #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeIsOverlayVisible(
-        _env: *mut JNIEnv,
-        _class: JClass,
-    ) -> jboolean {
-        crate::android::jni::android::export_jboolean(is_overlay_visible())
-    }
-
-    #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeGetOverlayTriggerMode(
-        env: *mut JNIEnv,
-        _class: JClass,
-    ) -> jstring {
-        let mode = overlay_trigger_mode_name();
-        match JniEnv::from_raw(env) {
-            Ok(mut env) => crate::android::jni::android::export_jstring(&mut env, mode),
-            Err(_) => std::ptr::null_mut(),
-        }
-    }
-
-    #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeNotifyOverlayPermissionChanged(
-        env: *mut JNIEnv,
-        _class: JClass,
-        context: JObject,
-    ) {
-        if overlay_trigger_mode_name() == "always" {
-            let _ = with_jni_context(env, context, |env, context| {
-                show_overlay_with_context(env, context)
-            });
-        }
     }
 
     /// 供 Kotlin overlay service 的 onDestroy() 调用，将 OVERLAY_VISIBLE 清除。

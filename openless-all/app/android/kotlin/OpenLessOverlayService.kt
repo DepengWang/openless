@@ -641,18 +641,6 @@ class OpenLessOverlayService : Service(), OpenLessOverlayBridge.OverlayStateList
         }
     }
 
-    private fun openQaFromOverlay() {
-        try {
-            Log.i(TAG, "open QA from overlay")
-            OpenLessNative.nativeOpenQaFromOverlay()
-            setArmed(false)
-        } catch (error: Throwable) {
-            Log.w(TAG, "open QA bridge unavailable", error)
-            applyVisualState(OverlayVisualState.Error)
-            showToast("问答服务未就绪，请打开 OpenLess 后重试")
-        }
-    }
-
     private fun finalizeQaFromOverlay() {
         try {
             Log.i(TAG, "finalize QA from overlay")
