@@ -104,22 +104,56 @@ pub fn ensure_main_webview_window() -> Result<(), String> {
     // CONTEXTS/ACTIVITY_PROXY) has already been cleared for the dead Activity
     // — trusting "already exists" as "nothing to do" here left the window
     // permanently un-rebuilt for the new activity_id (silent black screen,
-    // no error, nothing to catch). Always close-then-rebuild instead.
+    // no error, nothing to catch). Always destroy-then-rebuild instead
+    // (see below for why "destroy" alone isn't the whole fix).
     if let Some(stale) = app.get_webview_window("main") {
-        // destroy(), not close(): close() emits a CloseRequested event and
-        // waits on the event loop to actually drop the window from Tauri's
-        // WindowManager, which on-device logs showed had not happened yet by
-        // the time the immediately-following build() ran ("a webview with
-        // label `main` already exists"). destroy() is documented as
-        // "does not emit any events and force close the window instead" —
-        // synchronous, no event-loop round trip to wait on.
+        // Both close() and destroy() are asynchronous despite their doc
+        // comments' wording — confirmed by reading tauri-runtime-wry's
+        // source: both just send a message through the tao event loop's
+        // proxy and return immediately (`self.context.proxy.send_event(...)`),
+        // they don't block on the event loop actually processing it. The
+        // label is only dropped from Tauri's own AppManager registry when a
+        // genuine platform WindowEvent::Destroyed later bubbles all the way
+        // up (AppManager::on_window_close, private to the tauri crate — this
+        // file has no other way to reach it). Firing destroy() and
+        // immediately calling build() right after, as before, raced that:
+        // on-device logs showed the label still present a line later. Give
+        // the event loop a short bounded window to actually catch up before
+        // giving up — this runs on the calling JNI thread (Android's UI
+        // thread, from onCreate()), so it must stay short even though it
+        // means blocking that thread briefly.
         let destroyed = stale.destroy();
         log::info!(
-            "[android-native] ensure_main_webview_window: destroyed stale main window record ok={}",
+            "[android-native] ensure_main_webview_window: destroy() requested for stale main window ok={}",
             destroyed.is_ok()
         );
-        if app.get_webview_window("main").is_some() {
-            log::warn!("[android-native] ensure_main_webview_window: main window record still present after destroy()");
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+        const POLL_ATTEMPTS: u32 = 10; // ~200ms total worst case
+        let mut still_present = app.get_webview_window("main").is_some();
+        let mut attempts = 0;
+        while still_present && attempts < POLL_ATTEMPTS {
+            std::thread::sleep(POLL_INTERVAL);
+            still_present = app.get_webview_window("main").is_some();
+            attempts += 1;
+        }
+        if still_present {
+            // Most likely the same still-unexplained case where the stale
+            // window's webview was itself never actually created in the
+            // first place — there may be no real platform teardown for
+            // destroy() to ever complete, so no amount of waiting here
+            // would help. Surfaced as an error rather than silently
+            // continuing into a doomed build() call; the caller's own
+            // stuck-instance watchdog is what actually recovers from this.
+            log::warn!(
+                "[android-native] ensure_main_webview_window: main window record still present after {}ms; giving up",
+                POLL_ATTEMPTS * POLL_INTERVAL.as_millis() as u32
+            );
+            return Err("stale main window did not clear in time".to_string());
+        } else if attempts > 0 {
+            log::info!(
+                "[android-native] ensure_main_webview_window: stale main window cleared after {}ms",
+                attempts * POLL_INTERVAL.as_millis() as u32
+            );
         }
     }
     let result =
