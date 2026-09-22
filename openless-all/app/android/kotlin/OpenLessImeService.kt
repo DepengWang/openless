@@ -1079,7 +1079,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
         when (englishLayer) {
             EnglishLayer.LETTERS -> {
-                addEnglishCharRow(root, listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"))
+                addEnglishCharRow(
+                    root,
+                    listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"),
+                    swipeDigits = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"),
+                )
                 // iOS insets this row by half a key on each side (9 keys
                 // spanning the same width as the 10-key rows above/below);
                 // 0.5f spacers on either side of 1f-weight letter keys
@@ -1135,10 +1139,18 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * A plain character row (digits/symbols, no shift-sensitivity) built
      * from buildEnglishCharKey() — key preview, no drag-to-adjacent-key
      * distinction from a letter row since neither cares about shift.
+     *
+     * @param swipeDigits Same size as [keys] when given (the QWERTY top
+     *   row's own q..p -> 1..0 mapping) — forwarded 1:1 as each key's own
+     *   swipe-up digit. Left null for every other row (NUMBERS/SYMBOLS
+     *   layers are already digits/symbols themselves; nothing to swipe up
+     *   to).
      */
-    private fun addEnglishCharRow(parent: LinearLayout, keys: List<String>) {
+    private fun addEnglishCharRow(parent: LinearLayout, keys: List<String>, swipeDigits: List<String>? = null) {
         val row = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
-        keys.forEach { row.addView(buildEnglishCharKey(it, 1f)) }
+        keys.forEachIndexed { index, key ->
+            row.addView(buildEnglishCharKey(key, 1f, swipeDigit = swipeDigits?.getOrNull(index)))
+        }
         parent.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
     }
 
@@ -2707,14 +2719,32 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * This is a dedicated builder, not a keyboardKey() variant, precisely
      * so none of this touch handling can affect any other panel's keys.
      */
-    private fun buildEnglishCharKey(baseChar: String, weight: Float): TextView {
+    /**
+     * @param swipeDigit Top-row letters only (q..p -> 1..0, same mapping
+     *   iOS/most Android keyboards use) — swiping up commits this digit
+     *   instead of the letter, exactly like the stroke panel's own
+     *   swipe-up-for-digit keys (see keyboardKey()'s swipeUpAction/
+     *   swipePreview). Shown as a small hint above the letter via the same
+     *   "first line at 0.55x size" convention keyboardKey() already uses
+     *   for any '\n'-containing label — reused here by hand since this
+     *   function builds its own TextView directly rather than going
+     *   through keyboardKey() (it needs its own shift-aware live label and
+     *   cross-key tap-drag retargeting, which keyboardKey() doesn't do).
+     */
+    private fun buildEnglishCharKey(baseChar: String, weight: Float, swipeDigit: String? = null): TextView {
         fun charFor(view: View): String {
             val base = view.tag as? String ?: return ""
             return if (shiftState != ShiftState.OFF && base.length == 1 && base[0].isLetter()) base.uppercase() else base
         }
         return TextView(this).apply {
             tag = baseChar
-            text = charFor(this)
+            text = if (swipeDigit != null) {
+                android.text.SpannableString("$swipeDigit\n${charFor(this)}").apply {
+                    setSpan(android.text.style.RelativeSizeSpan(0.55f), 0, 1, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+            } else {
+                charFor(this)
+            }
             textSize = 22f
             gravity = android.view.Gravity.CENTER
             setTextColor(tone(Color.rgb(245, 245, 245), Color.rgb(30, 30, 34)))
@@ -2723,6 +2753,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             translationZ = dp(1).toFloat()
             contentDescription = charFor(this)
             var trackedView: View = this
+            var downY = 0f
+            var swipePreviewShown = false
 
             // Shown via the shared top-level KeyPreviewOverlay (see
             // wrapWithKeyPreviewOverlay()) instead of a per-key PopupWindow —
@@ -2790,11 +2822,34 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                         // panel-switch gesture.
                         view.parent?.requestDisallowInterceptTouchEvent(true)
                         trackedView = view
+                        downY = event.y
+                        swipePreviewShown = false
                         view.animate().scaleX(0.97f).scaleY(0.97f).translationZ(dp(3).toFloat()).alpha(0.90f).setDuration(65L).start()
                         performKeyHaptic()
                         showBubbleFor(view)
                     }
                     MotionEvent.ACTION_MOVE -> {
+                        // Swipe-up-for-digit, top row only (swipeDigit !=
+                        // null) — same dp(10) arm threshold as
+                        // keyboardKey()'s own swipe handling, but no
+                        // cross-key retargeting: once armed, this key's own
+                        // digit is what release commits, full stop. The
+                        // stroke grid's rows sit nearly flush against each
+                        // other so a straight swipe can genuinely drift
+                        // into a neighboring row and needs retargeting to
+                        // recover from that; this row has normal key
+                        // spacing, so a plain swipe staying "armed" on the
+                        // key it started on is the expected, simpler case.
+                        if (swipeDigit != null) {
+                            if (!swipePreviewShown && downY - event.y >= dp(10)) {
+                                view.parent?.requestDisallowInterceptTouchEvent(true)
+                                swipePreviewShown = true
+                            }
+                            if (swipePreviewShown) {
+                                keyPreviewOverlay?.showSwipePreview(swipeDigit, view)
+                                return@setOnTouchListener true
+                            }
+                        }
                         val target = findTrackTargetAt(event.rawX, event.rawY)
                         if (target !== trackedView) trackedView = target
                         showBubbleFor(trackedView)
@@ -2802,7 +2857,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     MotionEvent.ACTION_UP -> {
                         keyPreviewOverlay?.hide()
                         view.animate().scaleX(1f).scaleY(1f).translationZ(0f).alpha(1f).setDuration(90L).start()
-                        commitEnglishChar(charFor(trackedView))
+                        if (swipeDigit != null && swipePreviewShown) {
+                            commitEnglishChar(swipeDigit)
+                        } else {
+                            commitEnglishChar(charFor(trackedView))
+                        }
                     }
                     MotionEvent.ACTION_CANCEL -> {
                         keyPreviewOverlay?.hide()
