@@ -3391,25 +3391,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     }
 
-    private fun commitTestText() {
-        val attribute = currentInputEditorInfo
-        if (isSensitiveField(attribute)) {
-            updateStatus("敏感字段，禁止上屏")
-            return
-        }
-        val connection = currentInputConnection
-        if (connection == null) {
-            updateStatus("没有有效输入连接")
-            return
-        }
-        val epoch = sessionEpoch
-        if (epoch != sessionEpoch || !connection.commitText(TEST_TEXT, 1)) {
-            updateStatus("输入连接已失效")
-            return
-        }
-        updateStatus("已上屏")
-    }
-
     private fun invalidateSession(message: String) {
         sessionEpoch++
         updateStatus(message)
@@ -4682,11 +4663,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             show()
         }
 
-        /** Updates the bubble's text in place — no hide/show, no re-animation. */
-        fun updateText(text: String) {
-            bubble.label = text
-        }
-
         // No fade animation: a fast tap's down-to-up gap is often shorter
         // than any fade would take, so an animated show/hide left the
         // bubble stuck mid-fade — either never reaching full opacity
@@ -5120,7 +5096,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     companion object {
-        private const val TEST_TEXT = "OpenLess IME 测试上屏"
         private const val MAX_ASSOCIATION_CONTEXT = 8
         private const val SILENCE_LEVEL_THRESHOLD = 0.02f
         private const val SILENCE_CHECK_DELAY_MS = 3000L

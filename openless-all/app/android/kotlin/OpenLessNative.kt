@@ -29,8 +29,6 @@ object OpenLessNative {
 
     @JvmStatic external fun nativeCancelDictation()
 
-    /** Records a hand-corrected span from the IME's "edit result" flow into the shared correction dictionary. */
-    @JvmStatic external fun nativeAddCorrectionRule(pattern: String, replacement: String)
     // Adds a word/phrase straight to the global Dictionary (same store
     // add_vocab exposes to the desktop UI) instead of a CorrectionRule —
     // see native_bridge.rs's spawn_add_vocabulary_word() doc comment for
@@ -39,9 +37,6 @@ object OpenLessNative {
 
     /** JSON array of every existing correction rule's pattern — lets the clipboard swipe-left gesture show "add" vs. "remove" before the drag finishes. */
     @JvmStatic external fun nativeCorrectionRulePatterns(): String
-
-    /** Removes every correction rule whose pattern exactly matches — the clipboard swipe-left "remove" action. */
-    @JvmStatic external fun nativeRemoveCorrectionRule(pattern: String)
 
     /** JSON array of every existing Dictionary entry's phrase — same purpose as nativeCorrectionRulePatterns(), for the clipboard swipe-left zone now that adding writes to the Dictionary instead. */
     @JvmStatic external fun nativeVocabularyPhrases(): String
@@ -99,21 +94,7 @@ object OpenLessNative {
 
     @JvmStatic external fun nativeSwitchStylePack()
 
-    @JvmStatic external fun nativeOpenQaFromOverlay()
-
     @JvmStatic external fun nativeFinalizeQaFromOverlay()
-
-    @JvmStatic external fun nativeGetOverlayTriggerMode(): String
-
-    @JvmStatic external fun nativeCanDrawOverlays(context: android.content.Context): Boolean
-
-    @JvmStatic external fun nativeShowOverlay(context: android.content.Context)
-
-    @JvmStatic external fun nativeHideOverlay(context: android.content.Context)
-
-    @JvmStatic external fun nativeIsOverlayVisible(): Boolean
-
-    @JvmStatic external fun nativeNotifyOverlayPermissionChanged(context: android.content.Context)
 
     @JvmStatic external fun nativeNotifyOverlayDestroyed()
 
