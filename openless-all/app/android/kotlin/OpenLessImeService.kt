@@ -1608,8 +1608,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * border or shadow change, so it can't shift candidate width/spacing or
      * row height.
      */
-    private fun candidateItemView(label: String, isFirst: Boolean, action: () -> Unit): TextView {
-        return keyboardKey(label, 1f, action = action).apply {
+    private fun candidateItemView(
+        label: String,
+        isFirst: Boolean,
+        onLongPress: (() -> Unit)? = null,
+        action: () -> Unit,
+    ): TextView {
+        return keyboardKey(label, 1f, action = action, longPressAction = onLongPress).apply {
             textSize = 20f
             setSingleLine(true)
             maxLines = 1
@@ -2337,7 +2342,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 val displayText = outputScript(candidate.text)
                 val candidateWidth = dp((displayText.codePointCount(0, displayText.length) * 22 + 16).coerceAtLeast(46))
                 val commit = { commitAssociation(candidate.text, matchedPrefix) }
-                strokeCandidates?.addView(candidateItemView(displayText, index == 0, commit), LinearLayout.LayoutParams(candidateWidth, ViewGroup.LayoutParams.MATCH_PARENT))
+                strokeCandidates?.addView(candidateItemView(displayText, index == 0, action = commit), LinearLayout.LayoutParams(candidateWidth, ViewGroup.LayoutParams.MATCH_PARENT))
                 overlayEntries.add(displayText to commit)
             }
             candidateOverlayEntries = overlayEntries
@@ -2945,7 +2950,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val overlayEntries = mutableListOf<Pair<String, () -> Unit>>()
         words.forEachIndexed { index, word ->
             row.addView(
-                candidateItemView(word, isFirst = index == 0) { selectEnglishCandidate(word) },
+                candidateItemView(
+                    word,
+                    isFirst = index == 0,
+                    action = { selectEnglishCandidate(word) },
+                    onLongPress = { forgetEnglishCandidate(word) },
+                ),
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT),
             )
             overlayEntries.add(word to { selectEnglishCandidate(word) })
@@ -2980,6 +2990,22 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         englishComposingWord.clear()
         updateEnglishCandidates()
         performKeyHaptic()
+    }
+
+    /**
+     * Long-press on an English candidate — only does anything for a word
+     * the user's own typing taught this keyboard (see
+     * EnglishCandidateProvider.isCustomWord()); the bundled base dictionary
+     * isn't user-removable, so a long-press on one of those is a no-op
+     * (silent, not an error toast — a base-dictionary word appearing in the
+     * candidate row is completely ordinary, not something to explain away).
+     */
+    private fun forgetEnglishCandidate(word: String) {
+        if (!englishCandidateProvider.isCustomWord(word)) return
+        englishCandidateProvider.forgetCustomWord(word)
+        performKeyHaptic()
+        Toast.makeText(this, ui("已移除“$word”", "Removed \"$word\""), Toast.LENGTH_SHORT).show()
+        updateEnglishCandidates()
     }
 
     /**

@@ -14,8 +14,10 @@ import kotlin.math.ln
  * aren't in the bundled base dictionary at all (recordCommit() adds a word
  * here the first time it's committed if EnglishCandidateProvider doesn't
  * already index it — see that class) — this is the data layer for
- * "user custom words" (add/delete/exists/frequency/last-used); no
- * dedicated management screen is wired up yet.
+ * "user custom words" (add/delete/exists/frequency/last-used). Delete is
+ * wired up as a long-press on an English candidate — see
+ * EnglishCandidateProvider.forgetCustomWord()/isCustomWord() and
+ * OpenLessImeService.forgetEnglishCandidate().
  */
 internal class EnglishUserFrequency(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences(STORE, Context.MODE_PRIVATE)

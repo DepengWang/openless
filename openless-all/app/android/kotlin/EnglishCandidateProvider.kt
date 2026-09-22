@@ -38,6 +38,11 @@ internal class EnglishCandidateProvider(context: Context) {
 
     private val root = Node()
     private val indexedWords = HashSet<String>()
+    // Words long-pressed away via forgetCustomWord() — the trie itself has
+    // no live-removal (only insertion; see insert()/walk()), so this is a
+    // cheap post-filter instead of rebuilding the index. Only ever touched
+    // from executor's thread, same as indexedWords/loaded.
+    private val excludedWords = HashSet<String>()
     private var loaded = false
 
     /** Off the caller's thread; posts [callback] back to the main looper. */
@@ -51,11 +56,34 @@ internal class EnglishCandidateProvider(context: Context) {
             ensureLoaded()
             val candidates = walk(normalized)
             val ranked = candidates
+                .asSequence()
+                .filter { it.word !in excludedWords }
                 .sortedByDescending { it.baseWeight + userFrequency.score(it.word) }
                 .map { it.word }
                 .distinct()
                 .take(limit)
+                .toList()
             Handler(Looper.getMainLooper()).post { callback(ranked) }
+        }
+    }
+
+    /** True only for a word the user's own typing added (see recordCommit()) — the bundled base dictionary isn't user-removable. */
+    fun isCustomWord(word: String): Boolean = userFrequency.hasCustomWord(word)
+
+    /**
+     * "Forget" a word this keyboard only knows because the user typed it
+     * once (long-press on an English candidate — see
+     * OpenLessImeService.forgetEnglishCandidate()). Un-marks it as custom
+     * (so a future cold start's ensureLoaded() won't re-index it) and hides
+     * it from this session's own suggestions immediately, without needing
+     * to rebuild the trie.
+     */
+    fun forgetCustomWord(word: String) {
+        val normalized = word.trim().lowercase()
+        if (normalized.isEmpty()) return
+        executor.execute {
+            userFrequency.removeCustomWord(normalized)
+            excludedWords.add(normalized)
         }
     }
 
