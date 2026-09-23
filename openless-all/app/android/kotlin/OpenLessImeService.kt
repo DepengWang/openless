@@ -1619,8 +1619,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * single-character candidates for the character currently being typed.
      */
     private fun renderCandidateRow(strokeMatches: List<String>) {
-        strokeCandidates?.removeAllViews()
-        val overlayEntries = mutableListOf<Pair<String, () -> Unit>>()
+        val specs = mutableListOf<CandidateSpec>()
         // The very first candidate shown — whichever one that is — is
         // highlighted in the same red as the right-hand action rail, since
         // it's what a bare space/enter would commit.
@@ -1629,28 +1628,89 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             val word = wordSegments.joinToString("")
             val displayWord = outputScript(word)
             val wordWidth = dp((displayWord.codePointCount(0, displayWord.length) * 22 + 16).coerceAtLeast(46))
-            strokeCandidates?.addView(candidateItemView(displayWord, firstCandidate) { commitWord(word) }, LinearLayout.LayoutParams(wordWidth, ViewGroup.LayoutParams.MATCH_PARENT))
-            overlayEntries.add(displayWord to { commitWord(word) })
+            specs.add(CandidateSpec(displayWord, firstCandidate, wordWidth) { commitWord(word) })
             firstCandidate = false
         }
         strokeMatches.forEach { candidate ->
             val displayCandidate = outputScript(candidate)
-            strokeCandidates?.addView(candidateItemView(displayCandidate, firstCandidate) { commitStrokeCandidate(candidate) }, LinearLayout.LayoutParams(dp(38), ViewGroup.LayoutParams.MATCH_PARENT))
-            overlayEntries.add(displayCandidate to { commitStrokeCandidate(candidate) })
+            specs.add(CandidateSpec(displayCandidate, firstCandidate, dp(38)) { commitStrokeCandidate(candidate) })
             firstCandidate = false
         }
-        candidateOverlayEntries = overlayEntries
+        populateCandidateRow(specs)
+        candidateOverlayEntries = specs.map { it.label to it.action }
+    }
+
+    /** One candidate slot's content, independent of whatever View (if any) ends up showing it — see populateCandidateRow(). */
+    private data class CandidateSpec(val label: String, val isFirst: Boolean, val widthPx: Int, val action: () -> Unit)
+
+    /**
+     * Repopulates strokeCandidates with [specs] by reusing existing child
+     * views in place — retexting/rewidthing/rebinding the click target of
+     * whatever's already sitting at each index — instead of this row's old
+     * removeAllViews()-then-addView()-every-candidate approach. Rebuilding
+     * up to MAX_CANDIDATES real keyboardKey()-backed Views (a background
+     * drawable allocated then immediately discarded, plus a full touch-
+     * listener closure with long-press/swipe-retarget plumbing this row
+     * never uses) on literally every keystroke is the actual source of
+     * candidate-row lag on a slow device, not the async dictionary lookup
+     * feeding it — this call site is on the hot path (every stroke and
+     * every phrase-association refresh), so only the surplus or shortfall
+     * between the previous and new candidate count now creates or removes
+     * a View at all.
+     */
+    private fun populateCandidateRow(specs: List<CandidateSpec>) {
+        val row = strokeCandidates ?: return
+        specs.forEachIndexed { index, spec ->
+            when (val existing = row.getChildAt(index)) {
+                is TextView -> {
+                    existing.text = spec.label
+                    existing.setOnClickListener { spec.action() }
+                    styleCandidateFirstState(existing, spec.isFirst)
+                    val params = existing.layoutParams as LinearLayout.LayoutParams
+                    if (params.width != spec.widthPx) {
+                        params.width = spec.widthPx
+                        existing.layoutParams = params
+                    }
+                }
+                else -> row.addView(
+                    candidateItemView(spec.label, spec.isFirst, action = spec.action),
+                    LinearLayout.LayoutParams(spec.widthPx, ViewGroup.LayoutParams.MATCH_PARENT),
+                )
+            }
+        }
+        while (row.childCount > specs.size) {
+            row.removeViewAt(row.childCount - 1)
+        }
+    }
+
+    /**
+     * The selected/first candidate is marked by color+weight only (the same
+     * red as the right-hand action rail's ←/↵/清除/123 keys, bold) — no
+     * size, background, border or shadow change, so it can't shift
+     * candidate width/spacing or row height. A real else branch (not just
+     * skipping the isFirst==false case) matters once populateCandidateRow()
+     * can reuse a view that used to be first-candidate for one that isn't.
+     */
+    private fun styleCandidateFirstState(view: TextView, isFirst: Boolean) {
+        if (isFirst) {
+            // Same red as the action rail's own background
+            // (Color.rgb(153, 26, 40)), brightened a touch for dark
+            // theme only — same hue, just a bit lighter so it reads
+            // more clearly against a dark panel; light theme keeps the
+            // exact action-rail red.
+            view.setTextColor(if (isDarkTheme) Color.rgb(190, 45, 60) else Color.rgb(153, 26, 40))
+            view.setTypeface(view.typeface, android.graphics.Typeface.BOLD)
+        } else {
+            view.setTextColor(tone(Color.rgb(245, 245, 245), Color.rgb(30, 30, 34)))
+            view.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.NORMAL)
+        }
     }
 
     /**
      * Plain-text candidate item — no independent keycap background, just the
      * label, matching a stroke candidate bar rather than a row of separate
      * buttons. Height always comes from the parent row (MATCH_PARENT) so it
-     * can never itself grow the fixed 36dp candidate row. The selected/first
-     * candidate is marked by color+weight only (the same red as the right-
-     * hand action rail's ←/↵/清除/123 keys, bold) — no size, background,
-     * border or shadow change, so it can't shift candidate width/spacing or
-     * row height.
+     * can never itself grow the fixed 36dp candidate row.
      */
     private fun candidateItemView(
         label: String,
@@ -1666,15 +1726,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             elevation = 0f
             translationZ = 0f
             setPadding(dp(9), 0, dp(9), 0)
-            if (isFirst) {
-                // Same red as the action rail's own background
-                // (Color.rgb(153, 26, 40)), brightened a touch for dark
-                // theme only — same hue, just a bit lighter so it reads
-                // more clearly against a dark panel; light theme keeps the
-                // exact action-rail red.
-                setTextColor(if (isDarkTheme) Color.rgb(190, 45, 60) else Color.rgb(153, 26, 40))
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-            }
+            styleCandidateFirstState(this, isFirst)
         }
     }
 
@@ -2375,7 +2427,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
     private fun refreshAssociations() {
         if (!OpenLessAndroidPreferences.strokeAssociationEnabled(this)) {
-            strokeCandidates?.removeAllViews()
+            populateCandidateRow(emptyList())
             candidateOverlayEntries = emptyList()
             return
         }
@@ -2384,17 +2436,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         if (context.isEmpty()) return
         phraseRepository.searchAsync(context) { result ->
             if (query != phraseQueryEpoch || inputMode != InputMode.STROKE || confirmedText.takeLast(MAX_ASSOCIATION_CONTEXT) != context) return@searchAsync
-            strokeCandidates?.removeAllViews()
-            val overlayEntries = mutableListOf<Pair<String, () -> Unit>>()
-            result.forEachIndexed { index, candidate ->
+            val specs = result.mapIndexed { index, candidate ->
                 val matchedPrefix = candidate.matchedPrefix.ifEmpty { context }
                 val displayText = outputScript(candidate.text)
                 val candidateWidth = dp((displayText.codePointCount(0, displayText.length) * 22 + 16).coerceAtLeast(46))
-                val commit = { commitAssociation(candidate.text, matchedPrefix) }
-                strokeCandidates?.addView(candidateItemView(displayText, index == 0, action = commit), LinearLayout.LayoutParams(candidateWidth, ViewGroup.LayoutParams.MATCH_PARENT))
-                overlayEntries.add(displayText to commit)
+                CandidateSpec(displayText, index == 0, candidateWidth) { commitAssociation(candidate.text, matchedPrefix) }
             }
-            candidateOverlayEntries = overlayEntries
+            populateCandidateRow(specs)
+            candidateOverlayEntries = specs.map { it.label to it.action }
         }
     }
 
