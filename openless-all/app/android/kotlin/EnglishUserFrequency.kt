@@ -23,6 +23,12 @@ internal class EnglishUserFrequency(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences(STORE, Context.MODE_PRIVATE)
     private val customWordsPrefs = context.applicationContext.getSharedPreferences(CUSTOM_STORE, Context.MODE_PRIVATE)
 
+    // Tracks entry count without paying preferences.all's full-map-copy cost
+    // on every record() — see trimIfNeeded(). -1 means "not yet known",
+    // resolved (once) the first time it's actually needed.
+    @Volatile
+    private var approxSize = -1
+
     fun score(word: String, now: Long = System.currentTimeMillis()): Double {
         val value = preferences.getString(key(word), null) ?: return 0.0
         val parts = value.split(',')
@@ -35,18 +41,38 @@ internal class EnglishUserFrequency(context: Context) {
     fun record(word: String) {
         if (word.isBlank()) return
         val entryKey = key(word)
+        val isNewEntry = !preferences.contains(entryKey)
         val old = preferences.getString(entryKey, null)?.split(',')
         val count = (old?.getOrNull(0)?.toIntOrNull() ?: 0) + 1
         val now = System.currentTimeMillis()
         preferences.edit().putString(entryKey, "$count,$now").apply()
-        trimIfNeeded()
+        // Re-recording an existing word (by far the common case) never
+        // touches preferences.all at all now — only a genuinely new word
+        // can push the count past MAX_ENTRIES, so that's the only case
+        // worth checking.
+        if (isNewEntry) {
+            val size = resolvedSize() + 1
+            approxSize = size
+            if (size > MAX_ENTRIES) trimIfNeeded()
+        }
     }
 
-    fun clear() = preferences.edit().clear().apply()
+    fun clear() {
+        preferences.edit().clear().apply()
+        approxSize = 0
+    }
 
-    fun size(): Int = preferences.all.size
+    fun size(): Int = resolvedSize()
 
     fun capacity(): Int = MAX_ENTRIES
+
+    private fun resolvedSize(): Int {
+        val cached = approxSize
+        if (cached >= 0) return cached
+        val size = preferences.all.size
+        approxSize = size
+        return size
+    }
 
     // --- User custom words (section 十二: Add/Delete/Exists/Frequency/LastUsed) ---
     // Frequency/LastUsed for a custom word are the same record()/score() above,
@@ -75,6 +101,7 @@ internal class EnglishUserFrequency(context: Context) {
 
     private fun trimIfNeeded() {
         val all = preferences.all
+        approxSize = all.size
         if (all.size <= MAX_ENTRIES) return
         val removeCount = all.size - MAX_ENTRIES
         val oldest = all.entries
@@ -83,6 +110,7 @@ internal class EnglishUserFrequency(context: Context) {
         preferences.edit().apply {
             oldest.forEach { remove(it.key) }
         }.apply()
+        approxSize = all.size - oldest.size
     }
 
     private companion object {
