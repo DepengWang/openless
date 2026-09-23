@@ -398,6 +398,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // Load the offline stroke dictionary while the IME is idle, so the
         // first stroke key does not pay the asset parsing cost.
         strokeRepository.preloadAsync()
+        // Same reasoning for the (much larger, ~220k-phrase) association
+        // dictionary — this used to load lazily on whichever word's commit
+        // was the first to ever need an association, which is exactly the
+        // moment a user is sitting there waiting for the candidate row to
+        // update.
+        phraseRepository.preloadAsync()
         clipboardManager.addPrimaryClipChangedListener(clipboardHistoryListener)
         backendHeartbeatHandler.post(backendHeartbeatRunnable)
     }
