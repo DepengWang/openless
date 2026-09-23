@@ -4304,7 +4304,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             paint.color = colorFor(0)
             drawWaveform(canvas, segmentWidth * 0.5f, centerY, h)
             textPaint.color = colorFor(1)
-            drawLabel(canvas, "笔画", segmentWidth * 1.5f, centerY, h * 0.34f, extraBold = true)
+            drawLabel(canvas, "笔画", segmentWidth * 1.5f, centerY, h * 0.38f, extraBold = true)
             paint.color = colorFor(2)
             drawCursorBrackets(canvas, segmentWidth * 2.5f, centerY, h)
             textPaint.color = colorFor(3)
