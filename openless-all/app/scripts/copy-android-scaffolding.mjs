@@ -58,6 +58,7 @@ const KOTLIN_FILES = [
   'OpenLessContentReader.kt',
   'OpenLessContentWriter.kt',
   'OpenLessImeService.kt',
+  'StrokeInputController.kt',
   'StrokeInput.kt',
   'StrokePhraseRepository.kt',
   'StrokeUserFrequency.kt',

@@ -33,7 +33,7 @@ import android.widget.Toast
 
 /** Minimal system IME surface. Voice transport is intentionally added in a later phase. */
 class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlayStateListener {
-    private enum class InputMode { VOICE, STROKE, CLIPBOARD, ENGLISH }
+    internal enum class InputMode { VOICE, STROKE, CLIPBOARD, ENGLISH }
     private enum class ShiftState { OFF, SHIFT_ONCE, CAPS_LOCK }
     // Mirrors iOS's own ABC/123/#+= three-layer model exactly (see
     // buildKeyboardView()) instead of the old two-state symbolMode boolean,
@@ -41,7 +41,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private enum class EnglishLayer { LETTERS, NUMBERS, SYMBOLS }
 
     private var sessionEpoch = 0L
-    private var recording = false
+    internal var recording = false
     private var processing = false
     // Armed by the mic button's swipe-up gesture while recording is still
     // in progress (see onCreateInputView()'s voice-panel branch) — recording
@@ -59,7 +59,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 if (state == "speaking" && value) LINK_COLOR_RECORDING_RAW else statusNormalColor,
             )
         }
-    private var inputMode = InputMode.VOICE
+    internal var inputMode = InputMode.VOICE
     private var englishLayer = EnglishLayer.LETTERS
     // The word currently being typed on the English keyboard — appended to
     // per letter, trimmed per backspace, cleared at every word boundary
@@ -83,23 +83,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // so onDestroy() below can skip shutdown() when it was never touched.
     private val englishCandidateProviderLazy = lazy { EnglishCandidateProvider(this) }
     private val englishCandidateProvider get() = englishCandidateProviderLazy.value
-    private var strokeNumberMode = false
-    private var numberSymbolMode = false
-    private var symbolPageIndex = 0
-    private val numberPanelSymbolPages = listOf(
-        listOf("、", "。", "，", "；", "：", "？", "！", "…", "—", "～", "·", "（"),
-        listOf("）", "《", "》", "“", "”", "‘", "’", "【", "】", "「", "」", "￥"),
-        listOf("%", "#", "&", "*", "=", "/", "\\", "<", ">", "^", "_", "|"),
-    )
-    private var punctuationGroupIndex = 0
-    private val punctuationGroups = listOf(
-        listOf(",", "°", "?", "!", "~"),
-        listOf(".", "、", ";", ":", "\""),
-        listOf("(", ")", "[", "]", "-"),
-        listOf("@", "#", "$", "%", "&"),
-        listOf("*", "+", "=", "/", "_"),
-    )
-    private var traditionalOutput = false
+    internal var traditionalOutput = false
     // Clipboard panel state: whether ← → ↑ ↓ extend the selection (like
     // holding Shift on a physical keyboard) instead of just moving the
     // cursor, whether the history browser sub-panel is showing instead of
@@ -211,27 +195,17 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             null
         }
     }
-    private val strokeRepository by lazy { StrokeInputRepository(this) }
-    private val phraseRepository by lazy { StrokePhraseRepository(this) }
-    private var strokeCode = ""
-    private var strokeQueryEpoch = 0L
-    // In-memory word-segmentation buffer: characters the user has marked with
-    // 分词 while composing a multi-character word. Never touches the actual
-    // input connection until the assembled word (or its final character) is
-    // committed — see segmentStroke()/commitWord().
-    private val wordSegments = mutableListOf<String>()
-    private var lastStrokeCandidates: List<String> = emptyList()
-    private var confirmedText = ""
-    private var phraseQueryEpoch = 0L
-    private var strokePreview: TextView? = null
-    private var clearStrokeButton: TextView? = null
-    private var strokeCandidates: LinearLayout? = null
+    // Owns everything specific to the stroke panel — encode entry, the
+    // 字候选/联想候选 pipeline, and the number/symbol sub-panel — split out of
+    // this class into its own file; see StrokeInputController's own doc
+    // comment for the shared-vs-owned boundary.
+    private val strokeController by lazy { StrokeInputController(this) }
 
     // Single source of truth for the encode row's blue text, reused as-is
     // (not a new similar blue) for the selected/first candidate. A property,
     // not a val, since it must track the live system theme, not whatever it
     // resolved to when the service was first created.
-    private val strokeEncodeAccentColor: Int
+    internal val strokeEncodeAccentColor: Int
         get() = tone(Color.rgb(120, 190, 255), Color.rgb(20, 110, 220))
 
     /**
@@ -256,16 +230,16 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
 
     /** Picks `dark` or `light` for the current system theme — the one place every themed color in this file goes through. */
-    private fun tone(dark: Int, light: Int): Int = if (isDarkTheme) dark else light
+    internal fun tone(dark: Int, light: Int): Int = if (isDarkTheme) dark else light
     // Mirrors whatever's currently in strokeCandidates (word/stroke matches
     // or phrase associations) as plain (label, action) pairs, so the "show
     // more" overlay can replay the exact same set without duplicating the
     // stroke-match vs. association branching logic.
-    private var candidateOverlayEntries: List<Pair<String, () -> Unit>> = emptyList()
+    internal var candidateOverlayEntries: List<Pair<String, () -> Unit>> = emptyList()
 
-    private fun ui(zh: String, en: String) = if (englishUi) en else zh
+    internal fun ui(zh: String, en: String) = if (englishUi) en else zh
 
-    private fun outputScript(text: String): String {
+    internal fun outputScript(text: String): String {
         if (!traditionalOutput) return text
         return runCatching { simplifiedToTraditional.transliterate(text) }.getOrDefault(text)
     }
@@ -274,7 +248,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // drawn as the same shape as the "5" key's own icon (an ImageSpan), so
     // the preview and the key read as the same stroke instead of the bare
     // "乙" character.
-    private fun displayStrokeCode(code: String): CharSequence {
+    internal fun displayStrokeCode(code: String): CharSequence {
         val builder = android.text.SpannableStringBuilder()
         code.forEach { stroke ->
             when (stroke) {
@@ -349,7 +323,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     }
 
-    private fun toggleScriptPreference() {
+    internal fun toggleScriptPreference() {
         traditionalOutput = !traditionalOutput
         getSharedPreferences("openless_ime_ui", MODE_PRIVATE).edit()
             .putBoolean("stroke_traditional_output", traditionalOutput)
@@ -366,13 +340,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     }
 
-    private fun saveInputMode(mode: InputMode) {
+    internal fun saveInputMode(mode: InputMode) {
         getSharedPreferences("openless_ime_ui", MODE_PRIVATE).edit()
             .putString("input_mode", mode.name.lowercase())
             .apply()
     }
 
-    private fun refreshLanguage() {
+    internal fun refreshLanguage() {
         val locale = getSharedPreferences("openless_ime_ui", MODE_PRIVATE)
             .getString("locale", null) ?: resources.configuration.locales[0].toLanguageTag()
         englishUi = !locale.startsWith("zh", ignoreCase = true)
@@ -395,15 +369,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         OpenLessOverlayBridge.imeListener = this
         OpenLessOverlayBridge.imeTextListener = ::commitImeText
         startRuntimeService()
-        // Load the offline stroke dictionary while the IME is idle, so the
-        // first stroke key does not pay the asset parsing cost.
-        strokeRepository.preloadAsync()
-        // Same reasoning for the (much larger, ~220k-phrase) association
-        // dictionary — this used to load lazily on whichever word's commit
-        // was the first to ever need an association, which is exactly the
-        // moment a user is sitting there waiting for the candidate row to
-        // update.
-        phraseRepository.preloadAsync()
+        // Load the offline stroke dictionary and the (much larger, ~220k-
+        // phrase) association dictionary while the IME is idle — the latter
+        // used to load lazily on whichever word's commit was the first to
+        // ever need an association, which is exactly the moment a user is
+        // sitting there waiting for the candidate row to update.
+        strokeController.preloadAsync()
         clipboardManager.addPrimaryClipChangedListener(clipboardHistoryListener)
         backendHeartbeatHandler.post(backendHeartbeatRunnable)
     }
@@ -422,8 +393,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         backendLinkPulseAnimator?.cancel()
         clipboardManager.removePrimaryClipChangedListener(clipboardHistoryListener)
         stopRuntimeService()
-        strokeRepository.shutdown()
-        phraseRepository.shutdown()
+        strokeController.shutdown()
         if (englishCandidateProviderLazy.isInitialized()) englishCandidateProviderLazy.value.shutdown()
         // Marks this as a clean end-of-session for
         // OpenLessApplication.recordUncleanShutdownIfAny() — an abrupt
@@ -453,7 +423,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // before the clipboard flow started reusing the same panel.
         if (editingDictationResult) return buildEditPanel()
         if (inputMode == InputMode.ENGLISH) return wrapWithKeyPreviewOverlay(buildKeyboardView())
-        if (inputMode == InputMode.STROKE) return wrapWithKeyPreviewOverlay(if (strokeNumberMode) buildStrokeNumberView() else buildStrokeView())
+        if (inputMode == InputMode.STROKE) return wrapWithKeyPreviewOverlay(if (strokeController.strokeNumberMode) strokeController.buildStrokeNumberView() else strokeController.buildStrokeView())
         if (inputMode == InputMode.CLIPBOARD) return if (clipboardHistoryMode) buildClipboardHistoryView() else buildClipboardView()
         val panel = SwipeModeContainer(this) { direction -> swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
@@ -736,7 +706,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         return row
     }
 
-    private fun refreshInputView() {
+    internal fun refreshInputView() {
         setInputView(onCreateInputView())
     }
 
@@ -911,7 +881,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // segment to the right slides in from the right, matching what a
     // swipe in that direction would already do. Tapping the
     // already-selected segment has no direction to slide from.
-    private fun buildModeToggle(): View = ModeToggle(this, inputMode, isDarkTheme) { selected ->
+    internal fun buildModeToggle(): View = ModeToggle(this, inputMode, isDarkTheme) { selected ->
         val direction = when {
             selected.ordinal > inputMode.ordinal -> 1
             selected.ordinal < inputMode.ordinal -> -1
@@ -929,7 +899,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * existing call sites all pass their own LinearLayout.LayoutParams for
      * this whole row.
      */
-    private fun buildBrandView(): View {
+    internal fun buildBrandView(): View {
         val bitmap = brandLogoBitmap
         val wrapper = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1015,20 +985,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         saveInputMode(selected)
         englishLayer = EnglishLayer.LETTERS
         englishComposingWord.clear()
-        strokeNumberMode = false
-        numberSymbolMode = false
-        symbolPageIndex = 0
-        punctuationGroupIndex = 0
+        strokeController.resetForModeSwitch()
         clipboardSelectionMode = false
         clipboardSelectionAnchor = -1
         clipboardSelectionActive = -1
         clipboardHistoryMode = false
         clipboardHistoryCategory = OpenLessClipboardHistory.Category.ALL
         shiftState = ShiftState.OFF
-        strokeCode = ""
-        strokeQueryEpoch++
-        confirmedText = ""
-        phraseQueryEpoch++
         if (slideDirection != null) refreshInputView(slideDirection) else refreshInputView()
     }
 
@@ -1039,7 +1002,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * The new panel slides in from the side matching the ordinal direction
      * (not necessarily the raw finger direction — see SwipeModeContainer).
      */
-    private fun swipeInputMode(direction: Int) {
+    internal fun swipeInputMode(direction: Int) {
         val modes = InputMode.entries
         val next = modes[(inputMode.ordinal + direction).coerceIn(0, modes.lastIndex)]
         if (next != inputMode) selectInputMode(next, slideDirection = direction)
@@ -1239,456 +1202,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         updateEnglishCandidates()
     }
 
-    private fun buildStrokeView(): View {
-        // Matches the punctuation rail's own 0.16f width share below (body's
-        // "0.16f/0.65f/0.19f" split) so a downward drag anywhere on the rail
-        // is excluded from swipe-to-dismiss and left entirely to SwipeRail.
-        val root = SwipeModeContainer(this, verticalDismissExclusionRatio = 0.16f) { direction -> swipeInputMode(direction) }.apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
-            minimumHeight = dp(300)
-            setPadding(dp(4), dp(3), dp(4), dp(3))
-            setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
-        }
-        val header = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
-        header.addView(buildBrandView(), LinearLayout.LayoutParams(0, dp(38), 1f))
-        header.addView(buildModeToggle(), LinearLayout.LayoutParams(dp(240), dp(38)))
-        // Stroke mode's root padding is much tighter (4dp/3dp) to fit its dense
-        // grid. Compensate with margins so the header/toggle still land at the
-        // same canonical 16dp/8dp inset as every other panel.
-        root.addView(header, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38)).apply {
-            marginStart = dp(12)
-            marginEnd = dp(12)
-            topMargin = dp(5)
-        })
-
-        // Stroke mode follows the reference layout: a compact stroke row,
-        // candidate row, punctuation column, stroke grid, and action rail.
-        // Encode + candidate rows are fixed-height (24dp + 36dp = 60dp, same
-        // total as before this pass) and never resize with content — only
-        // the candidate list scrolls horizontally — so the stroke keys below
-        // never move. Both rows share one rounded background (an existing
-        // panel color, not a new one) so they read as a single continuous
-        // strip rather than two separate cards.
-        val top = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = buildEncodeAreaBackground()
-        }
-        val strokeRow = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
-        strokePreview = TextView(this).apply {
-            text = ""
-            textSize = 16.5f
-            setTextColor(strokeEncodeAccentColor)
-            gravity = android.view.Gravity.CENTER_VERTICAL
-            setSingleLine(true)
-            setPadding(dp(10), 0, 0, 0)
-        }
-        strokeRow.addView(strokePreview, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-        // Clear-code button: a 40x30dp hit target with a small glyph, not a
-        // heavy independent button — tapping it is the same clearStrokes()
-        // already wired to the action rail's "清除" key.
-        clearStrokeButton = TextView(this).apply {
-            text = "✕"
-            textSize = 13f
-            gravity = android.view.Gravity.CENTER
-            setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(130, 130, 135)))
-            contentDescription = ui("清除笔画编码", "Clear stroke code")
-            setOnClickListener { clearStrokes() }
-        }
-        strokeRow.addView(clearStrokeButton, LinearLayout.LayoutParams(dp(40), ViewGroup.LayoutParams.MATCH_PARENT))
-        updateClearStrokeButtonVisibility()
-        top.addView(strokeRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(24)))
-
-        val candidateRow = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
-        // A plain setOnTouchListener on the ScrollView never actually fires
-        // here: each candidate is its own clickable keyboardKey() view, so
-        // it claims ACTION_DOWN before the ScrollView's own onTouchEvent
-        // ever runs. Overriding onInterceptTouchEvent instead runs at the
-        // right point in the dispatch chain — before any child gets a
-        // chance to claim the touch — so it reliably blocks
-        // SwipeModeContainer's mode-switch gesture from stealing a drag
-        // that starts on top of a candidate button.
-        val candidatesScroll = object : android.widget.HorizontalScrollView(this) {
-            override fun onInterceptTouchEvent(ev: android.view.MotionEvent): Boolean {
-                if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
-                    parent?.requestDisallowInterceptTouchEvent(true)
-                }
-                return super.onInterceptTouchEvent(ev)
-            }
-        }.apply {
-            isHorizontalScrollBarEnabled = false
-            isFillViewport = false
-            overScrollMode = View.OVER_SCROLL_NEVER
-            strokeCandidates = LinearLayout(context).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
-            strokeCandidates?.orientation = LinearLayout.HORIZONTAL
-            addView(strokeCandidates, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        }
-        candidateRow.addView(candidatesScroll, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-        // "Show more" — opens the full candidate/association list in a
-        // floating overlay instead of growing this row or the panel height.
-        val expandCandidatesButton = StrokeActionView(
-            this,
-            "triangle-down",
-            iconColor = tone(Color.rgb(180, 180, 180), Color.rgb(130, 130, 135)),
-        ).apply {
-            contentDescription = ui("展开更多候选", "Show more candidates")
-        }
-        expandCandidatesButton.visibility = View.GONE
-        expandCandidatesButton.setOnClickListener { showCandidateOverlay(expandCandidatesButton) }
-        candidateRow.addView(expandCandidatesButton, LinearLayout.LayoutParams(dp(28), ViewGroup.LayoutParams.MATCH_PARENT))
-        // Only shown once the candidates actually overflow the visible
-        // scroll width — otherwise it sat there whether or not there was
-        // anything more to show, which read as an odd stray control.
-        // renderCandidateRow()/refreshAssociations() both just repopulate
-        // strokeCandidates and let layout happen, so a global layout
-        // listener (fires after every layout pass, including the one
-        // triggered by add/removeAllViews) is what re-checks this instead
-        // of hooking every candidate-population call site individually.
-        candidatesScroll.viewTreeObserver.addOnGlobalLayoutListener {
-            val candidates = strokeCandidates
-            expandCandidatesButton.visibility =
-                if (candidates != null && candidates.width > candidatesScroll.width) View.VISIBLE else View.GONE
-        }
-        top.addView(candidateRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36)))
-        root.addView(top, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(60)))
-
-        val body = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
-        // Swiping the rail up/down cycles through punctuationGroups instead of
-        // scrolling — one swipe always advances exactly one group.
-        val punctuation = SwipeRail(this) { direction ->
-            val count = punctuationGroups.size
-            punctuationGroupIndex = ((punctuationGroupIndex + direction) % count + count) % count
-            refreshInputView()
-        }.apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = android.view.Gravity.CENTER
-            // Zero vertical padding so the rail's own top/bottom edges land
-            // exactly on the grid/actions columns' top/bottom edges (all
-            // three share the same MATCH_PARENT body height) — horizontal
-            // padding is kept since it only insets key width, not row
-            // position.
-            setPadding(dp(2), 0, dp(2), 0)
-            background = roundedButton(tone(Color.rgb(45, 45, 45), Color.rgb(230, 230, 234)), dp(4))
-        }
-        punctuationGroups[punctuationGroupIndex].forEachIndexed { index, mark ->
-            punctuation.addView(keyboardKey(mark, 1f, action = { currentInputConnection?.commitText(mark, 1) }).apply {
-                textSize = 18f
-                // The rail is one connected key surface; separators provide the only visual split.
-                background = GradientDrawable().apply { setColor(Color.TRANSPARENT) }
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
-            })
-            if (index < 4) {
-                punctuation.addView(View(this).apply {
-                    setBackgroundColor(tone(Color.rgb(28, 28, 28), Color.rgb(205, 205, 210)))
-                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
-            }
-        }
-        // Match the reference proportions: both side rails occupy the same share of the panel.
-        body.addView(punctuation, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.16f))
-
-        val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = android.view.Gravity.CENTER }
-        val strokeRows = listOf(
-            listOf("1\n一" to "h", "2\n丨" to "s", "3\n丿" to "p"),
-            listOf("4\n丶" to "n", "5\n乙" to "z", "6\n通配" to "*"),
-            listOf("7\n分词" to " ", "8\n：" to ":", "9\n；" to ";"),
-            listOf("繁" to "script", "🎙" to "voice", "符号" to "symbols"),
-        )
-        strokeRows.forEach { rowItems ->
-            val row = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
-            rowItems.forEach { (label, code) ->
-                val key = if (code == "script") keyboardKey(label, 1f, action = {
-                    toggleScriptPreference()
-                }, graphicCode = "script").apply {
-                    if (traditionalOutput) {
-                        background = roundedButton(tone(Color.rgb(112, 78, 92), Color.rgb(232, 205, 213)), dp(5))
-                    }
-                } else if (code == "voice") keyboardKey("0", 1f, action = {
-                    currentInputConnection?.commitText(" ", 1)
-                }, swipeUpAction = {
-                    currentInputConnection?.commitText("0", 1)
-                }, swipePreview = "0", microphoneIcon = true, longPressDelayMs = 900L, longPressAction = {
-                    inputMode = InputMode.VOICE
-                    saveInputMode(inputMode)
-                    clearStrokes()
-                    refreshInputView()
-                    if (!recording) toggleDictation()
-                }) else {
-                    val swipeDigit = label.substringBefore("\n").takeIf { it.length == 1 && it[0].isDigit() }
-                    keyboardKey(label, 1f, action = {
-                    when (code) {
-                        "symbols" -> {
-                            strokeNumberMode = true
-                            numberSymbolMode = true
-                            symbolPageIndex = 0
-                            refreshInputView()
-                        }
-                        " " -> segmentStroke()
-                        else -> if (code in listOf("h", "s", "p", "n", "z", "*")) appendStroke(code) else currentInputConnection?.commitText(code, 1)
-                    }
-                    }, swipeUpAction = swipeDigit?.let { digit ->
-                        { currentInputConnection?.commitText(digit, 1) }
-                    }, swipePreview = swipeDigit, strokeIconCode = code.takeIf {
-                        it in listOf("h", "s", "p", "n", "z")
-                    }, graphicCode = code.takeIf {
-                        it in listOf("*", ":", ";", " ", "symbols")
-                    })
-                }
-                key.textSize = if (code == "voice") 10f else 17f
-                // dp(1) on every side gives a uniform ~2dp gap both ways
-                // (keys stay clearly separated) and puts as much of the
-                // reclaimed margin as possible into visible key size, not
-                // new padding. The action rail's vertical margin is kept at
-                // the same dp(1)/dp(1) below so row top/bottom edges still
-                // land exactly together across both columns.
-                key.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
-                    setMargins(dp(1), dp(1), dp(1), dp(1))
-                }
-                row.addView(key)
-            }
-            grid.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        }
-        body.addView(grid, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.65f))
-
-        val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = android.view.Gravity.CENTER }
-        listOf("←" to { deleteStroke() }, "↵" to { sendEnterKey() }, "清除" to { clearStrokes() }, "123" to {
-            strokeNumberMode = true
-            numberSymbolMode = false
-            symbolPageIndex = 0
-            refreshInputView()
-        }).forEach { (label, action) ->
-            actions.addView(keyboardKey(label, 1f, action, repeatOnLongPress = label == "←", repeatAction = action,
-                graphicActionCode = label).apply {
-                textSize = if (label == "←" || label == "↵") 30f else 17f
-                // Vertical margin matches the grid keys' dp(1)/dp(1) exactly
-                // so every row's top/bottom edge lines up across both
-                // columns; horizontal margin is independent (single column).
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply {
-                    setMargins(dp(1), dp(1), dp(1), dp(1))
-                }
-                background = roundedButton(Color.rgb(153, 26, 40), dp(5))
-            })
-        }
-        body.addView(actions, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.19f))
-        root.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        // Rebuilds caused by switching back from the numeric panel must restore
-        // both the visible code and its candidates from the retained buffer.
-        if (strokeCode.isNotEmpty()) {
-            strokePreview?.text = displayStrokeCode(strokeCode)
-            refreshStrokeCandidates(strokeCode)
-        }
-        return root
-    }
-
-    /** Numeric/symbol quick panel; pending stroke input is intentionally preserved. */
-    private fun buildStrokeNumberView(): View {
-        refreshLanguage()
-        val root = SwipeModeContainer(this) { direction -> swipeInputMode(direction) }.apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
-            minimumHeight = dp(300)
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-            setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
-        }
-        val header = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
-        header.addView(buildBrandView().apply { setPadding(dp(8), 0, 0, 0) }, LinearLayout.LayoutParams(0, dp(38), 1f))
-        header.addView(buildModeToggle(), LinearLayout.LayoutParams(dp(240), dp(38)))
-        // This panel's own root padding (8dp) is narrower than the voice panel's
-        // (16dp). Compensate with margins so the header/toggle still land at the
-        // same canonical 16dp/8dp inset as every other panel.
-        root.addView(header, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38)).apply {
-            marginStart = dp(8)
-            marginEnd = dp(8)
-        })
-
-        // Backspace/Enter/Voice/Return/Symbols stay in Chinese regardless of UI
-        // language: they're functional keys on the number/symbol panel, not
-        // content the user is composing.
-        val rows = if (numberSymbolMode) {
-            val page = numberPanelSymbolPages[symbolPageIndex.coerceIn(numberPanelSymbolPages.indices)]
-            listOf(
-                page.subList(0, 4) + "退格",
-                page.subList(4, 8) + "回车",
-                page.subList(8, 12) + "语音",
-                listOf("▲", "${symbolPageIndex + 1}/${numberPanelSymbolPages.size}", "▼", "数字", "返回"),
-            )
-        } else {
-            listOf(
-                listOf("@", "1", "2", "3", "退格"),
-                listOf(":", "4", "5", "6", "回车"),
-                listOf(",", "7", "8", "9", "语音"),
-                // "0" sits directly under "8", flanked by +/. — the same
-                // layout convention as a phone dial pad's "* 0 #" row.
-                listOf("+", "0", ".", "符号", "返回"),
-            )
-        }
-        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        rows.forEachIndexed { rowIndex, rowItems ->
-            val row = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
-            rowItems.forEachIndexed { index, label ->
-                val isAction = index == rowItems.lastIndex
-                val action: () -> Unit = when {
-                    rowIndex == 0 && isAction -> ({ deleteBackward() })
-                    rowIndex == 1 && isAction -> ({ sendEnterKey() })
-                    rowIndex == 2 && isAction -> ({
-                        inputMode = InputMode.VOICE
-                        saveInputMode(inputMode)
-                        strokeNumberMode = false
-                        numberSymbolMode = false
-                        symbolPageIndex = 0
-                        refreshInputView()
-                    })
-                    // Symbol-page navigation only replaces row 3's first three
-                    // cells (previously "+ - .") while in symbol mode; the
-                    // middle cell is just a page indicator, not clickable.
-                    rowIndex == 3 && index == 0 && numberSymbolMode -> ({
-                        symbolPageIndex = (symbolPageIndex - 1 + numberPanelSymbolPages.size) % numberPanelSymbolPages.size
-                        refreshInputView()
-                    })
-                    rowIndex == 3 && index == 1 && numberSymbolMode -> ({})
-                    rowIndex == 3 && index == 2 && numberSymbolMode -> ({
-                        symbolPageIndex = (symbolPageIndex + 1) % numberPanelSymbolPages.size
-                        refreshInputView()
-                    })
-                    rowIndex == 3 && index == 3 -> ({
-                        numberSymbolMode = !numberSymbolMode
-                        symbolPageIndex = 0
-                        refreshInputView()
-                    })
-                    rowIndex == 3 && isAction -> ({
-                        strokeNumberMode = false
-                        numberSymbolMode = false
-                        symbolPageIndex = 0
-                        refreshInputView()
-                    })
-                    else -> ({ currentInputConnection?.commitText(label, 1) })
-                }
-                row.addView(keyboardKey(label, 1f, action, repeatOnLongPress = rowIndex == 0 && isAction, repeatAction = action).apply {
-                    textSize = if (isAction) 15f else 20f
-                    if (isAction) background = roundedButton(Color.rgb(153, 26, 40), dp(7))
-                })
-            }
-            body.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        }
-        root.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        return root
-    }
-
-    private fun appendStroke(stroke: String) {
-        if (strokeCode.length >= 32) return
-        if (strokeCode.isEmpty()) {
-            phraseQueryEpoch++
-            lastStrokeCandidates = emptyList()
-            renderCandidateRow(emptyList())
-        }
-        strokeCode += stroke
-        updateStrokePreview()
-        refreshStrokeCandidates(strokeCode)
-    }
-
-    /** Marks the current character as a word segment without committing it yet. */
-    private fun segmentStroke() {
-        if (strokeCode.isEmpty()) return
-        val candidate = lastStrokeCandidates.firstOrNull() ?: return
-        wordSegments.add(candidate)
-        strokeCode = ""
-        strokeQueryEpoch++
-        lastStrokeCandidates = emptyList()
-        updateStrokePreview()
-        renderCandidateRow(emptyList())
-    }
-
-    private fun updateStrokePreview() {
-        // Plain "+" concatenation on a CharSequence would call toString() and
-        // drop the ImageSpan the 5th stroke relies on — TextUtils.concat()
-        // preserves spans across both pieces.
-        strokePreview?.text = android.text.TextUtils.concat(wordSegments.joinToString(""), displayStrokeCode(strokeCode))
-        updateClearStrokeButtonVisibility()
-    }
-
-    /** Only shows the encode row's "✕" once there's actually something to clear — otherwise it just sat there doing nothing. */
-    private fun updateClearStrokeButtonVisibility() {
-        clearStrokeButton?.visibility = if (strokeCode.isEmpty() && wordSegments.isEmpty()) View.GONE else View.VISIBLE
-    }
-
-    private fun refreshStrokeCandidates(code: String) {
-        val query = ++strokeQueryEpoch
-        strokeRepository.searchAsync(code) { result ->
-            if (query != strokeQueryEpoch || inputMode != InputMode.STROKE) return@searchAsync
-            lastStrokeCandidates = result
-            renderCandidateRow(result)
-        }
-    }
-
-    /**
-     * Renders the stroke candidate row: a leading "commit the whole word"
-     * button for any segments marked via 分词 (if present), followed by the
-     * single-character candidates for the character currently being typed.
-     */
-    private fun renderCandidateRow(strokeMatches: List<String>) {
-        val specs = mutableListOf<CandidateSpec>()
-        // The very first candidate shown — whichever one that is — is
-        // highlighted in the same red as the right-hand action rail, since
-        // it's what a bare space/enter would commit.
-        var firstCandidate = true
-        if (wordSegments.isNotEmpty()) {
-            val word = wordSegments.joinToString("")
-            val displayWord = outputScript(word)
-            val wordWidth = dp((displayWord.codePointCount(0, displayWord.length) * 22 + 16).coerceAtLeast(46))
-            specs.add(CandidateSpec(displayWord, firstCandidate, wordWidth) { commitWord(word) })
-            firstCandidate = false
-        }
-        strokeMatches.forEach { candidate ->
-            val displayCandidate = outputScript(candidate)
-            specs.add(CandidateSpec(displayCandidate, firstCandidate, dp(38)) { commitStrokeCandidate(candidate) })
-            firstCandidate = false
-        }
-        populateCandidateRow(specs)
-        candidateOverlayEntries = specs.map { it.label to it.action }
-    }
-
-    /** One candidate slot's content, independent of whatever View (if any) ends up showing it — see populateCandidateRow(). */
-    private data class CandidateSpec(val label: String, val isFirst: Boolean, val widthPx: Int, val action: () -> Unit)
-
-    /**
-     * Repopulates strokeCandidates with [specs] by reusing existing child
-     * views in place — retexting/rewidthing/rebinding the click target of
-     * whatever's already sitting at each index — instead of this row's old
-     * removeAllViews()-then-addView()-every-candidate approach. Rebuilding
-     * up to MAX_CANDIDATES real keyboardKey()-backed Views (a background
-     * drawable allocated then immediately discarded, plus a full touch-
-     * listener closure with long-press/swipe-retarget plumbing this row
-     * never uses) on literally every keystroke is the actual source of
-     * candidate-row lag on a slow device, not the async dictionary lookup
-     * feeding it — this call site is on the hot path (every stroke and
-     * every phrase-association refresh), so only the surplus or shortfall
-     * between the previous and new candidate count now creates or removes
-     * a View at all.
-     */
-    private fun populateCandidateRow(specs: List<CandidateSpec>) {
-        val row = strokeCandidates ?: return
-        specs.forEachIndexed { index, spec ->
-            when (val existing = row.getChildAt(index)) {
-                is TextView -> {
-                    existing.text = spec.label
-                    existing.setOnClickListener { spec.action() }
-                    styleCandidateFirstState(existing, spec.isFirst)
-                    val params = existing.layoutParams as LinearLayout.LayoutParams
-                    if (params.width != spec.widthPx) {
-                        params.width = spec.widthPx
-                        existing.layoutParams = params
-                    }
-                }
-                else -> row.addView(
-                    candidateItemView(spec.label, spec.isFirst, action = spec.action),
-                    LinearLayout.LayoutParams(spec.widthPx, ViewGroup.LayoutParams.MATCH_PARENT),
-                )
-            }
-        }
-        while (row.childCount > specs.size) {
-            row.removeViewAt(row.childCount - 1)
-        }
-    }
-
     /**
      * The selected/first candidate is marked by color+weight only (the same
      * red as the right-hand action rail's ←/↵/清除/123 keys, bold) — no
@@ -1697,7 +1210,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * skipping the isFirst==false case) matters once populateCandidateRow()
      * can reuse a view that used to be first-candidate for one that isn't.
      */
-    private fun styleCandidateFirstState(view: TextView, isFirst: Boolean) {
+    internal fun styleCandidateFirstState(view: TextView, isFirst: Boolean) {
         if (isFirst) {
             // Same red as the action rail's own background
             // (Color.rgb(153, 26, 40)), brightened a touch for dark
@@ -1718,7 +1231,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * buttons. Height always comes from the parent row (MATCH_PARENT) so it
      * can never itself grow the fixed 36dp candidate row.
      */
-    private fun candidateItemView(
+    internal fun candidateItemView(
         label: String,
         isFirst: Boolean,
         onLongPress: (() -> Unit)? = null,
@@ -1743,7 +1256,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * the existing panel without resizing or displacing it, matching "不允许
      * 推动下方按键或改变键盘高度".
      */
-    private fun showCandidateOverlay(anchor: View) {
+    internal fun showCandidateOverlay(anchor: View) {
         if (candidateOverlayEntries.isEmpty()) return
         var activePopup: android.widget.PopupWindow? = null
         val content = LinearLayout(this).apply {
@@ -1795,43 +1308,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         popup.isOutsideTouchable = true
         popup.elevation = dp(8).toFloat()
         popup.showAsDropDown(anchor, -anchor.left, dp(2))
-    }
-
-    private fun deleteStroke() {
-        if (strokeCode.isNotEmpty()) {
-            strokeCode = strokeCode.dropLast(1)
-            strokeQueryEpoch++
-            updateStrokePreview()
-            if (strokeCode.isNotEmpty()) {
-                appendStroke("")
-            } else {
-                lastStrokeCandidates = emptyList()
-                renderCandidateRow(emptyList())
-            }
-        } else if (wordSegments.isNotEmpty()) {
-            wordSegments.removeAt(wordSegments.lastIndex)
-            updateStrokePreview()
-            renderCandidateRow(emptyList())
-        } else {
-            deleteBackward()
-            if (confirmedText.isNotEmpty()) {
-                confirmedText = confirmedText.dropLast(1)
-                phraseQueryEpoch++
-                refreshAssociations()
-            } else {
-                strokeCandidates?.removeAllViews()
-            }
-        }
-    }
-
-    private fun clearStrokes() {
-        strokeCode = ""
-        strokeQueryEpoch++
-        wordSegments.clear()
-        lastStrokeCandidates = emptyList()
-        strokePreview?.text = ""
-        strokeCandidates?.removeAllViews()
-        updateClearStrokeButtonVisibility()
     }
 
     /**
@@ -2405,68 +1881,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     }
 
-    /** Commits the current character together with any segments already marked via 分词. */
-    private fun commitStrokeCandidate(candidate: String) {
-        // Picking anything other than the top-ranked result is a correction
-        // — learn it, so this code favors `candidate` from now on. Picking
-        // the top result needs no recording: it's already where it should be.
-        if (OpenLessAndroidPreferences.strokeUsageEnabled(this) &&
-            strokeCode.isNotEmpty() && candidate != lastStrokeCandidates.firstOrNull()
-        ) {
-            strokeRepository.recordPersonalPick(strokeCode, candidate)
-        }
-        commitWord((wordSegments + candidate).joinToString(""))
-    }
-
-    private fun commitWord(word: String) {
-        if (word.isEmpty() || isSensitiveField(currentInputEditorInfo)) return
-        val connection = currentInputConnection ?: return
-        val contextBeforeCommit = confirmedText.takeLast(MAX_ASSOCIATION_CONTEXT)
-        if (!connection.commitText(outputScript(word), 1)) return
-        if (OpenLessAndroidPreferences.strokeUsageEnabled(this)) {
-            phraseRepository.recordUsage(contextBeforeCommit, word)
-        }
-        confirmedText = (confirmedText + word).takeLast(MAX_ASSOCIATION_CONTEXT)
-        clearStrokes()
-        refreshAssociations()
-    }
-
-    private fun refreshAssociations() {
-        if (!OpenLessAndroidPreferences.strokeAssociationEnabled(this)) {
-            populateCandidateRow(emptyList())
-            candidateOverlayEntries = emptyList()
-            return
-        }
-        val context = confirmedText.takeLast(MAX_ASSOCIATION_CONTEXT)
-        val query = ++phraseQueryEpoch
-        if (context.isEmpty()) return
-        phraseRepository.searchAsync(context) { result ->
-            if (query != phraseQueryEpoch || inputMode != InputMode.STROKE || confirmedText.takeLast(MAX_ASSOCIATION_CONTEXT) != context) return@searchAsync
-            val specs = result.mapIndexed { index, candidate ->
-                val matchedPrefix = candidate.matchedPrefix.ifEmpty { context }
-                val displayText = outputScript(candidate.text)
-                val candidateWidth = dp((displayText.codePointCount(0, displayText.length) * 22 + 16).coerceAtLeast(46))
-                CandidateSpec(displayText, index == 0, candidateWidth) { commitAssociation(candidate.text, matchedPrefix) }
-            }
-            populateCandidateRow(specs)
-            candidateOverlayEntries = specs.map { it.label to it.action }
-        }
-    }
-
-    private fun commitAssociation(displayText: String, matchedContext: String) {
-        if (isSensitiveField(currentInputEditorInfo) || !displayText.startsWith(matchedContext)) return
-        val suffix = displayText.removePrefix(matchedContext)
-        val connection = currentInputConnection ?: return
-        if (suffix.isNotEmpty() && !connection.commitText(outputScript(suffix), 1)) return
-        if (OpenLessAndroidPreferences.strokeUsageEnabled(this)) {
-            phraseRepository.recordUsage(matchedContext, displayText)
-        }
-        confirmedText = (confirmedText + suffix).takeLast(MAX_ASSOCIATION_CONTEXT)
-        clearStrokes()
-        refreshAssociations()
-    }
-
-    private fun keyboardKey(
+    internal fun keyboardKey(
         label: String,
         weight: Float,
         action: () -> Unit = {},
@@ -3227,7 +2642,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * when there's a real OS-level selection this commits an empty string instead,
      * which every InputConnection implementation replaces the selection with.
      */
-    private fun deleteBackward() {
+    internal fun deleteBackward() {
         val connection = currentInputConnection ?: return
         val selected = connection.getSelectedText(0)
         // Consumed by the very next invalidateDictationResultIfTextChanged()
@@ -3244,7 +2659,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     }
 
-    private fun sendEnterKey() {
+    internal fun sendEnterKey() {
         currentInputConnection?.sendKeyEvent(android.view.KeyEvent(
             android.view.KeyEvent.ACTION_DOWN,
             android.view.KeyEvent.KEYCODE_ENTER,
@@ -3260,19 +2675,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         restoreInputMode()
         restoreScriptPreference()
         refreshLanguage()
-        strokeNumberMode = false
-        numberSymbolMode = false
-        symbolPageIndex = 0
+        strokeController.resetForNewInputSession()
         englishLayer = EnglishLayer.LETTERS
         englishComposingWord.clear()
         startRuntimeService()
         sessionEpoch++
-        confirmedText = ""
-        phraseQueryEpoch++
-        strokeCode = ""
-        wordSegments.clear()
-        lastStrokeCandidates = emptyList()
-        updateClearStrokeButtonVisibility()
         recording = false
         processing = false
         // A dictation result belongs to the editor it was typed into; carrying
@@ -3349,7 +2756,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         invalidateDictationResultIfTextChanged()
     }
 
-    private fun toggleDictation() {
+    internal fun toggleDictation() {
         if (isSensitiveField(currentInputEditorInfo)) {
             updateStatus("敏感字段，禁止听写")
             return
@@ -3634,7 +3041,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         updateStatus(message)
     }
 
-    private fun isSensitiveField(attribute: EditorInfo?): Boolean {
+    internal fun isSensitiveField(attribute: EditorInfo?): Boolean {
         val inputType = attribute?.inputType ?: return false
         val variation = inputType and InputType.TYPE_MASK_VARIATION
         return (inputType and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_NUMBER ||
@@ -3890,7 +3297,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     }
 
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+    internal fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     /**
      * Purely visual 0.98x press-scale via StateListAnimator, which reacts to
@@ -3915,7 +3322,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     }
 
-    private fun roundedButton(color: Int, radius: Int): android.graphics.drawable.Drawable {
+    internal fun roundedButton(color: Int, radius: Int): android.graphics.drawable.Drawable {
         val lowerEdge = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = radius.toFloat()
@@ -3943,7 +3350,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // rounded rect a touch lighter than the panel, plus a hairline divider
     // baked in at the fixed 24dp encode/candidate boundary. Since `top`'s
     // height is always exactly dp(60), this offset never drifts.
-    private fun buildEncodeAreaBackground(): android.graphics.drawable.Drawable {
+    internal fun buildEncodeAreaBackground(): android.graphics.drawable.Drawable {
         val panel = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = dp(6).toFloat()
@@ -4045,7 +3452,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * swipe anywhere in the column advances exactly one group, rather than
      * being absorbed as a press/drag on one key.
      */
-    private class SwipeRail(
+    internal class SwipeRail(
         context: android.content.Context,
         private val onSwipe: (Int) -> Unit,
     ) : LinearLayout(context) {
@@ -4105,7 +3512,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * anywhere on the panel dismisses the keyboard entirely, same as any
      * other IME's own hide gesture.
      */
-    private class SwipeModeContainer(
+    internal class SwipeModeContainer(
         context: android.content.Context,
         // Fraction of the container's width, measured from the left edge,
         // where a downward drag never triggers dismiss — the stroke panel's
@@ -4488,7 +3895,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * white, in both themes) and, undecorated, on the clipboard panel's
      * normal/highlighted keys (icon needs to flip with the theme there).
      */
-    private class StrokeActionView(
+    internal class StrokeActionView(
         context: android.content.Context,
         private val actionCode: String,
         private val iconRotation: Float = 0f,
@@ -5334,7 +4741,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     companion object {
-        private const val MAX_ASSOCIATION_CONTEXT = 8
         private const val SILENCE_LEVEL_THRESHOLD = 0.02f
         private const val SILENCE_CHECK_DELAY_MS = 3000L
         private const val BACKEND_HEARTBEAT_INTERVAL_MS = 6000L
