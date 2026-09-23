@@ -25,15 +25,44 @@ internal class StrokePhraseRepository(context: Context) {
     }
     private var loaded = false
 
+    /**
+     * Warm the trie while the IME is idle, same reasoning as
+     * StrokeInputRepository.preloadAsync() — this dictionary is ~220k
+     * phrases (vs. stroke.dict.tsv's much smaller character list), and
+     * every insert() does a linear dedupe-check + a re-sort of up to
+     * NODE_TOP_N candidates at every one of a phrase's up to 8 node
+     * levels, so building it cold has a real, measurable cost (see the
+     * "phrase index ready" log below). Left uncalled until now, so this
+     * cost used to land on whichever word's commit happened to be the
+     * first one to ever need an association in this repository's
+     * lifetime, instead of on IME startup where the user isn't yet
+     * waiting on a result.
+     */
+    fun preloadAsync() {
+        executor.execute { ensureLoaded() }
+    }
+
     fun searchAsync(prefix: String, callback: (List<Candidate>) -> Unit) {
         if (prefix.isEmpty()) return callback(emptyList())
         executor.execute {
+            val startedAt = android.os.SystemClock.elapsedRealtime()
             ensureLoaded()
             val result = (synchronized(cache) { cache[prefix] } ?: findLongestSuffix(prefix).also {
                 synchronized(cache) { cache[prefix] = it }
             }).sortedWith(compareByDescending<Candidate> {
                 it.baseWeight + userFrequency.score(it.matchedPrefix.ifEmpty { prefix }, it.text).toInt()
             })
+            // Temporary-diagnostic-grade, not removed after: cheap (one
+            // log line per commit) and directly answers "is this slow
+            // because of the cold trie build, the query itself, or is it
+            // not finding anything at all" without guessing — see
+            // openless-all/app/android README for how to read it via
+            // logcat while reproducing a report of slow/missing
+            // associations.
+            android.util.Log.d(
+                "OpenLessPhrase",
+                "query prefix=\"$prefix\" results=${result.size} elapsed=${android.os.SystemClock.elapsedRealtime() - startedAt}ms",
+            )
             Handler(Looper.getMainLooper()).post { callback(result) }
         }
     }
@@ -49,17 +78,26 @@ internal class StrokePhraseRepository(context: Context) {
         if (loaded) return
         synchronized(this) {
             if (loaded) return
+            val startedAt = android.os.SystemClock.elapsedRealtime()
+            var entryCount = 0
             runCatching {
                 appContext.assets.open("phrases.dict.tsv").bufferedReader().useLines { lines ->
                     lines.forEach { line ->
                         val parts = line.split('\t', limit = 2)
                         val phrase = parts.getOrNull(0) ?: return@forEach
                         val weight = parts.getOrNull(1)?.toIntOrNull() ?: 0
-                        if (phrase.length in 2..8 && weight > 0) insert(Candidate(phrase, weight, ""))
+                        if (phrase.length in 2..8 && weight > 0) {
+                            insert(Candidate(phrase, weight, ""))
+                            entryCount++
+                        }
                     }
                 }
             }
             loaded = true
+            android.util.Log.i(
+                "OpenLessPhrase",
+                "phrase index ready entries=$entryCount elapsed=${android.os.SystemClock.elapsedRealtime() - startedAt}ms",
+            )
         }
     }
 
