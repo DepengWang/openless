@@ -2767,6 +2767,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             gravity = android.view.Gravity.CENTER
             setTextColor(tone(Color.rgb(245, 245, 245), Color.rgb(30, 30, 34)))
             isClickable = false
+            // A small nudge off dead-center, down toward the digit/symbol
+            // hint's baseline — a plain translationY (not padding) so it's
+            // a pure render-time shift that doesn't touch this view's
+            // measured layout at all.
+            translationY = dp(LETTER_VERTICAL_NUDGE_DP).toFloat()
         }
         return FrameLayout(this).apply {
             tag = baseChar
@@ -2779,12 +2784,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                         text = swipeSymbol
                         textSize = SWIPE_SYMBOL_HINT_TEXT_SIZE_SP
                         gravity = android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL
-                        // Same red as the swipe-up preview bubble's own
-                        // label text (KeyPreviewBubbleView's textPaint) —
-                        // the hint should read as "this is what swiping up
-                        // gives you", so it matches the color of the thing
-                        // it promises rather than the letter beside it.
-                        setTextColor(tone(Color.rgb(190, 45, 60), Color.rgb(153, 26, 40)))
+                        // Muted/secondary, not the same bright/near-black
+                        // tone as the letter — a small top-corner hint
+                        // should read as secondary at a glance, not
+                        // compete with the actual letter for attention.
+                        // (Tried matching the swipe-preview bubble's red
+                        // here — read as less legible at this size than
+                        // the plain gray, so reverted.)
+                        setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(140, 140, 145)))
                         setPadding(0, dp(SWIPE_SYMBOL_HINT_TOP_PADDING_DP), 0, 0)
                         isClickable = false
                     },
@@ -5274,8 +5281,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // it. Small and close to the top by design; tune these two numbers
         // directly. Shared by row1's digits and row2/row3's punctuation so
         // all three rows read as one consistent hint style.
-        private const val SWIPE_SYMBOL_HINT_TEXT_SIZE_SP = 9f
+        private const val SWIPE_SYMBOL_HINT_TEXT_SIZE_SP = 11f
         private const val SWIPE_SYMBOL_HINT_TOP_PADDING_DP = 2
+        // Pure render-time offset (View.translationY), not part of the
+        // letter TextView's own measured layout — see buildEnglishCharKey().
+        private const val LETTER_VERTICAL_NUDGE_DP = 2
         // Same hue family as OpenLessOverlayService's OverlayVisualState
         // (recording/processing), plus a light-green "ready" and an amber
         // "link issue" that overlay doesn't have.
