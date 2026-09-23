@@ -124,6 +124,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // that never show a key preview (voice, clipboard, edit); callers use
     // the safe-call operator so that's a no-op rather than a crash.
     private var keyPreviewOverlay: KeyPreviewOverlay? = null
+    // Top-row swipe-up digit keys (buildEnglishCharKey()'s wrapper -> its
+    // digit), so a swipe-armed drag can retarget across the row the same
+    // way a plain tap-drag already retargets across letters — rebuilt by
+    // addEnglishCharRow() every time the top row is (re)built, since a
+    // shift toggle etc. throws the whole view tree away via
+    // refreshInputView() and would otherwise leave stale View keys behind.
+    private val englishSwipeDigits = HashMap<View, String>()
     private var voiceButton: VoiceButton? = null
     // Silence-detection for the main voice panel: if the mic capture never
     // reports a meaningful level for a while after recording starts, the
@@ -1147,6 +1154,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      *   to).
      */
     private fun addEnglishCharRow(parent: LinearLayout, keys: List<String>, swipeDigits: List<String>? = null) {
+        if (swipeDigits != null) englishSwipeDigits.clear()
         val row = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
         keys.forEachIndexed { index, key ->
             row.addView(buildEnglishCharKey(key, 1f, swipeDigit = swipeDigits?.getOrNull(index)))
@@ -2746,6 +2754,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         return FrameLayout(this).apply {
             tag = baseChar
+            if (swipeDigit != null) englishSwipeDigits[this] = swipeDigit
             letterView.text = charFor(this)
             addView(letterView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             if (swipeDigit != null) {
@@ -2822,6 +2831,30 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 return trackedView
             }
 
+            // Same idea as findTrackTargetAt above, but only among the top
+            // row's own digit-bearing keys (englishSwipeDigits) — once a
+            // swipe is armed, sliding sideways still retargets which digit
+            // release will commit, and showSwipePreview() re-anchors to
+            // that key so the bubble visibly follows the finger instead of
+            // freezing above the key the gesture started on. A generous
+            // vertical band since an armed drag has already moved well
+            // above the row.
+            fun findSwipeTargetAt(rawX: Float, rawY: Float): View {
+                val row = parent as? ViewGroup ?: return trackedView
+                for (index in 0 until row.childCount) {
+                    val sibling = row.getChildAt(index)
+                    if (sibling !in englishSwipeDigits) continue
+                    val loc = IntArray(2)
+                    sibling.getLocationOnScreen(loc)
+                    if (rawX >= loc[0] - dp(6) && rawX < loc[0] + sibling.width + dp(6) &&
+                        rawY >= loc[1] - dp(60) && rawY < loc[1] + sibling.height + dp(24)
+                    ) {
+                        return sibling
+                    }
+                }
+                return trackedView
+            }
+
             setOnTouchListener { view, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
@@ -2848,21 +2881,17 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     MotionEvent.ACTION_MOVE -> {
                         // Swipe-up-for-digit, top row only (swipeDigit !=
                         // null) — same dp(10) arm threshold as
-                        // keyboardKey()'s own swipe handling, but no
-                        // cross-key retargeting: while armed, this key's
-                        // own digit is what release would commit, full
-                        // stop. The stroke grid's rows sit nearly flush
-                        // against each other so a straight swipe can
-                        // genuinely drift into a neighboring row and needs
-                        // retargeting to recover from that; this row has
-                        // normal key spacing, so a plain swipe staying on
-                        // the key it started on is the expected, simpler
-                        // case.
+                        // keyboardKey()'s own swipe handling. Once armed,
+                        // sliding sideways still retargets across the row's
+                        // other digit keys via findSwipeTargetAt (the
+                        // bubble follows the finger to whichever digit is
+                        // now under it), separate from findTrackTargetAt's
+                        // own retargeting used for the un-armed tap case.
                         //
-                        // Live, not a one-way latch: re-evaluated against
-                        // the finger's *current* height every move, not
-                        // just the first time it crosses the threshold —
-                        // dragging back down below it un-arms and falls
+                        // Live, not a one-way latch: armed is re-evaluated
+                        // against the finger's *current* height every move,
+                        // not just the first time it crosses the threshold
+                        // — dragging back down below it un-arms and falls
                         // through to the normal tap-preview/retarget path
                         // below, giving a way to back out of the digit
                         // mid-gesture without lifting the finger.
@@ -2873,7 +2902,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                                 swipePreviewShown = armed
                             }
                             if (swipePreviewShown) {
-                                keyPreviewOverlay?.showSwipePreview(swipeDigit, view)
+                                val target = findSwipeTargetAt(event.rawX, event.rawY)
+                                if (target !== trackedView) trackedView = target
+                                val digit = englishSwipeDigits[trackedView] ?: swipeDigit
+                                keyPreviewOverlay?.showSwipePreview(digit, trackedView)
                                 return@setOnTouchListener true
                             }
                         }
@@ -2885,7 +2917,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                         keyPreviewOverlay?.hide()
                         view.animate().scaleX(1f).scaleY(1f).translationZ(0f).alpha(1f).setDuration(90L).start()
                         if (swipeDigit != null && swipePreviewShown) {
-                            commitEnglishChar(swipeDigit)
+                            commitEnglishChar(englishSwipeDigits[trackedView] ?: swipeDigit)
                         } else {
                             commitEnglishChar(charFor(trackedView))
                         }
