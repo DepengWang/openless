@@ -10,6 +10,7 @@ import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Shader
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.icu.text.Transliterator
 import android.inputmethodservice.InputMethodService
@@ -2748,6 +2749,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         val letterView = TextView(this).apply {
             textSize = 22f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             gravity = android.view.Gravity.CENTER
             setTextColor(tone(Color.rgb(245, 245, 245), Color.rgb(30, 30, 34)))
             isClickable = false
