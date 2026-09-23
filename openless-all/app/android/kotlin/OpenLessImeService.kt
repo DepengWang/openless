@@ -2716,38 +2716,55 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * new dependency). Dragging onto a horizontally adjacent sibling in the
      * same row re-targets the preview and the eventual commit to that key
      * instead (a "sloppy key", same idea as most predictive keyboards).
-     * This is a dedicated builder, not a keyboardKey() variant, precisely
-     * so none of this touch handling can affect any other panel's keys.
-     */
-    /**
+     *
      * @param swipeDigit Top-row letters only (q..p -> 1..0, same mapping
      *   iOS/most Android keyboards use) — swiping up commits this digit
-     *   instead of the letter, exactly like the stroke panel's own
+     *   instead of the letter, same interaction as the stroke panel's own
      *   swipe-up-for-digit keys (see keyboardKey()'s swipeUpAction/
-     *   swipePreview). Shown as a small hint above the letter via the same
-     *   "first line at 0.55x size" convention keyboardKey() already uses
-     *   for any '\n'-containing label — reused here by hand since this
-     *   function builds its own TextView directly rather than going
-     *   through keyboardKey() (it needs its own shift-aware live label and
-     *   cross-key tap-drag retargeting, which keyboardKey() doesn't do).
+     *   swipePreview). Shown as a small standalone hint pinned to the very
+     *   top of the key, NOT a second line of the letter's own text (that
+     *   was the first version of this — a single TextView with "digit\n
+     *   letter" and block-centered gravity, which visibly shoved the
+     *   letter down off-center by about half the digit line's height).
+     *   Two independent views layered in a FrameLayout instead: the letter
+     *   stays exactly where it always was, completely unaffected by
+     *   whether a digit hint exists at all.
+     *
+     *   This is a dedicated builder, not a keyboardKey() variant, precisely
+     *   so none of this touch handling can affect any other panel's keys.
      */
-    private fun buildEnglishCharKey(baseChar: String, weight: Float, swipeDigit: String? = null): TextView {
+    private fun buildEnglishCharKey(baseChar: String, weight: Float, swipeDigit: String? = null): View {
         fun charFor(view: View): String {
             val base = view.tag as? String ?: return ""
             return if (shiftState != ShiftState.OFF && base.length == 1 && base[0].isLetter()) base.uppercase() else base
         }
-        return TextView(this).apply {
-            tag = baseChar
-            text = if (swipeDigit != null) {
-                android.text.SpannableString("$swipeDigit\n${charFor(this)}").apply {
-                    setSpan(android.text.style.RelativeSizeSpan(0.55f), 0, 1, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                }
-            } else {
-                charFor(this)
-            }
+        val letterView = TextView(this).apply {
             textSize = 22f
             gravity = android.view.Gravity.CENTER
             setTextColor(tone(Color.rgb(245, 245, 245), Color.rgb(30, 30, 34)))
+            isClickable = false
+        }
+        return FrameLayout(this).apply {
+            tag = baseChar
+            letterView.text = charFor(this)
+            addView(letterView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            if (swipeDigit != null) {
+                addView(
+                    TextView(this@OpenLessImeService).apply {
+                        text = swipeDigit
+                        textSize = SWIPE_DIGIT_HINT_TEXT_SIZE_SP
+                        gravity = android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL
+                        // Muted/secondary, not the same bright/near-black
+                        // tone as the letter — a small top-corner hint
+                        // should read as secondary at a glance, not
+                        // compete with the actual letter for attention.
+                        setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(140, 140, 145)))
+                        setPadding(0, dp(SWIPE_DIGIT_HINT_TOP_PADDING_DP), 0, 0)
+                        isClickable = false
+                    },
+                    FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, android.view.Gravity.TOP),
+                )
+            }
             background = roundedButton(tone(Color.rgb(52, 52, 54), Color.rgb(255, 255, 255)), dp(5))
             elevation = dp(5).toFloat()
             translationZ = dp(1).toFloat()
@@ -2832,18 +2849,28 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                         // Swipe-up-for-digit, top row only (swipeDigit !=
                         // null) — same dp(10) arm threshold as
                         // keyboardKey()'s own swipe handling, but no
-                        // cross-key retargeting: once armed, this key's own
-                        // digit is what release commits, full stop. The
-                        // stroke grid's rows sit nearly flush against each
-                        // other so a straight swipe can genuinely drift
-                        // into a neighboring row and needs retargeting to
-                        // recover from that; this row has normal key
-                        // spacing, so a plain swipe staying "armed" on the
-                        // key it started on is the expected, simpler case.
+                        // cross-key retargeting: while armed, this key's
+                        // own digit is what release would commit, full
+                        // stop. The stroke grid's rows sit nearly flush
+                        // against each other so a straight swipe can
+                        // genuinely drift into a neighboring row and needs
+                        // retargeting to recover from that; this row has
+                        // normal key spacing, so a plain swipe staying on
+                        // the key it started on is the expected, simpler
+                        // case.
+                        //
+                        // Live, not a one-way latch: re-evaluated against
+                        // the finger's *current* height every move, not
+                        // just the first time it crosses the threshold —
+                        // dragging back down below it un-arms and falls
+                        // through to the normal tap-preview/retarget path
+                        // below, giving a way to back out of the digit
+                        // mid-gesture without lifting the finger.
                         if (swipeDigit != null) {
-                            if (!swipePreviewShown && downY - event.y >= dp(10)) {
+                            val armed = downY - event.y >= dp(10)
+                            if (armed != swipePreviewShown) {
                                 view.parent?.requestDisallowInterceptTouchEvent(true)
-                                swipePreviewShown = true
+                                swipePreviewShown = armed
                             }
                             if (swipePreviewShown) {
                                 keyPreviewOverlay?.showSwipePreview(swipeDigit, view)
@@ -5191,6 +5218,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // keystroke; comfortably more than can fit on screen at once so
         // scrolling actually reveals more real options.
         private const val ENGLISH_CANDIDATE_QUERY_LIMIT = 10
+        // Top-row swipe-up digit hint (buildEnglishCharKey()) — its own
+        // independent TextView pinned to the key's top edge, so these are
+        // absolute sizes, not a ratio of the 22sp letter below it. Small
+        // and close to the top by design; tune these two numbers directly.
+        private const val SWIPE_DIGIT_HINT_TEXT_SIZE_SP = 9f
+        private const val SWIPE_DIGIT_HINT_TOP_PADDING_DP = 2
         // Same hue family as OpenLessOverlayService's OverlayVisualState
         // (recording/processing), plus a light-green "ready" and an amber
         // "link issue" that overlay doesn't have.
