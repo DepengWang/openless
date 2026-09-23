@@ -466,6 +466,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         status = TextView(this).apply {
             text = displayStatus(currentMessage)
             textSize = 16f
+            if (englishUi) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             gravity = android.view.Gravity.CENTER
             setTextColor(statusNormalColor)
             setPadding(0, dp(6), 0, dp(4))
@@ -577,7 +578,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         voiceLinkWarning = TextView(this).apply {
             text = ui("检测到麦克风无声音，点击重启应用", "No mic audio detected — tap to restart the app")
             textSize = 16f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            if (englishUi) {
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            } else {
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+            }
             gravity = android.view.Gravity.CENTER
             setTextColor(Color.rgb(255, 90, 90))
             setPadding(dp(12), dp(8), dp(12), 0)
@@ -663,7 +668,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val returnLabel = if (englishUi) "Return" else "换行"
         val returnButton = keyboardKey(returnLabel, 1f, action = { sendEnterKey() }).apply {
             textSize = if (englishUi) 18f else 20f
-            if (!englishUi) setTypeface(typeface, android.graphics.Typeface.BOLD)
+            if (englishUi) {
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            } else {
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+            }
             contentDescription = ui("回车", "Return")
             layoutParams = LinearLayout.LayoutParams(dp(120), footerButtonHeight)
             flattenFooterButton(this, footerButtonHeight)
@@ -2038,7 +2047,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 textSize = 14f
                 gravity = android.view.Gravity.CENTER
                 setTextColor(if (selected) Color.rgb(153, 26, 40) else tone(Color.rgb(190, 190, 190), Color.rgb(140, 140, 145)))
-                setTypeface(typeface, if (selected) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+                if (englishUi) {
+                    typeface = Typeface.create("sans-serif-medium", if (selected) Typeface.BOLD else Typeface.NORMAL)
+                } else {
+                    setTypeface(typeface, if (selected) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+                }
                 setOnClickListener {
                     clipboardHistoryCategory = category
                     refreshInputView()
@@ -2081,6 +2094,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             listContainer.addView(TextView(this).apply {
                 text = ui("暂无粘贴板记录", "No clipboard history yet")
                 textSize = 14f
+                if (englishUi) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 gravity = android.view.Gravity.CENTER
                 setTextColor(tone(Color.rgb(140, 140, 140), Color.rgb(140, 140, 145)))
                 setPadding(0, dp(20), 0, 0)
