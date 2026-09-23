@@ -2779,11 +2779,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                         text = swipeSymbol
                         textSize = SWIPE_SYMBOL_HINT_TEXT_SIZE_SP
                         gravity = android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL
-                        // Muted/secondary, not the same bright/near-black
-                        // tone as the letter — a small top-corner hint
-                        // should read as secondary at a glance, not
-                        // compete with the actual letter for attention.
-                        setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(140, 140, 145)))
+                        // Same red as the swipe-up preview bubble's own
+                        // label text (KeyPreviewBubbleView's textPaint) —
+                        // the hint should read as "this is what swiping up
+                        // gives you", so it matches the color of the thing
+                        // it promises rather than the letter beside it.
+                        setTextColor(tone(Color.rgb(190, 45, 60), Color.rgb(153, 26, 40)))
                         setPadding(0, dp(SWIPE_SYMBOL_HINT_TOP_PADDING_DP), 0, 0)
                         isClickable = false
                     },
