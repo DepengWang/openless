@@ -224,6 +224,8 @@ Every item below is one more layer sedimented into a default — a capability yo
 
 Android is a Tauri mobile host with a native `InputMethodService` layered on top. The Android build currently provides:
 
+The fork's Android architecture, user guide, screenshots, and commit-era feature timeline are documented in [Android IME: architecture, features, and fork timeline](docs/android-ime.md).
+
 - Four input modes: voice, stroke, clipboard, and English keyboard.
 - Offline Chinese stroke dictionaries, frequency-ranked candidates, phrase association, simplified/traditional output, number/symbol panels, and per-target-app local personalization.
 - Persistent clipboard history with recent/text/number/link filters, favorites, deletion, direct insertion, selection expansion, voice replacement, and correction actions.
@@ -245,7 +247,8 @@ This section is the current handoff summary for continued Android work. The deta
 - **English keyboard**: swipe-up-to-digit on the top row (q..p → 1..0) extended to swipe-up-to-symbol on the letter rows below (a..l → `@#$%&-+()`, z..m → `:;'.,!?`), same gesture/preview-bubble mechanism as the stroke panel's own digit shortcuts; long-press-to-forget on an English candidate; `sans-serif-medium` applied to the letter grid and the bottom-row `123`/`Return` keys.
 - **Stroke candidate/association performance**: the candidate row now reuses existing Views instead of rebuilding all of them on every keystroke (`populateCandidateRow()`); the ~220k-entry phrase-association dictionary is now preloaded at IME startup instead of loading cold on the first commit that needs it; its LRU cache is keyed by the suffix substrings actually looked up (not the full rolling context, which almost never recurred) with a larger capacity; its trie build now sorts each node once after loading instead of re-sorting on every insert; both personal-frequency stores (`StrokeUserFrequency`/`EnglishUserFrequency`) skip the expensive trim check unless a genuinely new entry was just recorded.
 - **First `OpenLessImeService.kt` split**: `StrokeInputController` now owns everything specific to the stroke panel (encode entry, candidate/association query+render+commit, the number/symbol sub-panel) — a pure relocation, no logic changes. `OpenLessImeService.kt` dropped from ~5300 to ~4857 lines; the stroke panel item in the Roadmap split goal below is done, voice/clipboard/English panels are not yet split.
-- None of the above has had a full real-device gesture regression pass yet (build + install verified only) — see `openless-all/app/android/README.md`'s "2026-09-24" section for the specific scenarios still needing manual verification.
+- **Voice panel status UI**: a small discoverability/confirmation hint for the swipe-up-to-Raw gesture now sits under the mic icon (idle: teaches the gesture; Raw-armed recording/thinking: confirms it in the same orange as every other Raw indicator; ordinary recording/thinking: hidden entirely). Also fixed a real bug where the status line could go permanently blank — `onCapsuleStateChanged()`'s `message ?: fallback` only guarded against a literal null, not a blank-but-non-null message from the native side — and generalized a delayed "settle back to Tap to speak" (`scheduleRevertToIdle()`, 2s, token-guarded) to cover commit, edit, undo, and redo alike, not just the original commit path.
+- None of the above has had a full real-device gesture regression pass yet (build + install verified only) — see `openless-all/app/android/README.md`'s "2026-09-24" sections for the specific scenarios still needing manual verification.
 
 #### Current implementation state
 
