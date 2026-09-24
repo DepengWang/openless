@@ -571,6 +571,7 @@ mod wire_contract_tests {
             value,
             serde_json::json!({
                 "id": "qwen3-asr-0.6b",
+                "runtime": "generic",
                 "hfRepo": "Qwen/Qwen3-ASR-0.6B",
                 "displayName": "Qwen3 ASR 0.6B",
                 "family": "qwen3_asr",
