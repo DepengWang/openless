@@ -3018,6 +3018,19 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     }
 
+    /**
+     * `message ?: fallback` only substitutes for a literal null — a native
+     * capsule-state event carrying a blank-but-non-null message (empty
+     * string, or whitespace) would slip through that check unchanged and
+     * land the status line on invisible/blank text, with nothing left to
+     * ever correct it (see onCapsuleStateChanged()'s "idle" case, which
+     * this guards against overwriting setState()'s own delayed "done" ->
+     * "idle" revert with a blank message that then never gets fixed, since
+     * state has already moved off "done" by the time that revert's own
+     * guard checks it).
+     */
+    private fun String?.orDefault(fallback: String): String = this?.takeIf { it.isNotBlank() } ?: fallback
+
     override fun onCapsuleStateChanged(state: String, message: String?, level: Float) {
         voiceButton?.audioLevel = level.coerceIn(0f, 1f)
         when (state) {
@@ -3066,21 +3079,21 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             "done" -> {
                 recording = false
                 processing = false
-                setState("done", message ?: "已完成")
+                setState("done", message.orDefault("已完成"))
                 performKeyHaptic()
             }
             "cancelled" -> {
                 recording = false
                 processing = false
-                setState("idle", message ?: "已取消")
+                setState("idle", message.orDefault("已取消"))
             }
             "error" -> {
                 recording = false
                 processing = false
-                setState("error", message ?: "识别失败")
+                setState("error", message.orDefault("识别失败"))
             }
             "idle" -> if (!recording) {
-                setState("idle", message ?: "点击开始说话")
+                setState("idle", message.orDefault("点击开始说话"))
             }
         }
     }
