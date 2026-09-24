@@ -33,11 +33,15 @@ Tauri host release tags (created by an admin only):
   suffix for existing releases, but new releases use the `Beta.<N>` form.
 
 A dated build may carry SemVer build metadata in the synchronized application
-version, for example `2.0.0-Beta.2+20260924`. Keep its release tag in the existing
+version, for example `2.0.0-Beta.2+build.20260924`. Keep its release tag in the existing
 `v2.0.0-Beta.2-tauri` format: released clients only recognize a numeric `Beta.N`
 tag suffix. Include the complete application version in the release title and
 updater manifests. Build metadata does not advance SemVer precedence; each new
-public Beta still increments `N`.
+public Beta still increments `N`. Use the `build.` prefix for date metadata:
+Tauri 2.10.1 otherwise maps a numeric date to the fourth Windows product-version
+component, which is a 16-bit field. The full version still appears in the app and
+updater manifest; NSIS uses its supported numeric fallback for file metadata.
+See [the pinned NSIS bundler](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.10.1/crates/tauri-bundler/src/bundle/windows/nsis/mod.rs#L149).
 
 These tags publish the macOS, Windows, and Android Tauri hosts. Linux is not part of the Tauri matrix. Its independent host is built by `.github/workflows/release-linux-egui.yml`, which accepts an existing `release_tag` and writes `latest-linux-egui-x86_64.json`. This workflow has no automatic tag trigger; Linux publication requires its own product acceptance below.
 
