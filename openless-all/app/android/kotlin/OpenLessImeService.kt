@@ -462,11 +462,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val rawModeTooltip = ui("Raw模式，语音原样转写，不做AI润色整理", "Raw mode, verbatim transcription without AI polishing")
         val voiceRawHint = TextView(this).apply {
             text = ui("上滑开启 Raw 模式", "Swipe up for Raw")
-            textSize = 14f
+            textSize = 12f
             if (englishUi) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             gravity = android.view.Gravity.CENTER
             setTextColor(Color.argb((0.8f * 255).toInt(), 0xB0, 0xB0, 0xB0))
-            setPadding(0, dp(8), 0, 0)
+            setPadding(0, dp(4), 0, 0)
             isClickable = true
             setOnClickListener { Toast.makeText(this@OpenLessImeService, rawModeTooltip, Toast.LENGTH_SHORT).show() }
             setOnLongClickListener {
