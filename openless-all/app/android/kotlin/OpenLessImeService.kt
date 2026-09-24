@@ -544,14 +544,21 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 false
             }
         }
-        val buttonHolder = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = android.view.Gravity.CENTER
+        // FrameLayout, not LinearLayout: voiceButton is centered purely by
+        // its own Gravity.CENTER, independent of whatever else shares this
+        // holder — a LinearLayout would instead center the *whole stack* of
+        // children as one block, which pushed the mic icon itself upward
+        // (away from the status line above) once voiceRawHint became a
+        // permanently-participating sibling instead of an occasional one.
+        // voiceRawHint/voiceLinkWarning use that same CENTER anchor plus a
+        // fixed topMargin, so they sit a fixed distance below the mic
+        // without perturbing its own position at all.
+        val buttonHolder = FrameLayout(this).apply {
             setBackgroundColor(Color.TRANSPARENT)
             clipChildren = false
             clipToPadding = false
         }
-        buttonHolder.addView(voiceButton!!, LinearLayout.LayoutParams(dp(176), dp(72)))
+        buttonHolder.addView(voiceButton!!, FrameLayout.LayoutParams(dp(176), dp(72), android.view.Gravity.CENTER))
 
         // Small companion hint under the mic icon — deliberately muted (low
         // size + alpha) so it doesn't compete with "Tap to speak" for
@@ -570,7 +577,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             if (englishUi) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             gravity = android.view.Gravity.CENTER
             setTextColor(rawModeHintColor())
-            setPadding(0, dp(1), 0, 0)
             visibility = if (rawModeHintVisible()) View.VISIBLE else View.GONE
             isClickable = true
             setOnClickListener { Toast.makeText(this@OpenLessImeService, rawModeTooltip, Toast.LENGTH_SHORT).show() }
@@ -579,7 +585,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 true
             }
         }
-        buttonHolder.addView(voiceRawHint, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        buttonHolder.addView(
+            voiceRawHint,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER).apply {
+                // Half the mic button's own dp(72) height, plus a small gap.
+                topMargin = dp(44)
+            },
+        )
         voiceLinkWarning = TextView(this).apply {
             text = ui("检测到麦克风无声音，点击重启应用", "No mic audio detected — tap to restart the app")
             textSize = 16f
@@ -590,12 +602,20 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             }
             gravity = android.view.Gravity.CENTER
             setTextColor(Color.rgb(255, 90, 90))
-            setPadding(dp(12), dp(8), dp(12), 0)
+            setPadding(dp(12), 0, dp(12), 0)
             visibility = View.GONE
             isClickable = true
             setOnClickListener { restartApp() }
         }
-        buttonHolder.addView(voiceLinkWarning, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        buttonHolder.addView(
+            voiceLinkWarning,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER).apply {
+                // Below where the Raw hint sits, so the two never overlap on
+                // the rare occasion both are visible at once (Raw-armed
+                // recording with a simultaneous mic-silence warning).
+                topMargin = dp(70)
+            },
+        )
         panel.addView(buttonHolder, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             0,
