@@ -671,7 +671,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         view.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = (height / 2).toFloat()
-            setColor(tone(Color.rgb(72, 72, 76), Color.rgb(225, 225, 228)))
+            setColor(tone(Color.rgb(60, 60, 60), Color.rgb(225, 225, 228)))
         }
     }
 
@@ -3202,7 +3202,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             setTextColor(tone(Color.WHITE, Color.rgb(40, 40, 44)))
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(tone(Color.rgb(72, 72, 76), Color.rgb(225, 225, 228)))
+                setColor(tone(Color.rgb(60, 60, 60), Color.rgb(225, 225, 228)))
             }
             contentDescription = description
             setOnClickListener { action() }
@@ -4652,10 +4652,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
     private class VoiceButton(context: android.content.Context, private val darkTheme: Boolean) : View(context) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        // One shade lighter than the old rgb(54,54,54) — the panel's own
-        // dark-theme background is rgb(48,48,48), and the old value only
-        // read ~6/255 lighter than that, close enough to blend in.
-        private val idlePillColor = if (darkTheme) Color.rgb(72, 72, 76) else Color.rgb(225, 225, 228)
+        // Panel's own dark-theme background is rgb(48,48,48); this reads
+        // 12/255 lighter (tried 6 — too subtle to tell apart from the panel
+        // — then 24, which read as too strong; 12 is the settled value).
+        private val idlePillColor = if (darkTheme) Color.rgb(60, 60, 60) else Color.rgb(225, 225, 228)
         private val idleIconColor = if (darkTheme) Color.WHITE else Color.rgb(60, 60, 64)
         // Match the raw-mode recording indicator exactly, so the swipe-up
         // preview and the resulting raw recording state use one consistent
