@@ -64,6 +64,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     internal var inputMode = InputMode.VOICE
     private var englishLayer = EnglishLayer.LETTERS
+    // UI-only for now: long-pressing the space bar just flips this label
+    // back and forth ("拼音输入" <-> "英文输入") so the affordance can be
+    // reviewed before an actual Pinyin input mode exists to switch to —
+    // see buildKeyboardView()'s spaceButton. true = currently showing
+    // "拼音输入" (the default/starting label).
+    private var spaceHintShowsPinyin = true
     // The word currently being typed on the English keyboard — appended to
     // per letter, trimmed per backspace, cleared at every word boundary
     // (space/return/punctuation/candidate tap/mode or panel switch). Never
@@ -1172,13 +1178,41 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val spaceButton = keyboardKey("", 5f, action = {
             finalizeEnglishComposingWord()
             currentInputConnection?.commitText(" ", 1)
+        }, longPressAction = {
+            // Toggle-only for now — see spaceHintShowsPinyin's own doc
+            // comment. No mode actually switches yet.
+            spaceHintShowsPinyin = !spaceHintShowsPinyin
+            performKeyHaptic()
+            refreshInputView()
         })
+        // Small hint pinned to the top of the space key — same visual
+        // language as buildEnglishCharKey()'s swipe-digit/symbol hints
+        // (small, muted, top-anchored, non-interactive so touches still
+        // reach the key beneath it) — labels what long-pressing space
+        // would switch to/from.
+        val spaceHint = TextView(this).apply {
+            text = if (spaceHintShowsPinyin) ui("拼音输入", "Pinyin") else ui("英文输入", "English")
+            textSize = 10f
+            gravity = android.view.Gravity.CENTER
+            setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(140, 140, 145)))
+            isClickable = false
+        }
+        val spaceWrapper = FrameLayout(this).apply {
+            addView(spaceButton, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(
+                spaceHint,
+                FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL).apply {
+                    topMargin = dp(3)
+                },
+            )
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 5f)
+        }
         val returnButton = keyboardKey("Return", 1.7f, action = {
             finalizeEnglishComposingWord()
             sendEnterKey()
         }).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) }
         bottom.addView(modeButton)
-        bottom.addView(spaceButton)
+        bottom.addView(spaceWrapper)
         bottom.addView(returnButton)
         root.addView(bottom, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         return root
