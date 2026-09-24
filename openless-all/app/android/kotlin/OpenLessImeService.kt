@@ -101,6 +101,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private var state = "idle"
     private var currentMessage = "点击开始说话"
     private var status: TextView? = null
+    private var voiceRawHint: TextView? = null
     private var statusNormalColor = Color.GRAY
     // Single shared top-level preview bubble for every key across the
     // English and stroke keyboards (see wrapWithKeyPreviewOverlay()) — reset
@@ -460,13 +461,19 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // rather than building a dedicated tooltip bubble for a single
         // one-off explanation.
         val rawModeTooltip = ui("Raw模式，语音原样转写，不做AI润色整理", "Raw mode, verbatim transcription without AI polishing")
-        val voiceRawHint = TextView(this).apply {
-            text = ui("上滑开启 Raw 模式", "Swipe up for Raw")
-            textSize = 12f
+        voiceRawHint = TextView(this).apply {
+            text = rawModeHintText()
+            textSize = 11f
             if (englishUi) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            gravity = android.view.Gravity.CENTER
-            setTextColor(Color.argb((0.8f * 255).toInt(), 0xB0, 0xB0, 0xB0))
-            setPadding(0, dp(4), 0, 0)
+            // Bottom-anchored (not CENTER) so the text sinks to the low edge
+            // of its own box instead of sitting centered with empty space
+            // visible underneath it — this row's box is taller than its
+            // text (see includeFontPadding-driven line metrics), and CENTER
+            // gravity read as the text floating too high/cramped against
+            // the status line above it.
+            gravity = android.view.Gravity.BOTTOM or android.view.Gravity.CENTER_HORIZONTAL
+            setTextColor(rawModeHintColor())
+            setPadding(0, dp(1), 0, 0)
             isClickable = true
             setOnClickListener { Toast.makeText(this@OpenLessImeService, rawModeTooltip, Toast.LENGTH_SHORT).show() }
             setOnLongClickListener {
@@ -542,13 +549,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                             if (recording && !rawModeArmed) {
                                 rawModeArmed = true
                                 performDoubleKeyHaptic()
-                                updateBackendLinkIndicator()
+                                updateStatus(currentMessage)
                             } else if (!recording && !processing) {
                                 toggleDictation()
                                 if (recording) {
                                     rawModeArmed = true
                                     performDoubleKeyHaptic()
-                                    updateBackendLinkIndicator()
+                                    updateStatus(currentMessage)
                                 }
                             }
                         }
@@ -3080,10 +3087,38 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         status?.setTextColor(
             if (state == "speaking" && rawModeArmed) LINK_COLOR_RECORDING_RAW else statusNormalColor,
         )
+        voiceRawHint?.text = rawModeHintText()
+        voiceRawHint?.setTextColor(rawModeHintColor())
         voiceButton?.isRecording = recording
         voiceButton?.isProcessing = processing
         updateDictationResultControls()
         updateBackendLinkIndicator()
+    }
+
+    /**
+     * Swipe-up-for-Raw discoverability hint while idle; once a recording is
+     * actually in Raw mode (armed via that same swipe, live through both
+     * recording and the following "thinking"/整理 step), the row repurposes
+     * itself to confirm that instead — recording-or-thinking without
+     * rawModeArmed (an ordinary, non-Raw dictation) keeps the plain
+     * discoverability hint, since the swipe gesture is still available for
+     * the remainder of that recording.
+     */
+    private fun rawModeHintText(): String {
+        return if ((state == "speaking" || state == "thinking") && rawModeArmed) {
+            ui("原样转写", "Raw Mode")
+        } else {
+            ui("上滑开启 Raw 模式", "Swipe up for Raw")
+        }
+    }
+
+    /** Same orange as the status line's own Raw coloring and every other Raw-mode indicator (VoiceButton's armed pill/waveform) — muted gray otherwise. */
+    private fun rawModeHintColor(): Int {
+        return if ((state == "speaking" || state == "thinking") && rawModeArmed) {
+            LINK_COLOR_RECORDING_RAW
+        } else {
+            Color.argb((0.8f * 255).toInt(), 0xB0, 0xB0, 0xB0)
+        }
     }
 
     private fun commitImeText(text: String) {
@@ -3293,6 +3328,23 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private fun setState(nextState: String, message: String) {
         state = nextState
         updateStatus(message)
+        // "done" (a completed commit/edit — see the various setState("done",
+        // "已上屏") call sites) used to just sit there until the next
+        // recording started; the status line and the Raw hint below it
+        // should instead settle back to the same ready state as a fresh
+        // session ("Tap to speak" / "Swipe up for Raw") shortly after, so
+        // it's visibly clear another dictation can start right away. Guarded
+        // by both sessionEpoch (a new input session) and re-checking state
+        // is still "done" (nothing else — e.g. a new recording — changed it
+        // in the meantime) so a stale callback can't clobber a newer state.
+        if (nextState == "done") {
+            val epoch = sessionEpoch
+            android.os.Handler(Looper.getMainLooper()).postDelayed({
+                if (sessionEpoch == epoch && state == "done") {
+                    setState("idle", ui("点击开始说话", "Tap to speak"))
+                }
+            }, DONE_TO_IDLE_DELAY_MS)
+        }
     }
 
     private fun displayStatus(message: String): String {
@@ -4768,6 +4820,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         private const val SILENCE_LEVEL_THRESHOLD = 0.02f
         private const val SILENCE_CHECK_DELAY_MS = 3000L
         private const val BACKEND_HEARTBEAT_INTERVAL_MS = 6000L
+        // How long "Done"/已上屏 (and the Raw hint's own matching state)
+        // stays up as a confirmation before settling back to the ready
+        // state — see setState()'s "done" branch.
+        private const val DONE_TO_IDLE_DELAY_MS = 1200L
         // Not a hard "show exactly N" cap — the candidate bar is a
         // HorizontalScrollView (see buildEnglishCandidateBar()), so this
         // just bounds how many the provider bothers ranking/returning per
