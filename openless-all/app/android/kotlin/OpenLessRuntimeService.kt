@@ -92,13 +92,19 @@ class OpenLessRuntimeService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val channelId = "openless_ime_runtime"
+        // Renamed from "openless_ime_runtime" (not just lowered the same
+        // channel's importance): once a channel is created, its importance
+        // is user-owned from then on — createNotificationChannel() with a
+        // different importance on an EXISTING channel id is a documented
+        // no-op, so an already-installed app would never actually see this
+        // get quieter without a fresh channel id forcing a fresh channel.
+        val channelId = "openless_ime_runtime_v2"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getSystemService(NotificationManager::class.java).createNotificationChannel(
                 NotificationChannel(
                     channelId,
                     "OpenLess 输入法服务",
-                    NotificationManager.IMPORTANCE_LOW,
+                    NotificationManager.IMPORTANCE_MIN,
                 )
             )
         }
