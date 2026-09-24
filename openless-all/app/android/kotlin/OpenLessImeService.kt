@@ -41,6 +41,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private enum class EnglishLayer { LETTERS, NUMBERS, SYMBOLS }
 
     private var sessionEpoch = 0L
+    // Guards the delayed "settle back to Tap to speak" callback — see
+    // scheduleRevertToIdle().
+    private var statusRevertToken = 0L
     internal var recording = false
     private var processing = false
     // Armed by the mic button's swipe-up gesture while recording is still
@@ -3243,10 +3246,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 return
             }
             updateStatus("已撤销")
+            scheduleRevertToIdle()
         } else {
             if (!connection.commitText(text, 1)) return
             dictationTextUndone = false
             updateStatus("已上屏")
+            scheduleRevertToIdle()
         }
     }
 
@@ -3372,23 +3377,37 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private fun setState(nextState: String, message: String) {
         state = nextState
         updateStatus(message)
-        // "done" (a completed commit/edit — see the various setState("done",
-        // "已上屏") call sites) used to just sit there until the next
-        // recording started; the status line and the Raw hint below it
-        // should instead settle back to the same ready state as a fresh
-        // session ("Tap to speak" / "Swipe up for Raw") shortly after, so
-        // it's visibly clear another dictation can start right away. Guarded
-        // by both sessionEpoch (a new input session) and re-checking state
-        // is still "done" (nothing else — e.g. a new recording — changed it
-        // in the meantime) so a stale callback can't clobber a newer state.
-        if (nextState == "done") {
-            val epoch = sessionEpoch
-            android.os.Handler(Looper.getMainLooper()).postDelayed({
-                if (sessionEpoch == epoch && state == "done") {
-                    setState("idle", ui("点击开始说话", "Tap to speak"))
-                }
-            }, DONE_TO_IDLE_DELAY_MS)
-        }
+        // A completed commit/edit (see the various setState("done", "已
+        // 上屏") call sites) used to just sit there until the next recording
+        // started; the status line and the Raw hint below it should instead
+        // settle back to the same ready state as a fresh session shortly
+        // after, so it's visibly clear another dictation can start right
+        // away — see scheduleRevertToIdle().
+        if (nextState == "done") scheduleRevertToIdle()
+    }
+
+    /**
+     * Shows "点击开始说话"/"Tap to speak" again DONE_TO_IDLE_DELAY_MS after
+     * whatever transient confirmation is currently up (已上屏/已完成 via
+     * setState()'s "done" branch, or 已撤销/已上屏 from
+     * toggleUndoRedoDictation()'s direct updateStatus() calls, which don't
+     * go through setState() at all since undo/redo doesn't change `state`).
+     * A monotonic token, not a state-string comparison, guards the delayed
+     * callback: every call here bumps it, so only the most recently
+     * scheduled revert actually fires — tapping undo right after a commit
+     * (before the commit's own revert would have fired) correctly restarts
+     * the 2-second countdown from the undo instead of the two racing and
+     * the earlier one winning. sessionEpoch is still checked too, for a
+     * genuinely new input session in the meantime.
+     */
+    private fun scheduleRevertToIdle() {
+        val epoch = sessionEpoch
+        val token = ++statusRevertToken
+        android.os.Handler(Looper.getMainLooper()).postDelayed({
+            if (sessionEpoch == epoch && statusRevertToken == token) {
+                setState("idle", ui("点击开始说话", "Tap to speak"))
+            }
+        }, DONE_TO_IDLE_DELAY_MS)
     }
 
     private fun displayStatus(message: String): String {
@@ -4864,10 +4883,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         private const val SILENCE_LEVEL_THRESHOLD = 0.02f
         private const val SILENCE_CHECK_DELAY_MS = 3000L
         private const val BACKEND_HEARTBEAT_INTERVAL_MS = 6000L
-        // How long "Done"/已上屏 (and the Raw hint's own matching state)
-        // stays up as a confirmation before settling back to the ready
-        // state — see setState()'s "done" branch.
-        private const val DONE_TO_IDLE_DELAY_MS = 1200L
+        // How long a transient confirmation (已上屏/已完成/已撤销) stays up
+        // before settling back to "点击开始说话" — see scheduleRevertToIdle().
+        private const val DONE_TO_IDLE_DELAY_MS = 2000L
         // Not a hard "show exactly N" cap — the candidate bar is a
         // HorizontalScrollView (see buildEnglishCandidateBar()), so this
         // just bounds how many the provider bothers ranking/returning per
