@@ -453,36 +453,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             dp(38),
         ))
 
-        // Small companion hint under the main status line — deliberately
-        // muted (low size + alpha) so it doesn't compete with "Tap to
-        // speak" for attention, but discoverable enough that a user
-        // notices the swipe-up-for-Raw gesture exists at all. Tap or
-        // long-press explains what Raw mode actually does via a Toast,
-        // rather than building a dedicated tooltip bubble for a single
-        // one-off explanation.
-        val rawModeTooltip = ui("Raw模式，语音原样转写，不做AI润色整理", "Raw mode, verbatim transcription without AI polishing")
-        voiceRawHint = TextView(this).apply {
-            text = rawModeHintText()
-            textSize = 11f
-            if (englishUi) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            // Bottom-anchored (not CENTER) so the text sinks to the low edge
-            // of its own box instead of sitting centered with empty space
-            // visible underneath it — this row's box is taller than its
-            // text (see includeFontPadding-driven line metrics), and CENTER
-            // gravity read as the text floating too high/cramped against
-            // the status line above it.
-            gravity = android.view.Gravity.BOTTOM or android.view.Gravity.CENTER_HORIZONTAL
-            setTextColor(rawModeHintColor())
-            setPadding(0, dp(1), 0, 0)
-            isClickable = true
-            setOnClickListener { Toast.makeText(this@OpenLessImeService, rawModeTooltip, Toast.LENGTH_SHORT).show() }
-            setOnLongClickListener {
-                Toast.makeText(this@OpenLessImeService, rawModeTooltip, Toast.LENGTH_SHORT).show()
-                true
-            }
-        }
-        panel.addView(voiceRawHint, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-
         voiceButton = VoiceButton(this, isDarkTheme).apply {
             isClickable = true
             setOnClickListener { toggleDictation() }
@@ -582,6 +552,34 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             clipToPadding = false
         }
         buttonHolder.addView(voiceButton!!, LinearLayout.LayoutParams(dp(176), dp(72)))
+
+        // Small companion hint under the mic icon — deliberately muted (low
+        // size + alpha) so it doesn't compete with "Tap to speak" for
+        // attention, but discoverable enough that a user notices the
+        // swipe-up-for-Raw gesture exists at all. Tap or long-press
+        // explains what Raw mode actually does via a Toast, rather than
+        // building a dedicated tooltip bubble for a single one-off
+        // explanation. Hidden entirely while recording/thinking in an
+        // ordinary (non-Raw) dictation — see rawModeHintVisible() — since
+        // at that point it's neither teaching a still-relevant gesture nor
+        // confirming anything, just noise next to the mic.
+        val rawModeTooltip = ui("Raw模式，语音原样转写，不做AI润色整理", "Raw mode, verbatim transcription without AI polishing")
+        voiceRawHint = TextView(this).apply {
+            text = rawModeHintText()
+            textSize = 11f
+            if (englishUi) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            gravity = android.view.Gravity.CENTER
+            setTextColor(rawModeHintColor())
+            setPadding(0, dp(1), 0, 0)
+            visibility = if (rawModeHintVisible()) View.VISIBLE else View.GONE
+            isClickable = true
+            setOnClickListener { Toast.makeText(this@OpenLessImeService, rawModeTooltip, Toast.LENGTH_SHORT).show() }
+            setOnLongClickListener {
+                Toast.makeText(this@OpenLessImeService, rawModeTooltip, Toast.LENGTH_SHORT).show()
+                true
+            }
+        }
+        buttonHolder.addView(voiceRawHint, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         voiceLinkWarning = TextView(this).apply {
             text = ui("检测到麦克风无声音，点击重启应用", "No mic audio detected — tap to restart the app")
             textSize = 16f
@@ -3089,6 +3087,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         )
         voiceRawHint?.text = rawModeHintText()
         voiceRawHint?.setTextColor(rawModeHintColor())
+        voiceRawHint?.visibility = if (rawModeHintVisible()) View.VISIBLE else View.GONE
         voiceButton?.isRecording = recording
         voiceButton?.isProcessing = processing
         updateDictationResultControls()
@@ -3099,10 +3098,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * Swipe-up-for-Raw discoverability hint while idle; once a recording is
      * actually in Raw mode (armed via that same swipe, live through both
      * recording and the following "thinking"/整理 step), the row repurposes
-     * itself to confirm that instead — recording-or-thinking without
-     * rawModeArmed (an ordinary, non-Raw dictation) keeps the plain
-     * discoverability hint, since the swipe gesture is still available for
-     * the remainder of that recording.
+     * itself to confirm that instead. Recording-or-thinking without
+     * rawModeArmed (an ordinary, non-Raw dictation) never reaches this text
+     * at all — see rawModeHintVisible(), which hides the row entirely for
+     * that case.
      */
     private fun rawModeHintText(): String {
         return if ((state == "speaking" || state == "thinking") && rawModeArmed) {
@@ -3119,6 +3118,18 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         } else {
             Color.argb((0.8f * 255).toInt(), 0xB0, 0xB0, 0xB0)
         }
+    }
+
+    /**
+     * Hidden while actively recording or thinking in an ordinary (non-Raw)
+     * dictation — at that point it's neither teaching a still-relevant
+     * gesture (idle) nor confirming an active one (Raw), just a stray label
+     * under the mic. Visible the rest of the time: idle (teaches the
+     * gesture) and recording/thinking once Raw is actually armed (confirms
+     * it).
+     */
+    private fun rawModeHintVisible(): Boolean {
+        return !((state == "speaking" || state == "thinking") && !rawModeArmed)
     }
 
     private fun commitImeText(text: String) {
