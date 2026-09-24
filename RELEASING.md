@@ -32,6 +32,13 @@ Tauri host release tags (created by an admin only):
   Stable users). The updater still recognizes the historical `*-beta-tauri`
   suffix for existing releases, but new releases use the `Beta.<N>` form.
 
+A dated build may carry SemVer build metadata in the synchronized application
+version, for example `2.0.0-Beta.2+20260924`. Keep its release tag in the existing
+`v2.0.0-Beta.2-tauri` format: released clients only recognize a numeric `Beta.N`
+tag suffix. Include the complete application version in the release title and
+updater manifests. Build metadata does not advance SemVer precedence; each new
+public Beta still increments `N`.
+
 These tags publish the macOS, Windows, and Android Tauri hosts. Linux is not part of the Tauri matrix. Its independent host is built by `.github/workflows/release-linux-egui.yml`, which accepts an existing `release_tag` and writes `latest-linux-egui-x86_64.json`. This workflow has no automatic tag trigger; Linux publication requires its own product acceptance below.
 
 Under the [2026-09-06 2.0 requirements](docs/2.0-requirements.md), Windows and macOS must fully retain their respective Tauri 1.x features. This first delivery includes a usable Core contract and a [split handoff directory](docs/linux-egui-handoff/README.md) for Linux; the egui team owns remaining Linux Host/UI work and Linux product acceptance. Incomplete Linux application features do not independently block this Windows/macOS delivery. Shared Core defects and the desktop platforms' own acceptance requirements still do. Existing Android builds do not expand this scope into a new full-support commitment.

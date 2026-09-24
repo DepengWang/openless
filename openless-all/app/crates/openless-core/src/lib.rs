@@ -181,27 +181,27 @@ pub mod contract {
         BackendSnapshot, CliDispatchOutcome, CliIntent, Clock, CorrectionRule, CredentialKey,
         CredentialMetadata, CredentialNamespace, CredentialStore, CredentialsStatus,
         DictationContext, DictationEngine, DictationHotkeyDispatchOptions, DictationHotkeyEdge,
-        DictationInsertStatus, DictationPhase, DictationResult, DictationSession,
-        DictationStartOptions, DictationStateSnapshot, DictionaryEntry, DirectoryResourceResolver,
-        DownloadProgress, EngineFailure, EngineFailureStage, EngineProgress, EngineProgressSink,
-        EngineResult, EngineStage, EventRecvError, EventSubscription, HistoryChange,
-        HistoryInsertStatus, HistorySource, HostAction, HostActions, HostContextAdapter,
-        HostContextCapture, HotkeyRuntimeTarget, HotkeyStatus, InMemoryCredentialStore,
-        InsertFallbackPayload, InsertOutcome, LessComputerEvent, LessComputerEventKind,
-        LessComputerHotkeyAction, LessComputerVoiceSession, LocalAsrMirror, LocalAsrModelId,
-        LocalAsrRuntime, LocalAsrTarget, NotificationLevel, NotificationPayload, OpenLessBackend,
-        PendingCorrection, PermissionSnapshot, PermissionState, PlatformCapabilities, PolishDelta,
-        PolishFailurePolicy, PolishMode, PolishOutput, ProviderService, QaVoiceCaptureResult,
-        QaVoiceCaptureSession, RecordingArchive, RecordingControlAction, RecordingControlRequest,
-        RecordingControlSink, RecordingEvent, RecordingPlan, RecordingProgressSink,
-        ResourceResolver, RuleSource, SecretValue, SelectionPolishOutputMode,
-        SelectionVoiceIntentMode, SelectionVoiceManualIntent, SessionId, SettingsCollisionPolicy,
-        SettingsEffectFailure, SettingsEffectKind, SettingsEffectPlan, SettingsEffectReceipt,
-        SettingsRuntime, SettingsUpdateOptions, SettingsUpdateOutcome, SettingsValueChange,
-        StartupSnapshot, StylePack, StylePackChange, StylePackExample, StylePackKind, TaskSpawner,
-        TextInserter, TextPolisher, TextStreamChunk, TextStreamSink, TokioTaskSpawner,
-        TranscriptAccumulator, TranscriptDelta, TranscriptOutput, TranscriptionEngine,
-        TranscriptionSession, VocabPreset, VocabPresetStore, VocabularyChange,
+        DictationInsertStatus, DictationOutputTarget, DictationPhase, DictationResult,
+        DictationSession, DictationStartOptions, DictationStateSnapshot, DictionaryEntry,
+        DirectoryResourceResolver, DownloadProgress, EngineFailure, EngineFailureStage,
+        EngineProgress, EngineProgressSink, EngineResult, EngineStage, EventRecvError,
+        EventSubscription, HistoryChange, HistoryInsertStatus, HistorySource, HostAction,
+        HostActions, HostContextAdapter, HostContextCapture, HotkeyRuntimeTarget, HotkeyStatus,
+        InMemoryCredentialStore, InsertFallbackPayload, InsertOutcome, LessComputerEvent,
+        LessComputerEventKind, LessComputerHotkeyAction, LessComputerVoiceSession, LocalAsrMirror,
+        LocalAsrModelId, LocalAsrRuntime, LocalAsrTarget, NotificationLevel, NotificationPayload,
+        OpenLessBackend, PendingCorrection, PermissionSnapshot, PermissionState,
+        PlatformCapabilities, PolishDelta, PolishFailurePolicy, PolishMode, PolishOutput,
+        ProviderService, QaVoiceCaptureResult, QaVoiceCaptureSession, RecordingArchive,
+        RecordingControlAction, RecordingControlRequest, RecordingControlSink, RecordingEvent,
+        RecordingPlan, RecordingProgressSink, ResourceResolver, RuleSource, SecretValue,
+        SelectionPolishOutputMode, SelectionVoiceIntentMode, SelectionVoiceManualIntent, SessionId,
+        SettingsCollisionPolicy, SettingsEffectFailure, SettingsEffectKind, SettingsEffectPlan,
+        SettingsEffectReceipt, SettingsRuntime, SettingsUpdateOptions, SettingsUpdateOutcome,
+        SettingsValueChange, StartupSnapshot, StylePack, StylePackChange, StylePackExample,
+        StylePackKind, TaskSpawner, TextInserter, TextPolisher, TextStreamChunk, TextStreamSink,
+        TokioTaskSpawner, TranscriptAccumulator, TranscriptDelta, TranscriptOutput,
+        TranscriptionEngine, TranscriptionSession, VocabPreset, VocabPresetStore, VocabularyChange,
         VoiceTranscriptionSession, BACKEND_CONTRACT_VERSION, DICTATION_SAMPLE_RATE,
     };
 }
@@ -238,8 +238,9 @@ pub use credentials::{
 };
 pub use dictation_context::{
     build_asr_prompt, eligible_polish_context_turns, DictationAudioSource, DictationContext,
-    DictationInsertionContext, DictationPolishContext, DictationStartOptions, DictationStopOptions,
-    PolishHistoryTurn, ProviderInvocation, RecordingPlan, ASR_PROMPT_CHAR_BUDGET,
+    DictationInsertionContext, DictationOutputTarget, DictationPolishContext,
+    DictationStartOptions, DictationStopOptions, PolishHistoryTurn, ProviderInvocation,
+    RecordingPlan, ASR_PROMPT_CHAR_BUDGET,
 };
 pub use dictation_engine::{PipelineDictationEngine, PolishFailurePolicy};
 pub use domains::*;
@@ -358,4 +359,7 @@ pub use types::{
     SelectionVoiceIntentMode, SelectionVoiceManualIntent, SessionId, StylePackChange,
     TranscriptAccumulator, TranscriptDelta, VocabPreset, VocabPresetStore, VocabularyChange,
 };
-pub use vocabulary::{list_vocab_presets, save_vocab_presets, DictionaryStore};
+pub use vocabulary::{
+    builtin_vocab_presets, list_vocab_presets, resolve_vocab_presets, save_vocab_presets,
+    DictionaryStore,
+};

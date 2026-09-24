@@ -448,6 +448,7 @@ struct Inner {
     /// 串行化 Tauri 侧“Core 设置事务 + 宿主 effect”以及风格包删除 effect，
     /// 防止两个命令把显式 runtime target 乱序安装。
     settings_host_gate: Mutex<()>,
+    overlay_qa_handoff: tokio::sync::Mutex<()>,
     inserter: TextInserter,
     /// 建议卡片是不是正占着胶囊窗口。
     ///
@@ -469,6 +470,7 @@ struct Inner {
     translation_hotkey: Mutex<Option<ComboHotkeyMonitor>>,
     switch_style_hotkey: Mutex<Option<ComboHotkeyMonitor>>,
     open_app_hotkey: Mutex<Option<ComboHotkeyMonitor>>,
+    quick_note_hotkey: Mutex<Option<ComboHotkeyMonitor>>,
     /// 风格包直达快捷键监听器（issue #759）：pack_id → 实际绑定 + monitor。
     /// 绑定元数据让 supervisor 能区分「同一 pack_id 但按键已变化」，并在任何
     /// 非事务设置路径注册失败后继续重试到实际状态与 prefs 一致。
@@ -517,6 +519,7 @@ struct Inner {
 enum ActionHotkeyKind {
     SwitchStyle,
     OpenApp,
+    QuickNote,
 }
 
 impl Coordinator {
@@ -608,6 +611,7 @@ impl Coordinator {
                 less_computer_voice: Mutex::new(None),
                 hotkey_runtime_target: Mutex::new(hotkey_runtime_target),
                 settings_host_gate: Mutex::new(()),
+                overlay_qa_handoff: tokio::sync::Mutex::new(()),
                 inserter: TextInserter::new(),
                 vocab_card_visible: AtomicBool::new(false),
                 hotkey: Mutex::new(None),
@@ -621,6 +625,7 @@ impl Coordinator {
                 translation_hotkey: Mutex::new(None),
                 switch_style_hotkey: Mutex::new(None),
                 open_app_hotkey: Mutex::new(None),
+                quick_note_hotkey: Mutex::new(None),
                 style_pack_hotkeys: Mutex::new(std::collections::HashMap::new()),
                 #[cfg(not(mobile))]
                 selection_polish_hotkey: Mutex::new(None),
@@ -717,6 +722,7 @@ impl Coordinator {
             less_computer_voice: Mutex::new(None),
             hotkey_runtime_target: Mutex::new(hotkey_runtime_target),
             settings_host_gate: Mutex::new(()),
+            overlay_qa_handoff: tokio::sync::Mutex::new(()),
             inserter: TextInserter::new(),
             vocab_card_visible: AtomicBool::new(false),
             hotkey: Mutex::new(None),
@@ -730,6 +736,7 @@ impl Coordinator {
             translation_hotkey: Mutex::new(None),
             switch_style_hotkey: Mutex::new(None),
             open_app_hotkey: Mutex::new(None),
+            quick_note_hotkey: Mutex::new(None),
             style_pack_hotkeys: Mutex::new(std::collections::HashMap::new()),
             #[cfg(not(mobile))]
             selection_polish_hotkey: Mutex::new(None),
@@ -1036,6 +1043,18 @@ impl Coordinator {
         take_action_hotkey_on_main_thread(&self.inner, ActionHotkeyKind::OpenApp);
     }
 
+    pub fn start_quick_note_hotkey_listener(&self) {
+        let inner = Arc::clone(&self.inner);
+        std::thread::Builder::new()
+            .name("openless-quick-note-hotkey-supervisor".into())
+            .spawn(move || action_hotkey_supervisor_loop(inner, ActionHotkeyKind::QuickNote))
+            .ok();
+    }
+
+    pub fn stop_quick_note_hotkey_listener(&self) {
+        take_action_hotkey_on_main_thread(&self.inner, ActionHotkeyKind::QuickNote);
+    }
+
     /// 启动风格包直达快捷键监听（issue #759）。supervisor 线程等 AppHandle 就绪后
     /// 按 prefs 全量注册，个别注册失败按 action hotkey 的节奏重试。
     pub fn start_style_pack_hotkey_listeners(&self) {
@@ -1254,6 +1273,10 @@ impl Coordinator {
 
     pub(crate) fn update_open_app_hotkey_binding(&self) {
         self.update_action_hotkey_binding(ActionHotkeyKind::OpenApp);
+    }
+
+    pub(crate) fn update_quick_note_hotkey_binding(&self) {
+        self.update_action_hotkey_binding(ActionHotkeyKind::QuickNote);
     }
 
     fn update_action_hotkey_binding(&self, kind: ActionHotkeyKind) {
@@ -1493,6 +1516,9 @@ impl Coordinator {
         if previous.open_app != next.open_app {
             self.update_open_app_hotkey_binding();
         }
+        if previous.quick_note != next.quick_note {
+            self.update_quick_note_hotkey_binding();
+        }
         if previous.coding_agent_enabled != next.coding_agent_enabled
             || previous.coding_agent_voice != next.coding_agent_voice
         {
@@ -1584,14 +1610,61 @@ impl Coordinator {
     }
 
     pub async fn finalize_qa_from_overlay(&self) -> Result<(), String> {
-        log::info!("[coord] overlay QA finalize requested");
-        self.inner
-            .backend
+        let Ok(_handoff) = self.inner.overlay_qa_handoff.try_lock() else {
+            return Ok(());
+        };
+        let backend = &self.inner.backend;
+        let snapshot = backend.snapshot().dictation;
+        if let Some(session_id) = snapshot.session_id {
+            if !matches!(
+                snapshot.phase,
+                openless_core::DictationPhase::Starting | openless_core::DictationPhase::Recording
+            ) {
+                return Err("当前语音仍在处理中，请稍后再试".into());
+            }
+            // Capture the source before either transcription or the QA panel
+            // can change focus. Only owned text/app metadata crosses threads.
+            let capture = tauri::async_runtime::spawn_blocking(|| {
+                let (capture, _) = crate::selection::resolve_selection_workspace_capture();
+                capture.map(|value| (value.text, value.source_app))
+            })
+            .await
+            .map_err(|error| format!("capture QA selection: {error}"))?;
+            let result = backend
+                .stop_dictation_for_qa(session_id)
+                .await
+                .map_err(|error| error.message)?;
+            let (selection_text, selection_source_app) = match capture {
+                Some((text, app)) => (Some(text), app),
+                None => (None, None),
+            };
+            return backend
+                .services()
+                .qa
+                .submit_captured_text(openless_core::QaInput {
+                    text: result.raw_text,
+                    selection_text,
+                    selection_source_app,
+                })
+                .await
+                .map_err(|error| error.message);
+        }
+        let qa = backend
             .services()
             .qa
-            .toggle_recording()
+            .snapshot()
             .await
-            .map_err(|error| error.message)
+            .map_err(|error| error.message)?;
+        if let (openless_core::QaPhase::Recording, Some(session_id)) = (qa.phase, qa.session_id) {
+            backend
+                .services()
+                .qa
+                .stop_recording(session_id)
+                .await
+                .map_err(|error| error.message)
+        } else {
+            self.open_qa_from_overlay().await
+        }
     }
 
     /// CLI 入口的 QA toggle：直接复用 modifier-only QA 热键边沿的处理函数。

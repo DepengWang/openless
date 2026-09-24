@@ -82,6 +82,7 @@ impl From<openless_core::LocalAsrStorageSettings> for LocalAsrStorageSettings {
 #[serde(rename_all = "camelCase")]
 pub struct LocalAsrModelStatus {
     pub id: String,
+    pub runtime: LocalAsrRuntime,
     pub hf_repo: String,
     pub display_name: String,
     pub family: String,
@@ -96,6 +97,7 @@ impl From<openless_core::LocalAsrModel> for LocalAsrModelStatus {
     fn from(model: openless_core::LocalAsrModel) -> Self {
         Self {
             id: model.target.model_id().to_string(),
+            runtime: model.target.runtime,
             hf_repo: model.repository.clone().unwrap_or_default(),
             display_name: model.display_name,
             family: model.family,
