@@ -72,6 +72,10 @@ The script takes a plain `X.Y.Z`; for a prerelease version such as
 3. CI is green on the commit being tagged.
 4. The applicable [desktop feature and device acceptance](docs/2.0-desktop-acceptance.md), signing, and distribution requirements are met; green builds alone do not establish product readiness.
 5. Then, and only then, push the release tag.
+6. Beta tag workflows upload desktop and Android assets to a shared draft.
+   Wait for both workflows to succeed, verify the packages and Beta updater
+   manifests, then publish that draft as a prerelease. Do not rerun an asset
+   workflow after publication without first returning the release to draft.
 
 Before attaching Linux assets, additionally require all of the following:
 

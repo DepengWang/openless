@@ -428,7 +428,9 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: OpenLess ${{ github.ref_name }}
-          draft: false
+          # The desktop and Android jobs share one Beta draft. Publish it only
+          # after all jobs and package verification have finished.
+          draft: ${{ env.OPENLESS_RELEASE_CHANNEL == 'beta' }}
           prerelease: ${{ env.OPENLESS_RELEASE_CHANNEL == 'beta' }}
           append_body: true
           body_path: ${{ runner.temp }}/android-release-body.md
