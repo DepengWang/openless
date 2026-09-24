@@ -236,9 +236,16 @@ Android has additional system dependencies that desktop builds do not: microphon
 
 The Android implementation is currently beta-quality. A successful APK build or contract test is not a substitute for real-device verification. Before a release, test ordinary native fields, WeChat and mini-program fields, background/foreground transitions, recording start/stop/cancel, Activity reclamation, process restart, and every enabled insertion tier. See [Android architecture](docs/architecture.md), [Android implementation plan](docs/android-mobile-apk-overlay-plan.md), and [desktop/Android acceptance](docs/2.0-desktop-acceptance.md).
 
-### Android development handoff (2026-09-22)
+### Android development handoff (2026-09-24)
 
-This section is the current handoff summary for continued Android work. The detailed investigation log and historical fixes are maintained in [`openless-all/app/android/README.md`](openless-all/app/android/README.md), including the full 2026-09-22 root-cause writeup referenced below.
+This section is the current handoff summary for continued Android work. The detailed investigation log and historical fixes are maintained in [`openless-all/app/android/README.md`](openless-all/app/android/README.md), including the full 2026-09-22 root-cause writeup referenced below and a full Kotlin class architecture overview.
+
+#### Since 2026-09-22: keyboard features, stroke-panel performance, and a first architecture split
+
+- **English keyboard**: swipe-up-to-digit on the top row (q..p → 1..0) extended to swipe-up-to-symbol on the letter rows below (a..l → `@#$%&-+()`, z..m → `:;'.,!?`), same gesture/preview-bubble mechanism as the stroke panel's own digit shortcuts; long-press-to-forget on an English candidate; `sans-serif-medium` applied to the letter grid and the bottom-row `123`/`Return` keys.
+- **Stroke candidate/association performance**: the candidate row now reuses existing Views instead of rebuilding all of them on every keystroke (`populateCandidateRow()`); the ~220k-entry phrase-association dictionary is now preloaded at IME startup instead of loading cold on the first commit that needs it; its LRU cache is keyed by the suffix substrings actually looked up (not the full rolling context, which almost never recurred) with a larger capacity; its trie build now sorts each node once after loading instead of re-sorting on every insert; both personal-frequency stores (`StrokeUserFrequency`/`EnglishUserFrequency`) skip the expensive trim check unless a genuinely new entry was just recorded.
+- **First `OpenLessImeService.kt` split**: `StrokeInputController` now owns everything specific to the stroke panel (encode entry, candidate/association query+render+commit, the number/symbol sub-panel) — a pure relocation, no logic changes. `OpenLessImeService.kt` dropped from ~5300 to ~4857 lines; the stroke panel item in the Roadmap split goal below is done, voice/clipboard/English panels are not yet split.
+- None of the above has had a full real-device gesture regression pass yet (build + install verified only) — see `openless-all/app/android/README.md`'s "2026-09-24" section for the specific scenarios still needing manual verification.
 
 #### Current implementation state
 
@@ -469,7 +476,7 @@ The following status is intentionally separated so that documentation does not p
 ### In progress / validation required
 
 - Android runtime lifecycle and cross-application insertion need continued real-device validation across OEMs, Android versions, WeChat mini-programs, and low-memory conditions.
-- Android input-panel code should be split into smaller controllers and UI components without changing the existing IME behavior.
+- Android input-panel code is being split into smaller controllers without changing existing IME behavior — the stroke panel is done (`StrokeInputController`, 2026-09-24); voice, clipboard, and English still live in `OpenLessImeService.kt` and are candidates for the same treatment.
 - Clipboard history needs a documented retention/privacy policy and more robust atomic persistence.
 
 ### Planned but not yet shipped

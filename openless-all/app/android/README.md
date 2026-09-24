@@ -51,6 +51,50 @@ Manifest 合并脚本：
 
 `src/lib/types.ts` 与 `src/lib/ipc.ts` 保留 re-export，现有 import 路径仍可用。
 
+## Kotlin 类架构总览
+
+`OpenLessImeService.kt` 曾经是一个 5300+ 行的单体类，承载所有四个输入面板（语音/笔画/剪贴板/英文）的构建、查询、渲染、提交逻辑。2026-09-24 把笔画面板整体拆到了独立文件（详见下方"2026-09 英文键盘增强 + 笔画性能优化 + 架构拆分"一节），现在的模块边界如下：
+
+### IME 主体与面板控制器
+
+| 文件 | 角色 |
+|------|------|
+| `OpenLessImeService.kt`（约 4857 行） | `InputMethodService` 实现本体。承载：四面板切换（`selectInputMode()`/`swipeInputMode()`）、语音听写生命周期（录音/整理/撤销重做/编辑）、英文键盘（`buildKeyboardView()` 及其 `EnglishLayer{LETTERS,NUMBERS,SYMBOLS}`）、剪贴板面板与历史浏览器、跨面板共用的 UI 构建工具（`keyboardKey()`、`dp()`/`tone()`/`ui()`、`roundedButton()`、`candidateItemView()`/`styleCandidateFirstState()`/`showCandidateOverlay()`）、后端心跳与运行时守护、Activity 生命周期对接。四个面板里只有笔画面板的专属逻辑已经拆出去；语音/剪贴板/英文面板的构建+查询+提交逻辑仍在这个类里，是后续可以按同样模式继续拆分的部分。 |
+| `StrokeInputController.kt`（约 650 行，新增） | 笔画面板专属：编码输入（`appendStroke`/`deleteStroke`/`segmentStroke`/`clearStrokes`）、字候选/联想候选查询+渲染+提交（`refreshStrokeCandidates`/`refreshAssociations`/`renderCandidateRow`/`populateCandidateRow`/`commitWord`/`commitStrokeCandidate`/`commitAssociation`）、数字符号子面板（`buildStrokeNumberView`）。持有 `StrokeInputRepository`/`StrokePhraseRepository` 两个仓库实例及其生命周期。通过构造函数持有 `service: OpenLessImeService` 引用，回调共用基础设施；真正跨面板共用的部分（候选气泡、`keyboardKey()`、主题/布局工具）留在 `OpenLessImeService` 上，可见性从 `private` 放宽到 `internal` 供本类调用。 |
+
+### 笔画/英文各自的离线词典与个人频率层
+
+| 文件 | 角色 |
+|------|------|
+| `StrokeInput.kt` | `StrokeInputRepository`：离线五笔画字典查询，按笔画编码前 4 位分桶索引（`stroke.dict.tsv` + `stroke-frequency.tsv`），后台单线程执行器 + `Handler.post` 回主线程。 |
+| `StrokePhraseRepository.kt` | 联想词（下文预测）查询：约 22 万条词组（`phrases.dict.tsv`）建成字符 Trie，按词组自身前缀索引；`confirmedText`（已上屏文字的滚动窗口）作为后缀去匹配 Trie 里的前缀。 |
+| `StrokeUserFrequency.kt` | 个人用词频率存储与打分（`ln(1+次数)*80 + exp(-天数/30)*24`），SharedPreferences 持久化，笔画个人纠偏与联想使用记录共用同一张表（3000 条上限）。 |
+| `EnglishCandidateProvider.kt` | 英文候选词查询：2 万词基础词典（`hermitdave/FrequencyWords`，OpenSubtitles-2018 语料）建成前缀 Trie，架构与 `StrokePhraseRepository` 同构。 |
+| `EnglishUserFrequency.kt` | 英文个人用词频率存储/打分，与自定义词（用户打过但不在基础词典里的词）的增删查询，独立一张表（不与笔画共享）。 |
+
+### 面板内共用的自绘 View（均为 `OpenLessImeService.kt` 内的嵌套类）
+
+`KeyPreviewOverlay`/`KeyPreviewBubbleView`（全面板共用的单例按键气泡）、`ModeToggle`（顶部四段模式切换，Canvas 绘制）、`SwipeModeContainer`/`SwipeRail`（手势容器）、`VoiceButton`/`MicrophoneKeyView`/`StrokeKeyView`/`StrokeGlyphView`/`StrokeActionView`/`ActionSymbolView`/`ShiftKeyView`/`MidDividerTextView`（各类自绘按键）。这些类多数原本是 `private`，笔画面板拆分时把其中 `SwipeModeContainer`/`SwipeRail`/`StrokeActionView`/`InputMode` 枚举放宽到了 `internal` 供 `StrokeInputController` 引用。
+
+### 支撑性 Android 组件（生命周期/权限/持久化）
+
+| 文件 | 角色 |
+|------|------|
+| `OpenLessApplication.kt` | 全局 `Application`，`ActivityLifecycleCallbacks` 驱动 JNI Activity Context 注册/注销，重启统计分类白名单（`ALL_RESTART_CATEGORIES`）。 |
+| `OpenLessRuntimeService.kt` | `START_STICKY` 前台常驻服务，JNI Context 真正的挂载点（不依赖任何 Activity 的存活）。 |
+| `OpenLessBackendWarmupActivity.kt` | Tauri host Activity，兼启动器入口与设置页宿主；静默唤醒、`webViewCreationWatchdog`、卡死兜底自重启。 |
+| `OpenLessOverlayService.kt` / `OpenLessOverlayBridge.kt` | 悬浮窗显示/隐藏与 IME 侧桥接。 |
+| `OpenLessAccessibilityService.kt` 及 `OpenLessAccessibility*.kt` 系列 | 无障碍跨 App 文本插入（策略、目标定位、结果类型）。 |
+| `OpenLessShizuku*.kt` | Shizuku 受控无障碍恢复通道。 |
+| `OpenLessKeyboardSettingsActivity.kt` | 键盘专属原生设置页（震动强度/时长、重启诊断表）。 |
+| `OpenLessClipboardHistory.kt` | 剪贴板历史持久化（收藏/分类/过滤）。 |
+| `OpenLessAndroidPreferences.kt` | 偏好读取的统一入口（笔画个人化开关、联想开关、英文候选开关等）。 |
+| `OpenLessProcessRestartStats.kt` / `OpenLessBuildInfo.kt` | 重启原因诊断计数、调试构建版本号。 |
+| `OpenLessCredentialCipher.kt` / `OpenLessCredentialVault.kt` | Android Keystore 支持的凭证加密存储。 |
+| `OpenLessNative.kt` | JNI 原生方法声明（对应 `native_bridge.rs` 的导出）。 |
+
+对应的 Rust 侧模块划分见本文件顶部"Rust（`src-tauri/src/android/`）"表格；两侧通过 `OpenLessNative.kt` 声明 ↔ `native_bridge.rs` 导出一一对应。
+
 ## 笔画输入法 IME 最近更新（`OpenLessImeService.kt`）
 
 面板高度固定为 300dp（`SwipeModeContainer.onMeasure()` 强制），笔画面板内编码区 24dp + 候选区 36dp（合计 60dp）与下方按键区共同瓜分剩余高度，任何输入状态下都不重新布局。
@@ -89,8 +133,35 @@ Manifest 合并脚本：
 | 笔画气泡颜色多轮反馈微调（在上面几行提交之后又调了几轮） | 背景：暗色主题从 `rgb(52,52,54)`（刻意比候选/编码区卡片背景 `58,58,58` 更深）改成方向相反的"比候选行更浅"——`rgb(80,80,84)` 再到最终 `rgb(96,96,100)`，边框同步调亮到 `rgb(128,128,133)`；浅色主题也从原来比候选行背景更深的 `C8C8CC` 改成更浅的 `rgb(246,246,249)`（边框 `rgb(210,210,215)`）。字色：候选字高亮与气泡文字暗色主题下从 `Color.rgb(153, 26, 40)`（动作栏同款红）加亮到 `Color.rgb(190, 45, 60)`，同一色相只是更亮，浅色主题维持动作栏原色不变 |
 | 话筒键划动手势重做：两个方向都改成"松手才生效"+ 实时视觉反馈 | 原来上划进 RAW 模式（`rawModeArmed`）和下划取消录音（`cancelDictation()`）都是划过 24dp 阈值那一刻在 `ACTION_MOVE` 里立刻生效，容易划太快/抖一下就误触。两个手势统一改成：阈值最终定为 30dp（上划中途试过 40dp）；判定不再是一次性锁存，而是每次 `ACTION_MOVE` 重新计算的实时布尔值（`swipeUpActive`/`swipeDownActive`），手指缩回阈值以内会跟着退出"待触发"状态；真正生效（进 RAW / 取消）只在 `ACTION_UP` 时看当前布尔值是否仍为真。配套实时视觉：`VoiceButton` 新增 `armedForRawSwipe`（待机胶囊背景过渡成浅绿 `rgb(200,230,201)`）和 `armedForCancel`（录音时波形颜色过渡成浅红 `rgb(255,150,150)`），都是 120ms `ValueAnimator` 缓动，松手（不管有没有真的触发）统一再缓动回原色，不是瞬间跳变；每次越过阈值（不论方向）触发一次 `performKeyHaptic()`，真正触发 RAW/取消那一刻仍是原有的 `performDoubleKeyHaptic()`。中途还试过给待机话筒图标本身加同步的变黄+上移几 dp 效果，用户反馈后整批回退，只保留胶囊/波形背景色这一种反馈方式 |
 | 修复：`actkill` 细分重启统计跟总数脱节 | 用户从键盘设置页截图发现 `actkill_finishing`（59）比 `actkill` 总数（16）还大，逻辑上不该发生——两者本该在 `OpenLessRuntimeService.kt` 里原子地一起 +1。根因是 `OpenLessApplication.ALL_RESTART_CATEGORIES`（版本号变化时清零哪些 key 的白名单，注释里写明"要手动同步"）没跟上后来新增的 `actkill_self`/`actkill_config`/`actkill_finishing`/`actkill_os` 四个细分 key，导致 `actkill` 总数每次调试构建升版本号都清零，四个细分计数却完全不清零，在同一天多次构建之间持续累加、跟总数脱节。已在 1.68 把四个 key 补进白名单 |
+| 英文候选栏长按删词 | `EnglishCandidateProvider` 新增 `excludedWords`/`isCustomWord()`/`forgetCustomWord()`，`EnglishUserFrequency` 的 `addCustomWord`/`removeCustomWord`/`hasCustomWord` 本来就实现了但一直没接 UI 入口；现在长按一个英文候选（`candidateItemView()` 新增 `onLongPress` 参数）即可从个人词库移除并当场隐藏，Toast 提示 |
+| 英文键盘顶行数字上划 + 第二/三排符号上划 | `buildEnglishCharKey()` 新增 `swipeSymbol` 参数，复用笔画面板同款上划手势（dp(10) 触发阈值、实时可回退的 arm 状态、跨键重定位、`KeyPreviewOverlay` 气泡）；映射：顶行 q~p → 1~0，第二排 a~l → `@ # $ % & - + ( )`，第三排 z~m → `: ; ' . , ! ?`。小号提示标签最终定为 11sp、灰色（`SWIPE_SYMBOL_HINT_TEXT_SIZE_SP`/`TOP_PADDING_DP`，试过跟随气泡的红色但在这个尺寸下更不清楚，改回灰）；字母与提示分成两个独立 View（`FrameLayout` 包一个真正居中的字母 `TextView` + 一个贴顶的小号 `TextView`），取代最初"两行文字挤在一个 TextView 里"的方案（那种做法会把字母整体往下挤）；字母另加 `translationY = 2dp` 的纯渲染层微调 |
+| 英文字母 + 底排 123/Return 统一 `sans-serif-medium` 字重 | `buildEnglishCharKey()` 的字母 `TextView` 与底排 `123`/`Return` 按键都加了 `Typeface.create("sans-serif-medium", NORMAL)`，字号不变；语音面板状态文字/麦克风无声音提示/Return 按钮、剪贴板历史分类标签/空态提示的英文分支也统一跟进（按 `englishUi` 判断，中文文案保持原样不受影响，避免动了不该动的视觉） |
+| 切换面板"笔画"字号微调 | `ModeToggle.onDraw()` 的 `drawLabel()` inkHeight 从 `h*0.34f` 调到 `h*0.38f`（"EN" 保持 `h*0.28f` 不变） |
 
 开发流程：每次改动后用 `npm run copy:android-scaffolding` 同步 → `gradlew app:assembleArm64Debug -x app:rustBuildArm64Debug`（Kotlin-only 改动跳过 Rust 重编译）→ `adb install -r` 装机 → 通过 `adb exec-out screencap` 或用户反馈截图核对真机效果；涉及尺寸争议时用 `adb shell wm density` + 实测 px 反推 dp，避免凭空猜测布局问题。
+
+## 2026-09-24：笔画候选/联想性能优化 + `StrokeInputController` 架构拆分
+
+起因：用户反馈笔画输入的候选词/联想词在低配机上显示有点慢。排查+修复分两批，第二批顺带完成了"拆分 `OpenLessImeService.kt`"这项一直挂着的优化项（笔画面板是其中最大的一块自成体系的代码）。
+
+### 第一批：候选栏渲染
+
+`renderCandidateRow()`/`refreshAssociations()` 原来每次按键都 `removeAllViews()` 再重新 `addView()` 全部候选——每个候选都走 `candidateItemView()` → `keyboardKey()`，这是给完整按键用的通用构造器（分配 `roundedButton()` drawable、挂一整套长按/上划重定位触摸监听闭包），`candidateItemView()` 拿到手后又把 background/elevation 清空重置成 0，相当于每次按键都把最多 `MAX_CANDIDATES`（36）个候选的"完整按键"白造一遍再丢弃大半。改为 `populateCandidateRow()`：候选内容抽成 `CandidateSpec`（文字/首选态/宽度/点击动作），对候选栏里已有的 View 按位置原地复用（改文字、改宽度、重新绑点击目标、重设首选态颜色/粗体），只有候选数量变化时才真正新建/删除 View。候选点击靠 `keyboardKey()` 本来就走的标准 `OnClickListener`（点按→`performClick()`）触发，复用时直接重新 `setOnClickListener` 即可换目标，不用碰长按/上划那套触摸监听逻辑。
+
+### 第二批：数据层三个真实热点
+
+1. **联想词典没有预热**：`StrokePhraseRepository`（约 22 万条词组）此前没有像 `StrokeInputRepository` 那样在 `onCreate()` 里预热，建 Trie 的开销（下面第 3 点）就会砸在"这个会话里第一次真正需要联想的那一下"——用户正等着候选栏更新的时刻。补了 `preloadAsync()`，随 `strokeController.preloadAsync()` 在键盘启动时一起后台预热。配套给 `ensureLoaded()`/`searchAsync()` 加了 `Log.i`/`Log.d`（tag `OpenLessPhrase`，耗时 + 条目/结果数），供后续排查用 logcat 直接看数据而不是猜。
+2. **`trimIfNeeded()` 惰性化**：`StrokeUserFrequency`/`EnglishUserFrequency` 的 `record()` 原来每次都调 `trimIfNeeded()`，而 `preferences.all` 是整表拷贝，哪怕紧接着的 size 检查什么都不做也会先拷贝一次。两个类都加了 `approxSize` 缓存：重复记录一个已存在的键（最常见情况）现在完全不碰 `preferences.all`；只有真正插入新键才检查大小，只有真超过 `MAX_ENTRIES`（3000）才付真正整表排序清理的代价。
+3. **联想缓存 key 从"完整滚动上下文"改成"实际尝试过的后缀子串"**：`StrokePhraseRepository` 的 LRU 缓存原来按完整 `confirmedText` 滚动窗口做 key，连续打字场景下几乎每次上下文都不一样，缓存基本没有命中过。挪到 `find()` 内部，按 `findLongestSuffix()` 实际尝试的每一个后缀长度做 key——搜索顺序和结果完全不变（只是把本来就会做的每次 `find()` 调用记住了），但短的常见结尾子串会在不同上下文之间反复命中。`CACHE_SIZE` 从 64 提到 256 配合更高但更有效的 key 基数。
+4. **`insert()` 建索引改成先收集再一次性排序**：原来每插入一条词组，沿途最多 8 层节点都要做"判重（线性扫）+ 对最多 `NODE_TOP_N`（12）个候选重新排序"，22 万条词组累计是百万级别的小排序操作。改成 `insert()` 只管往节点列表里追加，全部文件读完后跑一遍 `finalizeNode()` 对每个节点一次性去重（`distinctBy { it.text }`，保留先出现的，等价于原来的判重逻辑）+ 排序 + 裁剪到 top-N。
+
+### 架构拆分：新增 `StrokeInputController.kt`
+
+`OpenLessImeService.kt` 一直被列为"该拆分"的优化项（见根 `README.md` Roadmap），笔画面板是其中最大的一块自成体系的代码。新建 `StrokeInputController.kt`（约 650 行），把笔画面板专属的状态和逻辑整体搬过去：编码输入、字候选/联想候选的查询+渲染+提交、数字符号子面板，以及笔画/词组两个仓库的生命周期。纯搬运，不改逻辑——只是把 `this` 换成 `service`，把裸调用换成 `service.xxx()`。真正跨面板共用的部分（`candidateItemView()`——英文候选栏也在用、`showCandidateOverlay()`、`keyboardKey()`、主题/布局工具函数）留在 `OpenLessImeService` 上，可见性从 `private` 放宽到 `internal` 供新 controller 调用。两处原来混在一起的重置逻辑（`selectInputMode()`、`onStartInput()`）拆成了 `resetForModeSwitch()`/`resetForNewInputSession()` 两个方法而不是合并成一个——因为两处原来重置的字段集合并不完全一样（切换面板还会重置数字符号子面板和标点翻页，新开一个输入会话还会额外清掉未完成的分词但不动标点翻页），合并会悄悄改变行为。`OpenLessImeService.kt`：约 5300 → 4857 行。完整类架构见本文件上方"Kotlin 类架构总览"一节。
+
+### 现状
+
+以上改动均已编译、完整构建（`npm run tauri:android:build:debug -- --target aarch64`）、`adb install -r` 装到测试设备（含一台小米设备，MIUI 首次安装需要在设备上手动确认安装弹窗，ADB 无法代为点击）。**尚未做完整的真机手势回归测试**——候选栏 View 复用、`StrokeInputController` 拆分这两处改动量较大，涉及大量调用点迁移，只能靠编译器捕获结构性错误，无法验证手势细节层面的行为是否完全一致。建议下一步至少覆盖：笔画正常打字选字、分词多字词、退格逐笔删除、联想候选点选、数字符号面板切换、繁简切换、语音长按跳转、英文顶行数字上划 + 第二/三排符号上划（含跨键滑动切换）、低配机上连续打字的候选栏响应速度主观对比。
 
 ## 设置页黑屏排查记录（供交叉验证）
 
