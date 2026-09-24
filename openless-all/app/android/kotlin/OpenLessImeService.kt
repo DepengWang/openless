@@ -452,6 +452,30 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             dp(38),
         ))
 
+        // Small companion hint under the main status line — deliberately
+        // muted (low size + alpha) so it doesn't compete with "Tap to
+        // speak" for attention, but discoverable enough that a user
+        // notices the swipe-up-for-Raw gesture exists at all. Tap or
+        // long-press explains what Raw mode actually does via a Toast,
+        // rather than building a dedicated tooltip bubble for a single
+        // one-off explanation.
+        val rawModeTooltip = ui("Raw模式，语音原样转写，不做AI润色整理", "Raw mode, verbatim transcription without AI polishing")
+        val voiceRawHint = TextView(this).apply {
+            text = ui("上滑开启 Raw 模式", "Swipe up for Raw")
+            textSize = 14f
+            if (englishUi) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            gravity = android.view.Gravity.CENTER
+            setTextColor(Color.argb((0.8f * 255).toInt(), 0xB0, 0xB0, 0xB0))
+            setPadding(0, dp(8), 0, 0)
+            isClickable = true
+            setOnClickListener { Toast.makeText(this@OpenLessImeService, rawModeTooltip, Toast.LENGTH_SHORT).show() }
+            setOnLongClickListener {
+                Toast.makeText(this@OpenLessImeService, rawModeTooltip, Toast.LENGTH_SHORT).show()
+                true
+            }
+        }
+        panel.addView(voiceRawHint, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
         voiceButton = VoiceButton(this, isDarkTheme).apply {
             isClickable = true
             setOnClickListener { toggleDictation() }
