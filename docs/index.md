@@ -23,6 +23,7 @@
 
 ## 平台与运营
 
+- [macOS CI 与打包耗时](macos-build-performance.md)：基线日志、Rust 编译优化、缓存边界与仅 macOS 验证入口。
 - [Android APK / 悬浮窗计划](android-mobile-apk-overlay-plan.md)（实施中）
 - [火山引擎 ASR 配置](volcengine-setup.md)
 - [讯飞（iflytek）ASR 配置](xfyun-asr.md)
