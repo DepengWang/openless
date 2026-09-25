@@ -22,6 +22,9 @@ runs:
         fingerprint=$({
           rustc -vV
           xcrun clang --version
+          # Downloadable Metal toolchains can change independently of Clang.
+          # Their InstalledDir may contain a per-boot mount identifier.
+          xcrun --sdk macosx metal --version | sed '/^InstalledDir:/d'
           xcrun --sdk macosx --show-sdk-version
           cmake --version
           git -C src-tauri/vendor/qwen3-asr-rs rev-parse HEAD
