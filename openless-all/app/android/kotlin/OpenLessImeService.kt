@@ -1218,7 +1218,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val modeButton = keyboardKey(if (englishLayer == EnglishLayer.LETTERS) "123" else "ABC", 1.3f, action = {
             handleEnglishBottomModeToggle()
         }).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) }
-        val spaceButton = keyboardKey("", 5f, action = {
+        // "Space" is the key's own real label now (was "" — the key had no
+        // visible text of its own at all, only the small mode hint below
+        // it, which real-device feedback found unreadably faint at 10sp
+        // muted gray). keyboardKey()'s own default styling (22sp, white/
+        // tone()'d) already matches every other letter key — no override
+        // needed here beyond nudging the label upward via padding to leave
+        // room for spaceHint underneath it.
+        val spaceButton = keyboardKey("Space", 5f, action = {
             // Space never commits a pinyin candidate (see
             // toggleLatinInputMode()'s own doc comment) — a short press
             // always just inserts a literal space, in both modes, and
@@ -1229,14 +1236,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             finalizeEnglishComposingWord()
             litePinyinController.clear()
             currentInputConnection?.commitText(" ", 1)
-        }, longPressAction = { toggleLatinInputMode() })
-        // Small hint pinned to the top of the space key — same visual
-        // language as buildEnglishCharKey()'s swipe-digit/symbol hints
-        // (small, muted, top-anchored, non-interactive so touches still
-        // reach the key beneath it) — always names the mode long-pressing
-        // space would switch TO, not the current one.
+        }, longPressAction = { toggleLatinInputMode() }).apply {
+            setPadding(0, dp(4), 0, dp(15))
+        }
+        // Small hint pinned below the "Space" label — non-interactive so
+        // touches still reach the key beneath it — always names the mode
+        // long-pressing space would switch TO, not the current one.
         val spaceHint = TextView(this).apply {
-            text = if (latinInputMode == LatinInputMode.ENGLISH) ui("拼音输入", "Pinyin") else ui("英文输入", "English")
+            text = if (latinInputMode == LatinInputMode.ENGLISH) ui("拼音", "Pinyin") else ui("英文", "English")
             textSize = 12f
             gravity = android.view.Gravity.CENTER
             // Same cherry red as a first-place candidate (see
@@ -1250,8 +1257,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             addView(spaceButton, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(
                 spaceHint,
-                FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL).apply {
-                    topMargin = dp(3)
+                FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, android.view.Gravity.BOTTOM or android.view.Gravity.CENTER_HORIZONTAL).apply {
+                    bottomMargin = dp(4)
                 },
             )
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 5f)
