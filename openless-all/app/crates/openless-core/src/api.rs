@@ -3399,7 +3399,9 @@ impl OpenLessBackend {
         };
         let preferences = self.get_preferences();
         let mode = preferences.hotkey.mode;
-        let modifier_only = crate::hotkey_interpreter::modifier_arbitration_required(
+        let modifier_only = crate::shortcut_types::is_modifier_chord_binding(
+            &preferences.dictation_hotkey,
+        ) || crate::hotkey_interpreter::modifier_arbitration_required(
             crate::shortcut_types::legacy_modifier_trigger(&preferences.dictation_hotkey),
             mode,
         );
@@ -9447,7 +9449,19 @@ mod tests {
             }
         }
         backend.cancel_dictation(Some(first)).await.unwrap();
-        let second = backend.start_dictation().await.unwrap();
+        let second = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match backend.start_dictation().await {
+                    Ok(id) => break id,
+                    Err(error) if error.code == BackendErrorCode::Busy => {
+                        tokio::task::yield_now().await;
+                    }
+                    Err(error) => panic!("unexpected start failure: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("successor dictation should become available after cancel");
         release_guard.release();
         settings.join().unwrap().unwrap();
         stopping.await.unwrap().unwrap();
@@ -12733,6 +12747,62 @@ mod tests {
             }
         }
         assert!(!saw_recording_after_cancel);
+    }
+
+    #[tokio::test]
+    async fn modifier_chord_companion_does_not_start_dictation_engine() {
+        for mode in [
+            crate::shared_types::HotkeyMode::Hold,
+            crate::shared_types::HotkeyMode::Auto,
+            crate::shared_types::HotkeyMode::Toggle,
+        ] {
+            let data_dir = TestDataDir::new("modifier-chord-companion");
+            let engine = crate::testing::FixtureDictationEngine::successful("raw", "polished");
+            let backend =
+                backend_with_dictation_engine(data_dir.path().to_path_buf(), Arc::new(engine.clone()));
+            backend.start().await.unwrap();
+            let mut preferences = backend.get_preferences();
+            preferences.hotkey.mode = mode;
+            preferences.dictation_hotkey = crate::shared_types::ShortcutBinding {
+                primary: "ModifierChord".into(),
+                modifiers: vec!["ctrl-left".into(), "cmd-left".into()],
+            };
+            backend.set_preferences(preferences).unwrap();
+
+            let at = std::time::Instant::now();
+            let mut press = std::pin::pin!(backend
+                .dispatch_dictation_hotkey_edge(DictationHotkeyEdge::Pressed { press_id: 1, at }));
+            // Poll the real public API until it waits. A companion key arrives
+            // before the grace expires, so even native startup must stay idle.
+            assert!(futures_util::poll!(press.as_mut()).is_pending());
+            assert_eq!(backend.snapshot().dictation.phase, DictationPhase::Idle);
+            assert!(engine.actions().is_empty());
+            assert_eq!(
+                backend
+                    .dispatch_dictation_hotkey_edge(DictationHotkeyEdge::Combined {
+                        press_id: 1,
+                        at: at + std::time::Duration::from_millis(1),
+                    })
+                    .await
+                    .unwrap(),
+                CliDispatchOutcome::Noop
+            );
+            assert_eq!(press.await.unwrap(), CliDispatchOutcome::Noop);
+            assert!(engine.actions().is_empty());
+
+            // A later chord without a companion remains a working trigger.
+            assert!(matches!(
+                backend
+                    .dispatch_dictation_hotkey_edge(DictationHotkeyEdge::Pressed {
+                        press_id: 2,
+                        at: at + std::time::Duration::from_secs(1),
+                    })
+                    .await
+                    .unwrap(),
+                CliDispatchOutcome::DictationStarted(_)
+            ));
+            backend.cancel_dictation(None).await.unwrap();
+        }
     }
 
     #[tokio::test]
