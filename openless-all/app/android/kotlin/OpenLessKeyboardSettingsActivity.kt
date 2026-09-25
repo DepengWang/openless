@@ -10,6 +10,7 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -339,6 +340,49 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             },
         )
 
+        // 话筒左划进入"碎碎念"：录音的原始转写（不经 LLM 整理，见
+        // OpenLessImeService.toggleDictation() 里 rawModeArmed || rambleArmed
+        // 那一支）会以 JSON POST 到这里配置的地址，不插入任何输入框，也不
+        // 在本机留存。三项都填了才会真的提交——留空时只会在状态栏提示去
+        // 设置里补上，不会静默失败。
+        content.addView(sectionLabel(ui("碎碎念提交", "Ramble webhook")))
+        content.addView(
+            TextView(this).apply {
+                text = ui(
+                    "话筒左划进入「碎碎念」模式：录音的原始转写会提交到下面的地址，不插入输入框，也不保存在本机。",
+                    "Swipe the mic left to enter Ramble mode: the raw transcript is POSTed to the address below instead of being inserted — nothing is kept on this device either.",
+                )
+                textSize = 12f
+                setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(110, 110, 115)))
+                setPadding(0, 0, 0, dp(10))
+            },
+        )
+        content.addView(
+            textFieldRow(
+                label = ui("提交地址", "Submit URL"),
+                hint = "https://example.com/capture_ingest.php",
+                initial = prefs.getString("key_ramble_webhook_url", "") ?: "",
+                onChange = { prefs.edit().putString("key_ramble_webhook_url", it).apply() },
+            ),
+        )
+        content.addView(
+            textFieldRow(
+                label = ui("账号 (user_id)", "Account (user_id)"),
+                hint = "w",
+                initial = prefs.getString("key_ramble_webhook_account", "") ?: "",
+                onChange = { prefs.edit().putString("key_ramble_webhook_account", it).apply() },
+            ),
+        )
+        content.addView(
+            textFieldRow(
+                label = "Token",
+                hint = ui("输入法专用 Token", "IME-only token"),
+                initial = prefs.getString("key_ramble_webhook_token", "") ?: "",
+                isSecret = true,
+                onChange = { prefs.edit().putString("key_ramble_webhook_token", it).apply() },
+            ),
+        )
+
         // build_first_seen_wall_time is written by OpenLessApplication's
         // resetRestartStatsOnVersionBump() at the exact moment it last
         // zeroed the restart-cause counters below — i.e. "counting since
@@ -427,6 +471,43 @@ class OpenLessKeyboardSettingsActivity : Activity() {
                     override fun onStopTrackingTouch(seekBar: SeekBar?) {
                         onRelease?.invoke()
                     }
+                })
+            },
+        )
+        return row
+    }
+
+    /** One labeled single-line text field, auto-saving on every keystroke (matches every other row on this page — no separate save button). Used by the "碎碎念提交" section for its URL/account/token; reusable for any future free-text setting. */
+    private fun textFieldRow(label: String, hint: String, initial: String, isSecret: Boolean = false, onChange: (String) -> Unit): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(14)
+            }
+        }
+        row.addView(
+            TextView(this).apply {
+                text = label
+                textSize = 14f
+                setTextColor(tone(Color.rgb(200, 200, 200), Color.rgb(70, 70, 75)))
+                setPadding(0, 0, 0, dp(4))
+            },
+        )
+        row.addView(
+            EditText(this).apply {
+                setText(initial)
+                this.hint = hint
+                textSize = 14f
+                isSingleLine = true
+                if (isSecret) {
+                    inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+                }
+                setTextColor(tone(Color.WHITE, Color.rgb(30, 30, 34)))
+                setHintTextColor(tone(Color.rgb(110, 110, 115), Color.rgb(170, 170, 175)))
+                addTextChangedListener(object : android.text.TextWatcher {
+                    override fun afterTextChanged(s: android.text.Editable?) = onChange(s?.toString().orEmpty())
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
                 })
             },
         )
