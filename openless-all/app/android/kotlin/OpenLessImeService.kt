@@ -66,10 +66,28 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             // The RAW gesture changes the mode while the recording prompt is
             // already visible. Refresh the text color immediately in both
             // directions so yellow cannot leak into the next normal session.
-            status?.setTextColor(
-                if (state == "speaking" && value) LINK_COLOR_RECORDING_RAW else statusNormalColor,
-            )
+            status?.setTextColor(recordingAccentColor())
         }
+    // Armed by the mic button's swipe-right gesture while recording is still
+    // in progress, or set directly by its idle-swipe-right start — mirrors
+    // rawModeArmed exactly (see that field's own doc comment), except the
+    // eventual stop calls nativeStopDictationAsQuickNote() instead of the
+    // normal/raw stop: the dictation ends, gets archived as a standalone
+    // note, and is never inserted into the input field (see
+    // quickNoteDictation()).
+    private var quickNoteArmed = false
+        set(value) {
+            field = value
+            voiceButton?.quickNoteActive = value
+            status?.setTextColor(recordingAccentColor())
+        }
+
+    /** Status text color while a recording prompt is showing — orange for an armed Raw stop, green for an armed quick-note stop, normal otherwise. Single source of truth for rawModeArmed/quickNoteArmed's setters and updateStatus() alike, so the two gestures can never disagree on which one currently owns the color. */
+    private fun recordingAccentColor(): Int = when {
+        state == "speaking" && rawModeArmed -> LINK_COLOR_RECORDING_RAW
+        state == "speaking" && quickNoteArmed -> LINK_COLOR_QUICK_NOTE
+        else -> statusNormalColor
+    }
     internal var inputMode = InputMode.VOICE
     private var englishLayer = EnglishLayer.LETTERS
     // Persisted across sessions the same way inputMode is (see
@@ -526,20 +544,20 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             isClickable = true
             setOnClickListener { toggleDictation() }
             contentDescription = ui("OpenLess 语音听写", "OpenLess dictation")
-            // Both swipe gestures follow the same pattern: a LIVE boolean
-            // re-evaluated every ACTION_MOVE (not a one-way latch), a
-            // matching live visual on VoiceButton (capsule green for
-            // swipe-up-to-raw, waveform light red for swipe-down-to-
-            // cancel — both ease back the moment the finger drops back
-            // below their own threshold), a single haptic tick on every
-            // crossing in either direction, and the actual action (cancel
-            // / enter raw mode) only committed on release, gated on
-            // whichever one is still active at that instant. Nothing
-            // commits mid-drag any more — swipe down used to cancel the
-            // moment the threshold was first crossed during the move, but
-            // that gave no chance to back out of an accidental trigger,
-            // same reasoning as the swipe-up threshold's own move-to-
-            // release change earlier.
+            // All three swipe gestures follow the same pattern: a LIVE
+            // boolean re-evaluated every ACTION_MOVE (not a one-way latch),
+            // a matching live visual on VoiceButton (idle capsule orange for
+            // swipe-up-to-raw / green for swipe-right-to-note, waveform
+            // light red for swipe-down-to-cancel — all three ease back the
+            // moment the finger drops back below their own threshold), a
+            // single haptic tick on every crossing in either direction, and
+            // the actual action (cancel / enter raw mode / enter quick-note
+            // mode) only committed on release, gated on whichever one is
+            // still active at that instant. Nothing commits mid-drag —
+            // swipe down used to cancel the moment the threshold was first
+            // crossed during the move, but that gave no chance to back out
+            // of an accidental trigger, same reasoning as the swipe-up
+            // threshold's own move-to-release change earlier.
             //
             // requestDisallowInterceptTouchEvent is still claimed
             // unconditionally on DOWN (not only once a threshold is
@@ -549,15 +567,23 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             // "long downward drag dismisses the keyboard" gesture, and that
             // ancestor can steal the sequence before our own dp(30) check
             // ever sees the full distance.
+            var downX = 0f
             var downY = 0f
             var swipeUpActive = false
             var swipeDownActive = false
+            // Same shape as swipeUpActive (no `recording` gate on the MOVE
+            // check — armable both from idle and mid-recording), just on the
+            // horizontal axis — see quickNoteArmed's own doc comment for
+            // what release does in each case.
+            var swipeRightActive = false
             setOnTouchListener { view, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
+                        downX = event.x
                         downY = event.y
                         swipeUpActive = false
                         swipeDownActive = false
+                        swipeRightActive = false
                         view.parent?.requestDisallowInterceptTouchEvent(true)
                     }
                     MotionEvent.ACTION_MOVE -> {
@@ -579,6 +605,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                             // just the eventual release.
                             performKeyHaptic()
                         }
+                        val activeRight = event.x - downX >= dp(30)
+                        if (activeRight != swipeRightActive) {
+                            swipeRightActive = activeRight
+                            voiceButton?.armedForQuickNote = activeRight
+                            performKeyHaptic()
+                        }
                     }
                     MotionEvent.ACTION_UP -> {
                         if (swipeDownActive) {
@@ -597,17 +629,34 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                                     updateStatus(currentMessage)
                                 }
                             }
+                        } else if (swipeRightActive) {
+                            if (recording && !quickNoteArmed) {
+                                quickNoteArmed = true
+                                performDoubleKeyHaptic()
+                                updateStatus(currentMessage)
+                            } else if (!recording && !processing) {
+                                toggleDictation()
+                                if (recording) {
+                                    quickNoteArmed = true
+                                    performDoubleKeyHaptic()
+                                    updateStatus(currentMessage)
+                                }
+                            }
                         }
                         swipeUpActive = false
                         swipeDownActive = false
+                        swipeRightActive = false
                         voiceButton?.armedForRawSwipe = false
                         voiceButton?.armedForCancel = false
+                        voiceButton?.armedForQuickNote = false
                     }
                     MotionEvent.ACTION_CANCEL -> {
                         swipeUpActive = false
                         swipeDownActive = false
+                        swipeRightActive = false
                         voiceButton?.armedForRawSwipe = false
                         voiceButton?.armedForCancel = false
+                        voiceButton?.armedForQuickNote = false
                     }
                 }
                 false
@@ -1104,7 +1153,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         englishLayer = EnglishLayer.LETTERS
         englishComposingWord.clear()
         litePinyinController.clear()
-        litePinyinController.resetAssociationContext()
         strokeController.resetForModeSwitch()
         clipboardSelectionMode = false
         clipboardSelectionAnchor = -1
@@ -2932,81 +2980,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     /** Candidate tap is the ONLY way a pinyin candidate reaches the field — see toggleLatinInputMode()'s doc comment on why Space deliberately never does this. */
     private fun selectPinyinCandidate(char: String) {
         currentInputConnection?.commitText(char, 1)
-        // Both recorded before clear() — the encoding is still intact and
-        // is half of what each one keys off (plan 8.4 / two-step combo
-        // learning, see LitePinyinController.observeCommitForLearning()).
+        // Recorded before clear() — the encoding is still intact and is
+        // half of the (encoding, text) key this boosts (plan 8.4).
         litePinyinController.recordSelection(char)
-        litePinyinController.observeCommitForLearning(char)
         litePinyinController.clear()
-        litePinyinController.recordCommittedText(char)
+        renderPinyinCandidates(emptyList())
         performKeyHaptic()
-        refreshPinyinAssociations()
-    }
-
-    /**
-     * Post-commit "what word comes next" suggestions — reuses
-     * StrokeInputController's own phraseRepository instance (same ~220k-
-     * entry index, same user-frequency store Stroke mode already tunes) so
-     * a word committed via Pinyin can suggest a continuation the same way
-     * Stroke's own commits do, and vice versa. Gated by the same
-     * strokeAssociationEnabled preference Stroke's own refreshAssociations()
-     * checks — this is explicitly the same feature, not a parallel one.
-     */
-    private fun refreshPinyinAssociations() {
-        if (!OpenLessAndroidPreferences.strokeAssociationEnabled(this)) {
-            renderPinyinAssociations(emptyList())
-            return
-        }
-        litePinyinController.queryAssociations(strokeController.phraseRepository) { results ->
-            // isEmpty(): guards against the case where the user already
-            // started typing a fresh encoding by the time this async result
-            // lands — associationEpoch alone only protects against a STALE
-            // association query, not against a completely different
-            // encoding query having taken over the candidate row since.
-            if (latinInputMode == LatinInputMode.PINYIN && litePinyinController.isEmpty()) renderPinyinAssociations(results)
-        }
-    }
-
-    /** Same row/candidateItemView() machinery as renderPinyinCandidates(), but no encoding label (there's no in-progress encoding here) and suffix-based commit (see selectPinyinAssociation()) instead of committing the whole label — mirrors StrokeInputController.refreshAssociations() exactly. */
-    private fun renderPinyinAssociations(candidates: List<StrokePhraseRepository.Candidate>) {
-        val row = englishCandidateRow ?: return
-        row.removeAllViews()
-        val overlayEntries = mutableListOf<Pair<String, () -> Unit>>()
-        candidates.forEachIndexed { index, candidate ->
-            val displayText = outputScript(candidate.text)
-            row.addView(
-                candidateItemView(
-                    displayText,
-                    isFirst = index == 0,
-                    action = { selectPinyinAssociation(candidate) },
-                ),
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT),
-            )
-            overlayEntries.add(displayText to { selectPinyinAssociation(candidate) })
-        }
-        candidateOverlayEntries = overlayEntries
-        if (candidates.isEmpty()) englishExpandCandidatesButton?.visibility = View.GONE
-    }
-
-    /**
-     * Only the part of the association candidate not already on screen gets
-     * committed — matches StrokeInputController.commitAssociation() exactly
-     * (same StrokePhraseRepository.Candidate type). candidate.matchedPrefix
-     * is always populated by StrokePhraseRepository.find() before a
-     * candidate is ever returned from searchAsync(), so it's trusted
-     * directly here rather than re-deriving the query context.
-     */
-    private fun selectPinyinAssociation(candidate: StrokePhraseRepository.Candidate) {
-        if (isSensitiveField(currentInputEditorInfo) || !candidate.text.startsWith(candidate.matchedPrefix)) return
-        val suffix = candidate.text.removePrefix(candidate.matchedPrefix)
-        val connection = currentInputConnection ?: return
-        if (suffix.isNotEmpty() && !connection.commitText(outputScript(suffix), 1)) return
-        if (OpenLessAndroidPreferences.strokeUsageEnabled(this)) {
-            strokeController.phraseRepository.recordUsage(candidate.matchedPrefix, candidate.text)
-        }
-        litePinyinController.recordCommittedText(suffix)
-        performKeyHaptic()
-        refreshPinyinAssociations()
     }
 
     /**
@@ -3054,7 +3033,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         englishLayer = EnglishLayer.LETTERS
         englishComposingWord.clear()
         litePinyinController.clear()
-        litePinyinController.resetAssociationContext()
         startRuntimeService()
         sessionEpoch++
         recording = false
@@ -3142,6 +3120,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             updateStatus("请先授予麦克风权限")
             return
         }
+        if (recording && quickNoteArmed) {
+            quickNoteDictation()
+            return
+        }
         if (recording) {
             recording = false
             processing = true
@@ -3194,6 +3176,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             recording = true
             processing = false
             rawModeArmed = false
+            quickNoteArmed = false
             // The actual start of a new recording attempt — reset the
             // silence watch and fire the start haptic here, not in
             // onCapsuleStateChanged's "recording" branch: that branch only
@@ -3223,8 +3206,35 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         recording = false
         processing = false
         rawModeArmed = false
+        quickNoteArmed = false
         invalidateSession("已取消")
         runNativeAction("取消听写") { OpenLessNative.nativeCancelDictation() }
+    }
+
+    /**
+     * Ends the current recording and archives it as a standalone note
+     * instead of inserting anything — armed by the mic button's own
+     * swipe-right gesture (quickNoteArmed), then triggered by the next tap
+     * that would otherwise stop a normal recording (see toggleDictation()'s
+     * own quickNoteArmed check up top). Mirrors cancelDictation()'s shape:
+     * settles local state immediately rather than waiting on a native
+     * round-trip, since nativeStopDictationAsQuickNote() never calls back
+     * with a message of its own (the Rust side deliberately skips
+     * notify_ime_text for this path — see native_bridge.rs's
+     * spawn_stop_dictation_as_quick_note()).
+     */
+    private fun quickNoteDictation() {
+        recording = false
+        processing = false
+        rawModeArmed = false
+        quickNoteArmed = false
+        if (editingDictationResult) {
+            editingDictationResult = false
+            refreshInputView()
+        }
+        performDoubleKeyHaptic()
+        setState("done", "笔记已记录", QUICK_NOTE_CONFIRMATION_DELAY_MS)
+        runNativeAction("速记") { OpenLessNative.nativeStopDictationAsQuickNote() }
     }
 
     // Also requires a registered Activity Context (see
@@ -3443,9 +3453,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private fun updateStatus(message: String) {
         currentMessage = message
         status?.text = displayStatus(message)
-        status?.setTextColor(
-            if (state == "speaking" && rawModeArmed) LINK_COLOR_RECORDING_RAW else statusNormalColor,
-        )
+        status?.setTextColor(recordingAccentColor())
         voiceRawHint?.text = rawModeHintText()
         voiceRawHint?.setTextColor(rawModeHintColor())
         voiceRawHint?.visibility = if (rawModeHintVisible()) View.VISIBLE else View.GONE
@@ -3456,41 +3464,42 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     /**
-     * Swipe-up-for-Raw discoverability hint while idle; once a recording is
-     * actually in Raw mode (armed via that same swipe, live through both
-     * recording and the following "thinking"/整理 step), the row repurposes
-     * itself to confirm that instead. Recording-or-thinking without
-     * rawModeArmed (an ordinary, non-Raw dictation) never reaches this text
-     * at all — see rawModeHintVisible(), which hides the row entirely for
-     * that case.
+     * Swipe-up-for-Raw / swipe-right-for-Note discoverability hint while
+     * idle; once a recording is actually armed into one of those two modes
+     * (live through both recording and the following "thinking"/整理 step
+     * for Raw — quick note never reaches "thinking", see
+     * quickNoteDictation()), the row repurposes itself to confirm whichever
+     * one is armed instead. Recording-or-thinking with neither armed (an
+     * ordinary dictation) never reaches this text at all — see
+     * rawModeHintVisible(), which hides the row entirely for that case.
      */
     private fun rawModeHintText(): String {
-        return if ((state == "speaking" || state == "thinking") && rawModeArmed) {
-            ui("原样转写", "Raw Mode")
-        } else {
-            ui("上滑开启 Raw 模式", "Swipe up for Raw")
+        return when {
+            (state == "speaking" || state == "thinking") && rawModeArmed -> ui("原样转写", "Raw Mode")
+            state == "speaking" && quickNoteArmed -> ui("速记模式", "Quick Note")
+            else -> ui("上划RAW，右划Note", "Swipe up for Raw, right for Note")
         }
     }
 
-    /** Same orange as the status line's own Raw coloring and every other Raw-mode indicator (VoiceButton's armed pill/waveform) — muted gray otherwise. */
+    /** Same orange/green as the status line's own Raw/Note coloring and every other indicator for either mode (VoiceButton's armed pill/waveform) — muted gray otherwise. */
     private fun rawModeHintColor(): Int {
-        return if ((state == "speaking" || state == "thinking") && rawModeArmed) {
-            LINK_COLOR_RECORDING_RAW
-        } else {
-            Color.argb((0.8f * 255).toInt(), 0xB0, 0xB0, 0xB0)
+        return when {
+            (state == "speaking" || state == "thinking") && rawModeArmed -> LINK_COLOR_RECORDING_RAW
+            state == "speaking" && quickNoteArmed -> LINK_COLOR_QUICK_NOTE
+            else -> Color.argb((0.8f * 255).toInt(), 0xB0, 0xB0, 0xB0)
         }
     }
 
     /**
-     * Hidden while actively recording or thinking in an ordinary (non-Raw)
-     * dictation — at that point it's neither teaching a still-relevant
-     * gesture (idle) nor confirming an active one (Raw), just a stray label
-     * under the mic. Visible the rest of the time: idle (teaches the
-     * gesture) and recording/thinking once Raw is actually armed (confirms
-     * it).
+     * Hidden while actively recording or thinking in an ordinary dictation
+     * (neither Raw nor Note armed) — at that point it's neither teaching a
+     * still-relevant gesture (idle) nor confirming an active one, just a
+     * stray label under the mic. Visible the rest of the time: idle
+     * (teaches both gestures) and recording/thinking once either one is
+     * actually armed (confirms it).
      */
     private fun rawModeHintVisible(): Boolean {
-        return !((state == "speaking" || state == "thinking") && !rawModeArmed)
+        return !((state == "speaking" || state == "thinking") && !rawModeArmed && !quickNoteArmed)
     }
 
     private fun commitImeText(text: String) {
@@ -3699,7 +3708,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         refreshInputView()
     }
 
-    private fun setState(nextState: String, message: String) {
+    private fun setState(nextState: String, message: String, revertDelayMs: Long = DONE_TO_IDLE_DELAY_MS) {
         state = nextState
         updateStatus(message)
         // A completed commit/edit (see the various setState("done", "已
@@ -3707,8 +3716,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // started; the status line and the Raw hint below it should instead
         // settle back to the same ready state as a fresh session shortly
         // after, so it's visibly clear another dictation can start right
-        // away — see scheduleRevertToIdle().
-        if (nextState == "done") scheduleRevertToIdle()
+        // away — see scheduleRevertToIdle(). revertDelayMs only ever
+        // differs from the default for quickNoteDictation()'s own shorter
+        // "笔记已记录" confirmation (QUICK_NOTE_CONFIRMATION_DELAY_MS).
+        if (nextState == "done") scheduleRevertToIdle(revertDelayMs)
     }
 
     /**
@@ -3725,14 +3736,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * the earlier one winning. sessionEpoch is still checked too, for a
      * genuinely new input session in the meantime.
      */
-    private fun scheduleRevertToIdle() {
+    private fun scheduleRevertToIdle(delayMs: Long = DONE_TO_IDLE_DELAY_MS) {
         val epoch = sessionEpoch
         val token = ++statusRevertToken
         android.os.Handler(Looper.getMainLooper()).postDelayed({
             if (sessionEpoch == epoch && statusRevertToken == token) {
                 setState("idle", ui("点击开始说话", "Tap to speak"))
             }
-        }, DONE_TO_IDLE_DELAY_MS)
+        }, delayMs)
     }
 
     private fun displayStatus(message: String): String {
@@ -3742,6 +3753,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             "再次点击结束 · 下划取消" -> "Tap again to finish · Swipe down to cancel"
             "正在思考" -> "Thinking"
             "已完成", "已上屏" -> "Done"
+            "笔记已记录" -> "Note saved"
             "已取消" -> "Cancelled"
             "敏感字段，已禁用听写", "敏感字段，禁止听写", "敏感字段，禁止上屏" -> "Dictation disabled in this field"
             "请先授予麦克风权限" -> "Microphone permission required"
@@ -4997,6 +5009,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // preview and the resulting raw recording state use one consistent
         // orange-yellow accent.
         private val swipeArmedPillColor = LINK_COLOR_RECORDING_RAW
+        // Same idea, for the swipe-right-to-Note gesture's own idle-pill
+        // preview — see armedForQuickNote/pillArmedAmountGreen below.
+        private val quickNoteArmedPillColor = LINK_COLOR_QUICK_NOTE
         // Light red, blended into the waveform bars while a swipe-down-to-
         // cancel gesture is past its commit threshold — same value in both
         // themes, mirroring swipeArmedPillColor's own choice.
@@ -5032,6 +5047,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 invalidate()
             }
 
+        var quickNoteActive: Boolean = false
+            set(value) {
+                field = value
+                invalidate()
+            }
+
         var audioLevel: Float = 0f
             set(value) {
                 field = value
@@ -5060,6 +5081,26 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 invalidate()
             }
         private var pillArmedAnimator: android.animation.ValueAnimator? = null
+
+        // Same pattern as armedForRawSwipe/pillArmedAmount above, for the
+        // swipe-right-to-Note idle-pill preview.
+        var armedForQuickNote: Boolean = false
+            set(value) {
+                if (field == value) return
+                field = value
+                pillArmedAnimatorGreen?.cancel()
+                pillArmedAnimatorGreen = android.animation.ValueAnimator.ofFloat(pillArmedAmountGreen, if (value) 1f else 0f).apply {
+                    duration = 120L
+                    addUpdateListener { pillArmedAmountGreen = it.animatedValue as Float }
+                    start()
+                }
+            }
+        private var pillArmedAmountGreen: Float = 0f
+            set(value) {
+                field = value
+                invalidate()
+            }
+        private var pillArmedAnimatorGreen: android.animation.ValueAnimator? = null
 
         // Same pattern as armedForRawSwipe/pillArmedAmount above, applied
         // to the recording waveform instead of the idle capsule — swipe
@@ -5109,6 +5150,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         override fun onDetachedFromWindow() {
             removeCallbacks(animator)
             pillArmedAnimator?.cancel()
+            pillArmedAnimatorGreen?.cancel()
             waveformCancelAnimator?.cancel()
             super.onDetachedFromWindow()
         }
@@ -5134,7 +5176,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             val radius = pillHeight * 0.5f
             // 录音/思考状态只显示动画，完全移除胶囊背景；待机状态保留话筒按钮。
             if (!isRecording && !isProcessing) {
-                paint.color = lerpColor(idlePillColor, swipeArmedPillColor, pillArmedAmount)
+                val pillColor = lerpColor(
+                    lerpColor(idlePillColor, swipeArmedPillColor, pillArmedAmount),
+                    quickNoteArmedPillColor,
+                    pillArmedAmountGreen,
+                )
+                paint.color = pillColor
                 canvas.drawRoundRect(left, top, right, bottom, radius, radius, paint)
             }
 
@@ -5180,7 +5227,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 val envelopeCenter = (barCount - 1) / 2f
                 val gap = width * 0.86f / (barCount - 1)
                 val startX = centerX - gap * (barCount - 1) / 2f
-                val rawWaveformColor = if (rawModeActive) LINK_COLOR_RECORDING_RAW else waveformColor
+                val rawWaveformColor = when {
+                    rawModeActive -> LINK_COLOR_RECORDING_RAW
+                    quickNoteActive -> LINK_COLOR_QUICK_NOTE
+                    else -> waveformColor
+                }
                 val currentWaveformColor = lerpColor(rawWaveformColor, cancelArmedWaveformColor, waveformCancelAmount)
                 for (index in 0 until barCount) {
                     val x = startX + index * gap
@@ -5225,6 +5276,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // How long a transient confirmation (已上屏/已完成/已撤销) stays up
         // before settling back to "点击开始说话" — see scheduleRevertToIdle().
         private const val DONE_TO_IDLE_DELAY_MS = 2000L
+        // quickNoteDictation()'s own "笔记已记录" confirmation — shorter
+        // than DONE_TO_IDLE_DELAY_MS per product request, since there's no
+        // undo/redo/edit row to give the user time to read (quick note
+        // never inserts anything).
+        private const val QUICK_NOTE_CONFIRMATION_DELAY_MS = 1000L
         // Not a hard "show exactly N" cap — the candidate bar is a
         // HorizontalScrollView (see buildEnglishCandidateBar()), so this
         // just bounds how many the provider bothers ranking/returning per
@@ -5264,6 +5320,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // stop) — distinct orange so glancing at the dot tells the two
         // recording states apart without reading any text.
         private val LINK_COLOR_RECORDING_RAW = Color.rgb(249, 115, 22)
+        // Recording with quickNoteArmed set (mic swipe-right: end the
+        // dictation and archive it as a standalone note instead of
+        // inserting) — green, the same treatment LINK_COLOR_RECORDING_RAW
+        // gets for its own swipe-up gesture.
+        private val LINK_COLOR_QUICK_NOTE = Color.rgb(34, 197, 94)
         private val LINK_COLOR_PROCESSING = Color.rgb(56, 189, 248)
         private val LINK_COLOR_ISSUE = Color.rgb(250, 204, 21)
         // Ready is the state the indicator sits in almost all the time, so
