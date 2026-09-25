@@ -1255,18 +1255,36 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             litePinyinController.clear()
             currentInputConnection?.commitText(" ", 1)
         }, longPressAction = { toggleLatinInputMode() }).apply {
-            textSize = 12f
+            // Same size as Return (17sp — keyboardKey()'s own special case
+            // for that label), per real-device feedback.
+            textSize = 17f
         }
         // Own View, overlaid on top of spaceButton (not inside its own
-        // text) — right-aligned, vertically centered, non-interactive so
-        // touches still reach the key beneath it.
+        // text) — left-aligned, vertically centered, non-interactive so
+        // touches still reach the key beneath it. Shows BOTH labels
+        // stacked (拼音 always on top, 英文 always on the bottom — fixed
+        // position, per user request) rather than just naming the target
+        // mode — whichever is currently active is cherry red, the other
+        // gray, so long-press's effect is legible at a glance either way.
         val spaceHint = TextView(this).apply {
-            text = if (latinInputMode == LatinInputMode.ENGLISH) ui("拼音", "Pinyin") else ui("英文", "English")
-            textSize = 12f
+            val pinyinLabel = ui("拼音", "Pinyin")
+            val englishLabel = ui("英文", "English")
+            val hintText = "$pinyinLabel\n$englishLabel"
+            val englishStart = hintText.length - englishLabel.length
+            val activeColor = if (isDarkTheme) Color.rgb(190, 45, 60) else Color.rgb(153, 26, 40)
+            val inactiveColor = tone(Color.rgb(150, 150, 150), Color.rgb(140, 140, 145))
+            text = android.text.SpannableString(hintText).apply {
+                setSpan(
+                    android.text.style.ForegroundColorSpan(if (latinInputMode == LatinInputMode.PINYIN) activeColor else inactiveColor),
+                    0, pinyinLabel.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+                setSpan(
+                    android.text.style.ForegroundColorSpan(if (latinInputMode == LatinInputMode.ENGLISH) activeColor else inactiveColor),
+                    englishStart, hintText.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+            }
+            textSize = 14f
             gravity = android.view.Gravity.CENTER
-            // Same cherry red as a first-place candidate (see
-            // styleCandidateFirstState()).
-            setTextColor(if (isDarkTheme) Color.rgb(190, 45, 60) else Color.rgb(153, 26, 40))
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             isClickable = false
             // The actual bug behind every earlier "text is just missing"
@@ -1284,8 +1302,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             addView(spaceButton, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(
                 spaceHint,
-                FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER_VERTICAL or android.view.Gravity.END).apply {
-                    marginEnd = dp(14)
+                FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER_VERTICAL or android.view.Gravity.START).apply {
+                    marginStart = dp(14)
                 },
             )
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 5f)
