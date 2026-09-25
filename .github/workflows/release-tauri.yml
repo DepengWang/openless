@@ -92,6 +92,12 @@ jobs:
           key: macos-release-v1
           workspaces: 'openless-all/app/src-tauri -> target'
 
+      - name: Cache macOS MLX native build
+        if: matrix.updater-arch == 'aarch64'
+        uses: ./.github/actions/cache-macos-mlx
+        with:
+          profile: release
+
       - name: Prepare Windows Sherpa static libraries
         if: matrix.platform == 'windows-latest'
         working-directory: 'openless-all/app'

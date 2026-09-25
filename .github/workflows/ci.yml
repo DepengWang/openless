@@ -252,6 +252,12 @@ jobs:
             openless-all/app -> target
             openless-all/app/src-tauri -> target
 
+      - name: Cache macOS MLX native build
+        if: runner.os == 'macOS' && runner.arch == 'ARM64'
+        uses: ./.github/actions/cache-macos-mlx
+        with:
+          profile: debug
+
       - name: Prepare Windows Sherpa static libraries
         if: runner.os == 'Windows'
         shell: pwsh
@@ -388,6 +394,11 @@ jobs:
           workspaces: |
             openless-all/app/src-tauri -> target
             openless-all/app/src-tauri/backend-tests -> target
+      - name: Cache macOS MLX native build
+        if: runner.arch == 'ARM64'
+        uses: ./.github/actions/cache-macos-mlx
+        with:
+          profile: debug
       - run: npm ci
       - run: npm run build
       - name: Check Tauri backend with Rust 1.88 MSRV
