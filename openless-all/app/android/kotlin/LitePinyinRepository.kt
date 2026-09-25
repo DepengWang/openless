@@ -3,11 +3,12 @@ package com.openless.app
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import java.util.LinkedHashMap
 import java.util.concurrent.Executors
 
 /**
  * Full-pinyin single-character AND high-frequency-abbreviation lookup for
- * Pinyin mode (phases 3+4 of the lite-pinyin plan —
+ * Pinyin mode (phases 3-5 of the lite-pinyin plan —
  * docs/pinyin-lite/phase-0-audit.md). Same background-load-off-a-dedicated-
  * thread shape as EnglishCandidateProvider/StrokePhraseRepository, but plain
  * exact-match Maps instead of a trie — ~5000 characters and ~2000 phrases is
@@ -22,6 +23,7 @@ import java.util.concurrent.Executors
  */
 internal class LitePinyinRepository(context: Context) {
     private val appContext = context.applicationContext
+    private val userFrequency = LitePinyinUserFrequency(context)
     private val executor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "openless-pinyin-candidate").apply { isDaemon = true }
     }
@@ -35,18 +37,34 @@ internal class LitePinyinRepository(context: Context) {
     private val charIndex = HashMap<String, List<Entry>>()
     private val abbreviationIndex = HashMap<String, List<Entry>>()
 
+    // Caches only the STATIC merge (char entries then phrase entries, each
+    // already weight-sorted) — same split as StrokePhraseRepository's own
+    // cache: the user-frequency re-rank below is cheap (at most ~40
+    // entries) and depends on data that changes independently of this, so
+    // it's deliberately redone on every query rather than cached, which
+    // sidesteps plan 8.2's "用户词频变化后，使相关缓存失效" requirement
+    // entirely instead of having to implement invalidation.
+    private val mergeCache = object : LinkedHashMap<String, List<Entry>>(CACHE_SIZE, .75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Entry>>?) = size > CACHE_SIZE
+    }
+
     @Volatile
     private var loaded = false
 
     /**
      * Off the caller's thread; posts [callback] back to the main looper.
-     * Exact match only — no prefix/fuzzy matching in this phase. Checks
-     * both indexes per plan 3.5 ("单字全拼索引 + 词语简拼索引"): single-
-     * character full-pinyin matches are listed before abbreviation-phrase
-     * matches (plan's own priority tiers 2 and 3 — tier 1, "用户在当前编码
-     * 下选择过的候选", is phase 5's user-frequency work, not this phase's).
-     * The abbreviation half only activates at length >= 2 (plan 3.4: "简拼
-     * 至少输入 2 个字母后才触发查询").
+     * Exact match only — no prefix/fuzzy matching in this phase. Ranks by
+     * plan 3.5's five tiers, in order:
+     *   1. a candidate the user picked before for this exact encoding
+     *      (LitePinyinUserFrequency — see recordSelection())
+     *   2. exact single-character full-pinyin matches
+     *   3. exact abbreviation-phrase matches (only once the encoding is
+     *      >= 2 letters — plan 3.4)
+     *   4/5. each tier's own static weight / original order
+     * Tiers 2 and 3 are never weight-interleaved with each other even
+     * though pinyin_chars.tsv and pinyin_phrases.tsv share a comparable
+     * weight scale (both ultimately from rime-pinyin-simp) — a phrase
+     * never outranks a character on raw weight alone, only via tier 1.
      */
     fun query(encoding: String, limit: Int = 20, callback: (List<String>) -> Unit) {
         val normalized = encoding.trim().lowercase()
@@ -56,11 +74,21 @@ internal class LitePinyinRepository(context: Context) {
         }
         executor.execute {
             ensureLoaded()
-            val charMatches = charIndex[normalized].orEmpty()
-            val phraseMatches = if (normalized.length >= 2) abbreviationIndex[normalized].orEmpty() else emptyList()
-            val merged = (charMatches.asSequence() + phraseMatches.asSequence()).map { it.text }.take(limit).toList()
-            Handler(Looper.getMainLooper()).post { callback(merged) }
+            val raw = mergedEntries(normalized)
+            val previouslySelected = raw
+                .filter { userFrequency.score(normalized, it.text) > 0.0 }
+                .sortedByDescending { userFrequency.score(normalized, it.text) }
+            val rest = raw.filterNot { entry -> previouslySelected.any { it.text == entry.text } }
+            val ranked = (previouslySelected + rest).map { it.text }.distinct().take(limit)
+            Handler(Looper.getMainLooper()).post { callback(ranked) }
         }
+    }
+
+    /** Call once a candidate is actually committed (a candidate tap — see OpenLessImeService.selectPinyinCandidate()) — off the caller's thread. */
+    fun recordSelection(encoding: String, text: String) {
+        val normalized = encoding.trim().lowercase()
+        if (normalized.isEmpty() || text.isEmpty()) return
+        executor.execute { userFrequency.record(normalized, text) }
     }
 
     /** Warms both indexes off the caller's thread without waiting for a query — mirrors StrokePhraseRepository.preloadAsync(); call once, e.g. when the Pinyin panel first becomes reachable. */
@@ -69,6 +97,15 @@ internal class LitePinyinRepository(context: Context) {
     }
 
     fun shutdown() = executor.shutdownNow()
+
+    private fun mergedEntries(normalized: String): List<Entry> {
+        synchronized(mergeCache) { mergeCache[normalized] }?.let { return it }
+        val charMatches = charIndex[normalized].orEmpty()
+        val phraseMatches = if (normalized.length >= 2) abbreviationIndex[normalized].orEmpty() else emptyList()
+        val merged = charMatches + phraseMatches
+        synchronized(mergeCache) { mergeCache[normalized] = merged }
+        return merged
+    }
 
     private fun ensureLoaded() {
         if (loaded) return
@@ -114,5 +151,13 @@ internal class LitePinyinRepository(context: Context) {
             }
         }
         grouped.forEach { (abbreviation, entries) -> abbreviationIndex[abbreviation] = entries.sortedByDescending { it.weight } }
+    }
+
+    private companion object {
+        // Same size as StrokePhraseRepository's own cache — this one is
+        // keyed by the exact (short) encoding string rather than a rolling
+        // suffix, so cardinality is naturally bounded by realistic typing
+        // patterns without needing a larger budget.
+        const val CACHE_SIZE = 256
     }
 }

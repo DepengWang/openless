@@ -32,6 +32,9 @@ internal class LitePinyinController(context: Context) {
 
     fun preloadAsync() = repository.preloadAsync()
 
+    /** Call with the encoding still intact — i.e. before clear() — since the recorded key is (encoding, text) together (plan 8.4). */
+    fun recordSelection(text: String) = repository.recordSelection(encoding.toString(), text)
+
     /** Letters only — OpenLessImeService is responsible for routing non-letter keys elsewhere. */
     fun appendLetter(char: Char, onCandidates: (List<String>) -> Unit) {
         if (!char.isLetter()) return

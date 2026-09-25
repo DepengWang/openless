@@ -62,6 +62,7 @@ const KOTLIN_FILES = [
   'StrokeInput.kt',
   'LitePinyinController.kt',
   'LitePinyinRepository.kt',
+  'LitePinyinUserFrequency.kt',
   'StrokePhraseRepository.kt',
   'StrokeUserFrequency.kt',
   'EnglishCandidateProvider.kt',

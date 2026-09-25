@@ -2881,6 +2881,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     /** Candidate tap is the ONLY way a pinyin candidate reaches the field — see toggleLatinInputMode()'s doc comment on why Space deliberately never does this. */
     private fun selectPinyinCandidate(char: String) {
         currentInputConnection?.commitText(char, 1)
+        // Recorded before clear() — the encoding is still intact and is
+        // half of the (encoding, text) key this boosts (plan 8.4).
+        litePinyinController.recordSelection(char)
         litePinyinController.clear()
         renderPinyinCandidates(emptyList())
         performKeyHaptic()
