@@ -1563,41 +1563,30 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             marginEnd = dp(8)
         })
 
-        // Most-recent-four-clips quick-tap strip. The four rows use circled
-        // Unicode digits (①②③④) for their prefixes; the glyphs come from
-        // Android's normal font fallback rather than a hand-drawn canvas
-        // shape. The prefixes are white while the clip text uses the same
-        // candidate accent color as the stroke panel. The action grid below
-        // shrinks by the strip's fixed height automatically.
-        // Thin divider lines separate the rows rather than a colored
-        // background, matching the plain-divider treatment already used for
-        // the English candidate bar.
-        val circledIndices = listOf('①', '②', '③', '④')
+        // Most-recent-three-clips quick-tap strip (was four rows — reduced
+        // per user request, the freed space redistributed evenly across the
+        // remaining three so RECENT_CLIPS_COLUMN_HEIGHT_DP's own total is
+        // unchanged; see that constant's doc comment for the exact math).
+        // The rows use circled Unicode digits (①②③) for their prefixes; the
+        // glyphs come from Android's normal font fallback rather than a
+        // hand-drawn canvas shape. Flat gray now (was white prefix + cherry
+        // red content, before that a blue accent) — per user request, no
+        // color distinction between the prefix and the clip text anymore.
+        // The action grid below shrinks by the strip's fixed height
+        // automatically (LinearLayout's own weight=1f on `grid` further
+        // down already absorbs however much space this strip doesn't use —
+        // no separate shrink logic needed). Thin divider lines separate the
+        // rows rather than a colored background, matching the plain-divider
+        // treatment already used for the English candidate bar.
+        val circledIndices = listOf('①', '②', '③')
+        val recentClipTextColor = tone(Color.rgb(190, 190, 190), Color.rgb(140, 140, 145))
         fun recentClipRow(index: Int, entry: ClipboardEntry?): TextView = TextView(this).apply {
-            text = entry?.let {
-                android.text.SpannableStringBuilder().apply {
-                    append(circledIndices[index])
-                    append(' ')
-                    setSpan(
-                        android.text.style.ForegroundColorSpan(Color.WHITE),
-                        0,
-                        2,
-                        android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
-                    )
-                    append(it.text)
-                    setSpan(
-                        android.text.style.ForegroundColorSpan(strokeEncodeAccentColor),
-                        2,
-                        length,
-                        android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
-                    )
-                }
-            } ?: ""
-            textSize = 14f
+            text = entry?.let { "${circledIndices[index]} ${it.text}" } ?: ""
+            textSize = 16f
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
             gravity = android.view.Gravity.CENTER_VERTICAL
-            setTextColor(strokeEncodeAccentColor)
+            setTextColor(recentClipTextColor)
             setPadding(dp(10), 0, dp(10), 0)
             if (entry != null) {
                 isClickable = true
@@ -1608,17 +1597,24 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 }
             }
         }
-        val recentClips = OpenLessClipboardHistory.load(this)
+        // distinctBy(text): recordCopy() already dedupes going forward (an
+        // existing entry is moved to the front instead of a second row being
+        // added), but this guards the display itself against any duplicate
+        // already sitting in an existing history file (e.g. one written
+        // before that dedup existed) rather than trusting the stored data.
+        val recentClips = OpenLessClipboardHistory.load(this).distinctBy { it.text }
         val recentClipsColumn = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         recentClipsColumn.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
-        for (index in 0 until 4) {
+        for (index in 0 until 3) {
             recentClipsColumn.addView(
                 recentClipRow(index, recentClips.getOrNull(index)),
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
             )
             recentClipsColumn.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
         }
-        root.addView(recentClipsColumn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(92)))
+        // Added to root below the action grid, not here — per user request,
+        // the keyboard/action grid sits above the recent-clips strip now
+        // (was the other way around).
 
         // Arrow keys and the Select toggle work as one unit: while selection
         // mode is on, the arrows extend the selection instead of just moving
@@ -1739,6 +1735,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         root.addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply {
             topMargin = dp(8)
         })
+        root.addView(recentClipsColumn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(RECENT_CLIPS_COLUMN_HEIGHT_DP)).apply {
+            topMargin = dp(8)
+        })
         return root
     }
 
@@ -1749,10 +1748,23 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * direction-pad panel.
      */
     private fun buildClipboardHistoryView(): View {
+        // Assigned once `scroll` itself is built, further down — captured
+        // by reference here so SwipeModeContainer's verticalDismissAllowed
+        // lambda reads whatever scroll position exists at actual touch
+        // time (the lambda only ever runs from a real user gesture, well
+        // after this whole view is fully constructed).
+        var historyScroll: android.widget.ScrollView? = null
         // Rows handle their own left/right swipe (favorite / correction
         // rule); the panel-switch swipe would otherwise compete for the
-        // exact same gesture.
-        val root = SwipeModeContainer(this, horizontalSwipeEnabled = false) { direction -> swipeInputMode(direction) }.apply {
+        // exact same gesture. A downward drag only dismisses the keyboard
+        // once the list below is already scrolled to its own top — per
+        // user request, so scrolling up through history doesn't get
+        // mistaken for "swipe down to hide" partway through.
+        val root = SwipeModeContainer(
+            this,
+            horizontalSwipeEnabled = false,
+            verticalDismissAllowed = { (historyScroll?.scrollY ?: 0) == 0 },
+        ) { direction -> swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
             minimumHeight = dp(300)
@@ -1792,6 +1804,25 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
         }
+        // Not a category filter like the five tabs above — an action:
+        // deletes every non-favorited history entry outright (favorites are
+        // kept). Never shows "selected" styling since it isn't one of
+        // clipboardHistoryCategory's own values. No confirmation step per
+        // the request as given; only this app's own local history is
+        // affected, not anything external.
+        tabsRow.addView(TextView(this).apply {
+            text = ui("清空", "Clear")
+            textSize = 14f
+            gravity = android.view.Gravity.CENTER
+            setTextColor(tone(Color.rgb(190, 190, 190), Color.rgb(140, 140, 145)))
+            if (englishUi) {
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            }
+            setOnClickListener {
+                OpenLessClipboardHistory.clearNonFavorites(this@OpenLessImeService)
+                refreshInputView()
+            }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
         tabsRow.addView(flatCircleButton("✕", 26, ui("关闭粘贴板", "Close clipboard")) {
             clipboardHistoryMode = false
             refreshInputView()
@@ -1963,6 +1994,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             overScrollMode = View.OVER_SCROLL_NEVER
             addView(listContainer, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
+        historyScroll = scroll
         root.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         return root
     }
@@ -3892,6 +3924,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // race noted above for the punctuation rail — simplest to just not
         // compete for horizontal drags at all inside that sub-panel.
         private val horizontalSwipeEnabled: Boolean = true,
+        // Checked once, at the moment a drag first looks vertical enough to
+        // possibly claim (see onInterceptTouchEvent's ACTION_MOVE branch) —
+        // returning false there lets the gesture fall through to a nested
+        // scrollable child instead (e.g. the clipboard history list), so a
+        // downward drag only dismisses the keyboard once that child is
+        // already scrolled to its own top, the same "pull past the top to
+        // dismiss" convention most scrollable sheets use. Defaults to
+        // "always allowed" for every panel that has no such nested scroll.
+        private val verticalDismissAllowed: () -> Boolean = { true },
         private val onSwipe: (Int) -> Unit,
     ) : LinearLayout(context) {
         private var startX = 0f
@@ -3956,9 +3997,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     // A downward drag anywhere not already claimed by a
                     // nested vertical gesture (the candidate scroll) or
                     // excluded by touch-down position (the punctuation rail)
-                    // dismisses the keyboard.
+                    // dismisses the keyboard — unless verticalDismissAllowed()
+                    // says a nested scrollable child still has room to
+                    // scroll up first (the clipboard history list).
                     if (!interceptingHorizontal && !interceptingVertical && !verticalDismissBlockedForGesture &&
-                        dy > touchSlop && dy > kotlin.math.abs(dx) * 1.5f
+                        dy > touchSlop && dy > kotlin.math.abs(dx) * 1.5f && verticalDismissAllowed()
                     ) {
                         interceptingVertical = true
                         parent?.requestDisallowInterceptTouchEvent(true)
@@ -5117,6 +5160,19 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // keystroke; comfortably more than can fit on screen at once so
         // scrolling actually reveals more real options.
         private const val ENGLISH_CANDIDATE_QUERY_LIMIT = 10
+        // buildClipboardView()'s "recent clips" strip. Originally 92dp for
+        // 4 equal-weight rows + 5 divider lines (dp(1) each), raised ~1.2x
+        // to 109dp per user request: (92-5)/4=21.75dp/row * 1.2 = 26.1,
+        // 26.1*4+5=109.4 -> 109. Then reduced from 4 rows to 3 (also per
+        // user request) WITHOUT changing this total — 3 rows only need 4
+        // dividers, not 5, so the freed divider's dp plus the freed row's
+        // own share both land back on the remaining 3: (109-4)/3=35dp/row,
+        // up from 26dp. The button grid below needs no matching change —
+        // it's already LinearLayout.LayoutParams(.., 0, 1f), i.e. "whatever
+        // space is left after this strip's fixed height," so it grows or
+        // shrinks on its own the moment this constant or the row count
+        // changes.
+        private const val RECENT_CLIPS_COLUMN_HEIGHT_DP = 109
         // Swipe-up symbol hint, any LETTERS-layer row (buildEnglishCharKey())
         // — its own independent TextView pinned to the key's top edge, so
         // these are absolute sizes, not a ratio of the 22sp letter below
