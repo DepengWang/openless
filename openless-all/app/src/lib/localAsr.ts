@@ -4,18 +4,24 @@
 // 事件：local-asr-download-progress / local-asr-token
 //
 // 注意：模型文件清单与尺寸不在此处硬编码 —— 通过
-// `fetchLocalAsrRemoteInfo()` 实时从 HuggingFace tree API 拉取。
+// `fetchLocalAsrRemoteInfo()` 实时从所选模型源拉取。
 
 import { invokeOrMock } from './ipc';
 import type { OS } from '../components/WindowChrome';
 
-export function isLocalAsrModelSupportedOnOs(modelId: string, os: OS): boolean {
-  if (modelId.startsWith('whisper-')) return os === 'mac';
-  if (modelId.startsWith('qwen3-asr-')) return os === 'mac' || os === 'linux';
-  return true;
+export function isLocalAsrModelSupportedOnOs(
+  model: Pick<LocalAsrModelStatus, 'runtime' | 'family'>,
+  os: OS,
+): boolean {
+  if (model.runtime === 'foundry' || model.runtime === 'sherpa_onnx') return os === 'win';
+  if (model.runtime !== 'generic') return false;
+  if (model.family === 'whisper') return os === 'mac';
+  if (model.family === 'qwen3' || model.family === 'qwen3_asr')
+    return os === 'mac' || os === 'linux';
+  return false;
 }
 
-export type LocalAsrMirror = 'huggingface' | 'hf-mirror';
+export type LocalAsrMirror = 'huggingface' | 'hf-mirror' | 'modelscope';
 
 export interface LocalAsrSettings {
   providerId: string;
@@ -36,6 +42,7 @@ export interface LocalAsrStorageSettings {
 
 export interface LocalAsrModelStatus {
   id: string;
+  runtime: LocalAsrRuntime;
   hfRepo: string;
   displayName: string;
   family: string;
@@ -104,9 +111,18 @@ export interface FoundryLocalAsrStatus {
   runtimeSource: FoundryRuntimeSource;
   activeModel: string;
   loadedModelId: string | null;
+  keepLoadedSecs: number;
   endpoint: string | null;
   error: string | null;
 }
+
+export const LOCAL_ASR_KEEP_LOADED_OPTIONS = [
+  { seconds: 0, labelKey: 'localAsr.keepImmediate' },
+  { seconds: 60, labelKey: 'localAsr.keep1min' },
+  { seconds: 300, labelKey: 'localAsr.keep5min' },
+  { seconds: 1800, labelKey: 'localAsr.keep30min' },
+  { seconds: 86400, labelKey: 'localAsr.keepForever' },
+] as const;
 
 export const FOUNDRY_LOCAL_ASR_MODEL_ALIASES = [
   'whisper-small',
@@ -216,6 +232,7 @@ const MOCK_SETTINGS: LocalAsrSettings = {
 const MOCK_MODELS: LocalAsrModelStatus[] = [
   {
     id: 'qwen3-asr-0.6b',
+    runtime: 'generic',
     hfRepo: 'Qwen/Qwen3-ASR-0.6B',
     displayName: 'Qwen3 ASR 0.6B',
     family: 'qwen3_asr',
@@ -227,6 +244,7 @@ const MOCK_MODELS: LocalAsrModelStatus[] = [
   },
   {
     id: 'qwen3-asr-1.7b',
+    runtime: 'generic',
     hfRepo: 'Qwen/Qwen3-ASR-1.7B',
     displayName: 'Qwen3 ASR 1.7B',
     family: 'qwen3_asr',
@@ -356,6 +374,19 @@ export function testLocalAsrModel(modelId: string): Promise<LocalAsrTestResult> 
   }));
 }
 
+/** 验证设置页中的本地渠道，不改变全局当前渠道。 */
+export function testLocalAsrChannel(channelId: string): Promise<LocalAsrTestResult> {
+  return invokeOrMock('local_asr_test_channel', { channelId }, () => ({
+    backend: 'mock',
+    modelId: 'mock-local-model',
+    expectedText: 'Hello. This is a test of the Voxtrail speech-to-text system.',
+    transcribedText: '(浏览器 dev mock，实际推理需要在 Tauri 应用内)',
+    audioMs: 3000,
+    loadMs: 0,
+    transcribeMs: 0,
+  }));
+}
+
 export interface LocalAsrEngineStatus {
   loaded: boolean;
   modelId: string | null;
@@ -390,6 +421,7 @@ export function getFoundryLocalAsrStatus(): Promise<FoundryLocalAsrStatus> {
     runtimeSource: 'auto',
     activeModel: 'whisper-small',
     loadedModelId: null,
+    keepLoadedSecs: 300,
     endpoint: null,
     error: null,
   }));
@@ -409,6 +441,10 @@ export function setFoundryLocalAsrLanguageHint(languageHint: string): Promise<vo
 
 export function setFoundryLocalRuntimeSource(source: string): Promise<void> {
   return invokeOrMock('foundry_local_asr_set_runtime_source', { source }, () => undefined);
+}
+
+export function setFoundryLocalAsrKeepLoadedSecs(seconds: number): Promise<void> {
+  return invokeOrMock('foundry_local_asr_set_keep_loaded_secs', { seconds }, () => undefined);
 }
 
 export function prepareFoundryLocalAsr(modelAlias: string): Promise<string> {

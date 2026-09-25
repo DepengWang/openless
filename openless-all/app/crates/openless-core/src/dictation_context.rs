@@ -20,11 +20,27 @@ pub enum DictationAudioSource {
     External,
 }
 
+/// Output intent for the current capture.
+///
+/// Android starts a capture before the user has decided whether it is an
+/// ordinary dictation or a quick note. The terminal gesture resolves the
+/// `Undecided` value without losing the already captured audio.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DictationOutputTarget {
+    #[default]
+    ForegroundApp,
+    QuickNote,
+    Undecided,
+    /// Finish the current recording as a question without dictation insertion or polish.
+    Qa,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DictationStartOptions {
     pub translation_requested: bool,
     pub audio_source: DictationAudioSource,
     pub insert_text: bool,
+    pub output_target: DictationOutputTarget,
     pub style_pack_id: Option<String>,
     pub front_app: Option<String>,
     pub cursor_context: Option<String>,
@@ -36,6 +52,7 @@ impl Default for DictationStartOptions {
             translation_requested: false,
             audio_source: DictationAudioSource::Microphone,
             insert_text: true,
+            output_target: DictationOutputTarget::ForegroundApp,
             style_pack_id: None,
             front_app: None,
             cursor_context: None,
@@ -56,6 +73,11 @@ impl Default for DictationStartOptions {
 pub struct DictationStopOptions {
     pub translation_requested: Option<bool>,
     pub raw_requested: Option<bool>,
+    /// `Some(true)` finishes the active capture as a quick note;
+    /// `Some(false)` explicitly finishes it as ordinary dictation.
+    /// `None` preserves the current target, resolving Android's undecided
+    /// capture to ordinary dictation.
+    pub quick_note: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +124,9 @@ pub struct DictationPolishContext {
     pub working_languages: Vec<String>,
     pub translation_target_language: String,
     pub translation_active: bool,
+    pub edit_plan_input: bool,
+    /// Selected text uses its own prompt envelope, separate from voice transcripts.
+    pub selection_input: bool,
     pub chinese_script_preference: ChineseScriptPreference,
     pub output_language_preference: OutputLanguagePreference,
     pub llm_thinking_enabled: bool,
@@ -137,10 +162,15 @@ pub struct DictationInsertionContext {
 pub struct RecordingPlan {
     pub microphone_device_name: Option<String>,
     pub mute_during_recording: bool,
+    /// Buffer the whole recording and start ASR only after the recorder stops.
+    pub transcribe_after_stop: bool,
     /// Whether the Host may create an audio archive at all. QA/Selection Voice
     /// keep PCM in memory; successful-recording retention is a separate policy.
     pub archive_enabled: bool,
     pub archive_successful_recording: bool,
+    /// A quick-note or undecided Android capture must not silently continue
+    /// without a disk archive when its path cannot be created.
+    pub archive_required: bool,
     pub retention_days: u32,
     pub max_entries: Option<u32>,
     pub silence_after_ms: Option<u64>,
@@ -149,6 +179,8 @@ pub struct RecordingPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DictationContext {
     pub audio_source: DictationAudioSource,
+    pub output_target: DictationOutputTarget,
+    pub(crate) normal_archive_successful_recording: bool,
     pub recording: RecordingPlan,
     pub pipeline_mode: PipelineMode,
     pub correction_rules: Vec<crate::types::CorrectionRule>,
@@ -247,11 +279,21 @@ impl DictationContext {
             eligible_polish_context_turns(recent_history, &style_pack.id, translation_active);
         Self {
             audio_source: options.audio_source,
+            output_target: options.output_target,
+            normal_archive_successful_recording: preferences.record_audio_for_debug,
             recording: RecordingPlan {
                 microphone_device_name: non_blank(&preferences.microphone_device_name),
                 mute_during_recording: preferences.mute_during_recording,
+                transcribe_after_stop: preferences.stable_transcription_enabled,
                 archive_enabled: true,
-                archive_successful_recording: preferences.record_audio_for_debug,
+                archive_successful_recording: matches!(
+                    options.output_target,
+                    DictationOutputTarget::QuickNote | DictationOutputTarget::Undecided
+                ) || preferences.record_audio_for_debug,
+                archive_required: matches!(
+                    options.output_target,
+                    DictationOutputTarget::QuickNote | DictationOutputTarget::Undecided
+                ),
                 retention_days: preferences.history_retention_days,
                 // Recordings and transcript history have independent caps in
                 // the UI; only the age limit is shared with history.
@@ -277,6 +319,8 @@ impl DictationContext {
                 working_languages: preferences.working_languages.clone(),
                 translation_target_language,
                 translation_active,
+                edit_plan_input: false,
+                selection_input: false,
                 chinese_script_preference: preferences.chinese_script_preference,
                 output_language_preference: preferences.output_language_preference,
                 llm_thinking_enabled: preferences.llm_thinking_enabled,
@@ -286,9 +330,20 @@ impl DictationContext {
                 prior_turns,
             },
             insertion: DictationInsertionContext {
-                enabled: options.insert_text,
+                enabled: options.insert_text
+                    && !matches!(
+                        options.output_target,
+                        DictationOutputTarget::QuickNote | DictationOutputTarget::Qa
+                    ),
                 observe_edits: preferences.cursor_context_enabled,
-                streaming: preferences.streaming_insert,
+                // An undecided Android capture must not stream text into the
+                // foreground app before the terminal gesture classifies it.
+                streaming: !matches!(
+                    options.output_target,
+                    DictationOutputTarget::Undecided
+                        | DictationOutputTarget::QuickNote
+                        | DictationOutputTarget::Qa
+                ) && preferences.streaming_insert,
                 save_streamed_text_to_clipboard: preferences.streaming_insert_save_clipboard,
                 restore_clipboard_after_paste: preferences.restore_clipboard_after_paste,
                 paste_shortcut: preferences.paste_shortcut,
@@ -304,6 +359,47 @@ impl DictationContext {
         }
     }
 
+    pub fn with_output_target(&self, target: DictationOutputTarget) -> Self {
+        let mut next = self.clone();
+        next.output_target = target;
+        match target {
+            DictationOutputTarget::Qa => {
+                next.polish.translation_active = false;
+                next.insertion.enabled = false;
+                next.insertion.streaming = false;
+                next.recording.archive_successful_recording =
+                    self.normal_archive_successful_recording;
+                next.recording.archive_required = false;
+            }
+            DictationOutputTarget::QuickNote => {
+                next.insertion.enabled = false;
+                next.insertion.streaming = false;
+                next.recording.archive_successful_recording = true;
+                next.recording.archive_required = true;
+            }
+            DictationOutputTarget::ForegroundApp => {
+                if self.output_target == DictationOutputTarget::Undecided {
+                    next.insertion.enabled = true;
+                    next.insertion.streaming = false;
+                }
+                next.recording.archive_successful_recording =
+                    next.normal_archive_successful_recording();
+                next.recording.archive_required = false;
+            }
+            DictationOutputTarget::Undecided => {
+                next.insertion.enabled = true;
+                next.insertion.streaming = false;
+                next.recording.archive_successful_recording = true;
+                next.recording.archive_required = true;
+            }
+        }
+        next
+    }
+
+    fn normal_archive_successful_recording(&self) -> bool {
+        self.normal_archive_successful_recording
+    }
+
     pub fn effective_polish_prompts(&self, raw_text: &str) -> (String, String) {
         let style_system_prompt = if self.polish.translation_active {
             crate::prompt_compose::build_polish_translate_system_prompt(
@@ -313,7 +409,7 @@ impl DictationContext {
         } else {
             self.polish.style_system_prompt.clone()
         };
-        crate::prompt_compose::compose_polish_prompts(
+        let (system, user) = crate::prompt_compose::compose_polish_prompts_for_input(
             raw_text,
             self.polish.mode,
             &self.polish.hotwords,
@@ -324,7 +420,14 @@ impl DictationContext {
             self.polish.front_app.as_deref(),
             self.polish.cursor_context.as_deref(),
             !self.polish.prior_turns.is_empty(),
-        )
+            self.polish.edit_plan_input,
+        );
+        let user = if self.polish.selection_input && !self.polish.edit_plan_input {
+            crate::prompts::selection_user_prompt(raw_text)
+        } else {
+            user
+        };
+        (system, user)
     }
 
     /// Build the exact system prompt captured for this session.
@@ -337,10 +440,11 @@ impl DictationContext {
     /// A custom Raw prompt and every translation request still use the
     /// polisher.
     pub fn uses_llm_polisher(&self) -> bool {
-        self.polish.translation_active
-            || self.polish.mode != PolishMode::Raw
-            || self.polish.style_system_prompt
-                != crate::style_packs::default_style_system_prompt_for_mode(PolishMode::Raw)
+        self.output_target != DictationOutputTarget::Qa
+            && (self.polish.translation_active
+                || self.polish.mode != PolishMode::Raw
+                || self.polish.style_system_prompt
+                    != crate::style_packs::default_style_system_prompt_for_mode(PolishMode::Raw))
     }
 
     pub(crate) fn with_translation_requested(&self, requested: bool) -> Self {
@@ -491,12 +595,22 @@ mod tests {
     use crate::style_packs::builtin_style_pack_for_mode;
 
     #[test]
+    fn selection_polish_uses_the_selected_text_envelope() {
+        let mut context = DictationContext::default();
+        context.polish.selection_input = true;
+        let (_, user) = context.effective_polish_prompts("selected body");
+        assert_eq!(user, crate::prompts::selection_user_prompt("selected body"));
+        assert!(!user.contains("raw_transcript"));
+    }
+
+    #[test]
     fn context_is_an_owned_snapshot_of_session_preferences() {
         let mut preferences = UserPreferences {
             microphone_device_name: "USB microphone".to_string(),
             active_asr_provider: "local-qwen3".to_string(),
             active_llm_provider: "openai".to_string(),
             local_asr_active_model: "qwen3-asr-1.7b".to_string(),
+            stable_transcription_enabled: true,
             history_max_entries: Some(100),
             audio_recording_max_entries: Some(7),
             working_languages: vec!["简体中文".to_string(), "English".to_string()],
@@ -523,11 +637,13 @@ mod tests {
 
         preferences.microphone_device_name = "changed".to_string();
         preferences.active_asr_provider = "changed".to_string();
+        preferences.stable_transcription_enabled = false;
         assert_eq!(
             context.recording.microphone_device_name.as_deref(),
             Some("USB microphone")
         );
         assert_eq!(context.asr.provider_id, "local-qwen3");
+        assert!(context.recording.transcribe_after_stop);
         assert_eq!(context.asr.model.as_deref(), Some("qwen3-asr-1.7b"));
         // Audio archives have their own user-visible limit. History retention
         // may be much larger and must not silently override the recording cap.
@@ -553,5 +669,63 @@ mod tests {
         let prompt = build_asr_prompt(&[over_budget, "OpenLess".to_string()]).unwrap();
         assert_eq!(prompt, "OpenLess.");
         assert!(prompt.chars().count() <= ASR_PROMPT_CHAR_BUDGET);
+    }
+
+    #[test]
+    fn quick_note_target_forces_permanent_archive_and_skips_insertion() {
+        let preferences = UserPreferences::default();
+        let pack = builtin_style_pack_for_mode(preferences.default_mode);
+        let context = DictationContext::capture(
+            &preferences,
+            &pack,
+            DictationProviderInvocations::new(
+                ProviderInvocation::for_provider(preferences.active_asr_provider.clone()),
+                ProviderInvocation::for_provider(preferences.active_llm_provider.clone()),
+                ProviderInvocation::for_provider("omni"),
+            ),
+            Vec::new(),
+            Vec::new(),
+            &DictationStartOptions {
+                insert_text: false,
+                output_target: DictationOutputTarget::QuickNote,
+                ..DictationStartOptions::default()
+            },
+        );
+
+        assert_eq!(context.output_target, DictationOutputTarget::QuickNote);
+        assert!(context.recording.archive_required);
+        assert!(context.recording.archive_successful_recording);
+        assert!(!context.insertion.enabled);
+        assert!(!context.insertion.streaming);
+    }
+
+    #[test]
+    fn undecided_capture_can_resolve_to_quick_note_at_stop() {
+        let preferences = UserPreferences::default();
+        let pack = builtin_style_pack_for_mode(preferences.default_mode);
+        let context = DictationContext::capture(
+            &preferences,
+            &pack,
+            DictationProviderInvocations::new(
+                ProviderInvocation::for_provider(preferences.active_asr_provider.clone()),
+                ProviderInvocation::for_provider(preferences.active_llm_provider.clone()),
+                ProviderInvocation::for_provider("omni"),
+            ),
+            Vec::new(),
+            Vec::new(),
+            &DictationStartOptions {
+                output_target: DictationOutputTarget::Undecided,
+                ..DictationStartOptions::default()
+            },
+        );
+        let quick_note = context.with_output_target(DictationOutputTarget::QuickNote);
+        let ordinary = context.with_output_target(DictationOutputTarget::ForegroundApp);
+
+        assert!(context.recording.archive_required);
+        assert!(!context.insertion.streaming);
+        assert!(!quick_note.insertion.enabled);
+        assert!(quick_note.recording.archive_successful_recording);
+        assert!(ordinary.insertion.enabled);
+        assert_eq!(ordinary.output_target, DictationOutputTarget::ForegroundApp);
     }
 }

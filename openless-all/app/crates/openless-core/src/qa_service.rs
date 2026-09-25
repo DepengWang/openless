@@ -24,6 +24,7 @@ struct QaState {
 
 enum QaSubmission {
     Text(String),
+    Captured(QaInput),
     SelectionEdit {
         selection_voice_session_id: SessionId,
         capture: crate::domains::SelectionCapture,
@@ -262,6 +263,7 @@ impl QaService {
     async fn submit_inner(&self, submission: QaSubmission) -> Result<(), BackendError> {
         let text = match &submission {
             QaSubmission::Text(text) => text,
+            QaSubmission::Captured(input) => &input.text,
             QaSubmission::SelectionEdit { instruction, .. } => instruction,
         }
         .trim()
@@ -304,6 +306,10 @@ impl QaService {
 
         let prepared = match submission {
             QaSubmission::Text(_) => self.runtime.prepare_text(session_id, text).await,
+            QaSubmission::Captured(mut input) => {
+                input.text = text;
+                self.runtime.prepare_captured_text(session_id, input).await
+            }
             QaSubmission::SelectionEdit {
                 selection_voice_session_id,
                 capture,
@@ -738,6 +744,11 @@ impl QaApi for QaService {
         Box::pin(async move { service.submit_text_inner(text).await })
     }
 
+    fn submit_captured_text(&self, input: QaInput) -> BoxFuture<'static, Result<(), BackendError>> {
+        let service = self.clone();
+        Box::pin(async move { service.submit_inner(QaSubmission::Captured(input)).await })
+    }
+
     fn submit_selection_edit(
         &self,
         selection_voice_session_id: SessionId,
@@ -1008,6 +1019,13 @@ fn compose_qa_user_content(selection_text: &str, question: &str) -> String {
 }
 
 fn public_qa_error(error: &BackendError) -> String {
+    let message = error.message.as_str();
+    if message.contains("---model_output---") || message.contains("invalid EditPlan") {
+        if message.starts_with("编辑方案解析失败") {
+            return message.to_string();
+        }
+        return format!("编辑方案解析失败\n\n{message}");
+    }
     match error.code {
         BackendErrorCode::PermissionDenied => "QA permission denied".to_string(),
         BackendErrorCode::Unsupported => "QA is unsupported by this host".to_string(),

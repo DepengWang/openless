@@ -282,7 +282,7 @@ pub trait LocalAsrApi: Send + Sync {
     fn delete_model(&self, target: LocalAsrTarget) -> BoxFuture<'static, Result<(), BackendError>>;
     fn cleanup_incomplete(
         &self,
-        target: LocalAsrTarget,
+        _target: LocalAsrTarget,
     ) -> BoxFuture<'static, Result<(), BackendError>> {
         unsupported("local ASR incomplete download cleanup")
     }
@@ -294,6 +294,14 @@ pub trait LocalAsrApi: Send + Sync {
         &self,
         target: LocalAsrTarget,
     ) -> BoxFuture<'static, Result<LocalAsrTestResult, BackendError>>;
+    /// Run the native smoke test for a specific ASR channel without changing
+    /// the globally active channel.
+    fn test_channel(
+        &self,
+        _channel_id: String,
+    ) -> BoxFuture<'static, Result<LocalAsrTestResult, BackendError>> {
+        unsupported("local ASR channel test")
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -874,6 +882,18 @@ pub trait QaRuntimeAdapter: Send + Sync {
         session_id: SessionId,
         text: String,
     ) -> BoxFuture<'static, Result<QaInput, BackendError>>;
+    /// Prepare a question whose selection was captured before showing QA.
+    fn prepare_captured_text(
+        &self,
+        session_id: SessionId,
+        input: QaInput,
+    ) -> BoxFuture<'static, Result<QaInput, BackendError>> {
+        let preparation = self.prepare_text(session_id, input.text.clone());
+        Box::pin(async move {
+            preparation.await?;
+            Ok(input)
+        })
+    }
     /// Prepare a Selection Voice edit turn whose text and opaque target were
     /// already captured before the QA window took focus. Hosts must not
     /// recapture the current selection in this path.
@@ -947,6 +967,12 @@ pub trait QaApi: Send + Sync {
         unsupported("QA")
     }
     fn submit_text(&self, text: String) -> BoxFuture<'static, Result<(), BackendError>>;
+    fn submit_captured_text(
+        &self,
+        _input: QaInput,
+    ) -> BoxFuture<'static, Result<(), BackendError>> {
+        unsupported("QA captured question")
+    }
     /// Open a QA edit turn from an already captured Selection Voice session.
     /// This preserves the original text/target across the QA focus change.
     fn submit_selection_edit(
@@ -1602,6 +1628,13 @@ impl LocalAsrApi for UnsupportedDomainServices {
     fn test_model(
         &self,
         _: LocalAsrTarget,
+    ) -> BoxFuture<'static, Result<LocalAsrTestResult, BackendError>> {
+        unsupported("local ASR")
+    }
+
+    fn test_channel(
+        &self,
+        _: String,
     ) -> BoxFuture<'static, Result<LocalAsrTestResult, BackendError>> {
         unsupported("local ASR")
     }

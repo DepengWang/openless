@@ -6,6 +6,8 @@
 //! - **Windows**：Foundry Local Whisper（`foundry_*`），以及 sherpa-onnx-local
 //!   实验 provider（`sherpa*`，offline batch + online streaming）
 
+#[cfg(any(target_os = "windows", test))]
+mod blocking_decode;
 pub mod cache;
 pub mod foundry;
 pub mod foundry_native;

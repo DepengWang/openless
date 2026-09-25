@@ -162,6 +162,7 @@ export const ja: typeof zhCN = {
     marketplace: 'マーケット',
     translation: '翻訳',
     selectionAsk: '選択追問',
+    quickNote: '速記',
     corrections: '修正ルール',
     polishMode: '推敲モード',
     group: {
@@ -289,6 +290,7 @@ export const ja: typeof zhCN = {
       style: 'スタイル：出力スタイルとカスタムプロンプトを管理',
       translation: '翻訳：Shift を押しながら話すと目標言語で挿入',
       selectionAsk: '選択質問：テキストを選択して音声で質問',
+      quickNote: '速記：音声を保存して後から確認',
       settings: '環境設定：ショートカット・プロバイダー・プライバシー・更新',
     },
     footer: {
@@ -485,14 +487,24 @@ export const ja: typeof zhCN = {
     clearFailed: '履歴の消去に失敗：{{err}}',
     deleteFailed: '記録の削除に失敗：{{err}}',
     copyFailed: 'コピーに失敗：{{err}}',
+    actionMenu: '録音の操作',
     playRecording: '録音を再生',
     audioLoading: '読み込み中…',
     audioDecodeFailed: '音声デコード失敗：{{err}}',
     exportRecording: '録音をエクスポート',
     exportFailed: 'エクスポート失敗：{{err}}',
+    chooseSaveDirectory: '文字起こしファイルの保存場所を選択',
+    saveDirectoryPrompt: '文字起こしファイルの保存フォルダーを入力',
+    saveDirectory: '文字起こしファイルの保存場所を設定',
+    changeSaveDirectory: '文字起こしファイルの保存場所を変更',
+    resetSaveDirectory: '既定の保存場所に戻す',
+    defaultSaveDirectory: 'エクスポート時に毎回選択',
+    saveDirectoryFailed: '保存場所の更新に失敗：{{err}}',
     retranscribe: '再認識',
     retranscribing: '認識中…',
     retranscribeFailed: '再認識に失敗：{{err}}',
+    showRaw: '原文を表示',
+    hideRaw: '原文を隠す',
     rawLabel: '原文',
     rawEmpty: '（空）',
     selectHint: '左側から 1 件選択して詳細を表示。',
@@ -508,6 +520,7 @@ export const ja: typeof zhCN = {
     inserted: '入力済み',
     pasteSent: '貼り付けを試行',
     copiedFallback: 'コピー済み（要 {{shortcut}}）',
+    notRequested: '入力なし',
     insertFailed: '入力失敗',
     confirmClear: '全 {{count}} 件の記録を削除しますか？この操作は取り消せません。',
     backToList: '一覧に戻る',
@@ -686,6 +699,10 @@ export const ja: typeof zhCN = {
       dictationPromptHint:
         '録音の書き起こし後のASRテキスト用。口語整理、ASR誤字修正、固有名詞の復元ルールをここに書けます。',
       selectionPromptFallback: '書面推敲プロンプトが未設定です。安全なデフォルトを使用します。',
+      voiceEditPromptTitle: '選択範囲の音声編集プロンプト（EditPlan）',
+      voiceEditPromptHint:
+        '選択範囲の音声「編集」で EditPlan を生成するときだけ使います。空なら設定のカスタムまたは内蔵デフォルトにフォールバック。',
+      voiceEditPromptPlaceholder: '空 = 設定カスタムまたは内蔵デフォルト',
       selectionActivated: '「{{name}}」を選択範囲の推敲に設定しました',
       selectionActivateFailed: '選択範囲の推敲スタイル切替に失敗：{{err}}',
       selectionChars: '{{count}} 文字',
@@ -862,6 +879,23 @@ export const ja: typeof zhCN = {
       step2: '任意のアプリでテキストを選択。',
     },
   },
+  quickNote: {
+    kicker: '速記',
+    title: '速記',
+    desc: '音声を保持し、再生・書き出し・再文字起こし・再推敲に対応します。',
+    recording: '録音中…',
+    failedTitle: '録音の確認が必要です',
+    emptyTitle: '無題の録音',
+    noTranscript: 'まだ文字起こしがありません。',
+    applyResult: '速記に適用',
+    applying: '適用中…',
+    shortcutTitle: '速記ショートカット',
+    shortcutDesc: '一度押して録音を開始し、もう一度押して保存します。',
+    showShortcut: '速記ショートカットを表示',
+    repolishNeedsTranscript: '先に音声を再文字起こししてください。',
+    shareRecording: '音声を共有',
+    cancelledTitle: '録音をキャンセルしました',
+  },
   settings: {
     selectionWorkspace: {
       title: '選択範囲アシスタント',
@@ -881,6 +915,16 @@ export const ja: typeof zhCN = {
       editKeywords: '追加の疑問手がかり',
       editKeywordsDesc:
         '自動判定オフ時のみ。1行1語で質問扱い。なければ？/疑問語ヒューリスティック。',
+      editPlanFormat: '編集プラン形式',
+      editPlanFormatDesc:
+        'モデルはこの形式の EditPlan を優先出力。解析失敗時はもう一方を試します。',
+      editPlanFormatXml: 'XML',
+      editPlanFormatJson: 'JSON',
+      editSystemPrompt: '編集プランのシステムプロンプト',
+      editSystemPromptDesc:
+        'スタイルパック / 内蔵デフォルトの EditPlan システムプロンプトを上書き。空なら カスタム → パック → 内蔵 の順でフォールバック。',
+      editSystemPromptPlaceholder: '空 = スタイルパックまたは内蔵デフォルト',
+      editSystemPromptReset: 'デフォルトに戻す',
     },
     selectionPolish: {
       title: '選択範囲の推敲',
@@ -1066,9 +1110,16 @@ export const ja: typeof zhCN = {
       capsuleLabel: '録音カプセル',
       capsuleDesc: '録音 / 転写中、画面下部に半透明のカプセルを表示。',
       capsuleStyleTypeless: 'Typeless コンパクトスタイル',
+      capsuleTranscriptLabel: '文字起こしをリアルタイム表示',
+      capsuleTranscriptDesc:
+        '音声バーの代わりに認識した原文を表示します。オフにすると元の表示に戻ります。非ストリーミング認識は結果の受信後に表示します。',
+      capsuleTranscriptFontSize: '文字起こしの文字サイズ',
       capsuleStyleLabel: 'カプセルスタイル',
       capsuleStyleSiri: '光条 Siri スタイル',
       capsuleStyleClassic: 'Openless デフォルトスタイル',
+      stableTranscriptionLabel: '安定モード（録音後に文字起こし）',
+      stableTranscriptionDesc:
+        '有効にすると、録音中は ASR に接続せず、停止後に音声全体を送信します。結果は遅くなりますが、接続遅延や録音中のネットワーク変動に録音が影響されません。',
       muteDuringRecordingLabel: '録音中はミュート',
       muteDuringRecordingDesc:
         '録音中にシステム出力を一時的にミュートし、スピーカーのエコーを防ぎます。',
@@ -1167,6 +1218,7 @@ export const ja: typeof zhCN = {
       lastCheck: '前回の接続確認',
       verifying: '確認中…',
       notVerified: '未確認',
+      verificationUnavailable: 'このチャンネルは確認に対応していません',
       passed: '確認に成功',
       failed: '確認に失敗 · {{reason}}',
       elapsed: '所要時間 {{ms}} ms',
@@ -1240,6 +1292,7 @@ export const ja: typeof zhCN = {
       pipelineIsolationNotice:
         '2つのモードは完全に独立した認証情報を使用します。切り替えてももう一方の設定は削除されず、切り戻せば復元されます。',
       presets: {
+        lmstudio: 'LM Studio',
         ark: 'ARK（Volcengine Ark）',
         deepseek: 'DeepSeek',
         siliconflow: 'SiliconFlow',
@@ -1268,6 +1321,7 @@ export const ja: typeof zhCN = {
         asrSiliconflow: 'SiliconFlow SenseVoice',
         asrStepfun: 'StepFun StepAudio ASR',
         asrZhipu: 'Zhipu GLM-ASR',
+        asrMinimax: 'MiniMax ASR',
         asrGroq: 'Groq Whisper-large-v3',
         asrWhisper: 'OpenAI Whisper（互換）',
         asrOpenrouter: 'OpenRouter Whisper',
@@ -1307,6 +1361,12 @@ export const ja: typeof zhCN = {
       volcengineAccessKeyLabel: 'Access Token',
       volcengineApiKeyLabel: 'API Key',
       volcengineResourceIdLabel: 'Resource ID',
+      volcengineServiceLabel: 'サービス',
+      volcengineServiceStandard: '通常サービス',
+      volcengineAgentPlanNote:
+        '豆包ストリーミング ASR 用の Agent Plan 専用 API キーを使用します。既定の Resource ID: volc.seedasr.sauc.duration。通常サービスとはキーが異なるため、別のチャネルを作成してください。',
+      volcengineServiceInvalid:
+        'サービス設定が無効です。通常サービスまたは Agent Plan を選択してください。',
       volcengineAuthModeLabel: '認証モード',
       volcengineAuthModeAppIdToken: 'レガシーアプリ（APP ID + Access Token）',
       volcengineAuthModeApiKey: '新版コンソール API Key',
@@ -1344,6 +1404,7 @@ export const ja: typeof zhCN = {
       fillDefault: 'デフォルト値を入力',
       readFailed: '読み込み失敗',
       apiKeyLabel: 'API キー',
+      apiKeyOptionalLabel: 'API キー（任意）',
       baseUrlLabel: 'エンドポイント',
       modelLabel: 'モデル',
       customModelLabel: 'カスタムモデル…',
@@ -1386,6 +1447,16 @@ export const ja: typeof zhCN = {
       bailianVocabularyIdLabel: 'ホットワード Vocabulary ID（任意）',
       bailianVocabularyIdNote:
         'DashScope でホットワード辞書を作成済みの場合は vocab-... ID を入力します。空欄なら送信しません。',
+      bailianProtocolLabel: "API の種類",
+      bailianProtocolNote: "手動選択はモデル名による判定より優先され、検証と録音用にチャネルごとに保存されます。モデルのドキュメントに従って選択してください。",
+      bailianProtocolOptions: {
+        "auto": "自動判定",
+        "dashscope-realtime": "リアルタイム（DashScope）",
+        "qwen-realtime": "リアルタイム（Qwen Realtime）",
+        "multimodal": "非リアルタイム同期（Fun-ASR / Qwen-Audio）",
+        "qwen-multimodal": "非リアルタイム同期（Qwen3-ASR）",
+        "async-transcription": "非リアルタイム非同期（ファイル文字起こし）",
+      },
       bailianModelRealtimeHint: 'リアルタイムモデル · 話しながら文字起こし。',
       bailianModelSyncFileHint: '同期録音モデル · 話し終えてから一括で文字起こし（1 本 ≤ 5 分）。',
       bailianModelAsyncFileHint:
@@ -1398,6 +1469,9 @@ export const ja: typeof zhCN = {
         '上記の設定を保存してから、現在のモデル接続性を検証またはモデル一覧を取得します。失敗してもモデル ID を手動入力できます。',
       validate: '検証',
       validating: '検証中…',
+      planModelsHint:
+        'プランのコンソールで対応するテキストモデル ID をコピーし、モデル欄に入力してください。',
+      viewModels: '対応モデルを確認',
       fetchModels: 'モデル一覧',
       loadingModels: 'モデル取得中…',
       modelMissing: 'モデルが未設定です。先にモデル ID を入力してください。',
@@ -1434,6 +1508,8 @@ export const ja: typeof zhCN = {
       descNoAcc:
         'すべてのショートカットはグローバルで有効。応答がない場合は権限ページでグローバルショートカット監視の状態を確認してください。',
       startStop: '録音開始 / 停止',
+      quickNote: '速記',
+      quickNoteDesc: '1回押して音声メモを開始し、もう一度押して終了します。',
       cancel: '本回の録音をキャンセル',
       confirm: 'カプセル入力を確定',
       switchStyle: '前のスタイルに切り替え',
@@ -1622,6 +1698,23 @@ export const ja: typeof zhCN = {
       androidOverlayCancelSwipeDirectionHint: {
         up: '録音中に上へスワイプすると、文字起こしや挿入をせずにキャンセルします。',
         down: '録音中に下へスワイプすると、文字起こしや挿入をせずにキャンセルします。',
+      },
+      androidOverlayGestureActionsLabel: 'オーバーレイのスワイプ操作',
+      androidOverlayGestureActionsDesc:
+        '録音中に適用されます。通常のタップで通常の音声入力を終了し、速記スワイプで音声を永続保存します。',
+      androidOverlayGestureDirection: {
+        up: '上',
+        down: '下',
+        left: '左',
+        right: '右',
+      },
+      androidOverlayGestureAction: {
+        none: '操作なし',
+        quick_note: '速記',
+        translation: '翻訳',
+        style_pack: 'スタイル切替',
+        cancel: 'キャンセル',
+        qa: '質問',
       },
       windowsIme: {
         installed: 'インストール済み。音声入力時に OpenLess IME へ一時的に切り替えます。',
@@ -2077,9 +2170,10 @@ export const ja: typeof zhCN = {
     groupOther: 'その他',
     mirrorLabel: 'ダウンロードミラー',
     mirrorDesc:
-      '公式ソースは海外ネットワークで安定。hf-mirror.com は中国コミュニティ運営のミラー。',
+      'HuggingFace、コミュニティミラー、対応モデルの ModelScope 公式リポジトリを選択できます。',
     mirrorHuggingface: 'HuggingFace 公式 (huggingface.co)',
     mirrorHfMirror: '中国ミラー (hf-mirror.com)',
+    mirrorModelscope: 'ModelScope 公式 (modelscope.cn)',
     activeBadge: '使用中',
     downloadedBadge: 'ダウンロード済み',
     notDownloadedBadge: '未ダウンロード',
@@ -2110,7 +2204,7 @@ export const ja: typeof zhCN = {
     releaseNow: '今すぐ解放',
     keepLoadedLabel: 'ロード保持時間',
     keepLoadedDesc:
-      'ローカル ASR を使用後、何分でメモリから解放するかを決定。1+ GB の RAM 占有を回避。',
+      '現在のローカル ASR を次回の文字起こし後に保持する時間を指定します。「解放しない」は手動解放または終了まで保持します。',
     keepImmediate: '使用直後に解放',
     keep1min: '最終使用から 1 分',
     keep5min: '最終使用から 5 分（既定）',

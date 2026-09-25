@@ -171,6 +171,7 @@ export const de: typeof zhCN = {
     marketplace: 'Marktplatz',
     translation: 'Übersetzung',
     selectionAsk: 'Nachfragen',
+    quickNote: 'Schnellnotizen',
     corrections: 'Korrekturen',
     polishMode: 'Überarbeitungsmodus',
     group: {
@@ -302,6 +303,7 @@ export const de: typeof zhCN = {
       translation:
         'Übersetzung: Beim Sprechen Shift gedrückt halten, um Text in der Zielsprache einzufügen',
       selectionAsk: 'Zum ausgewählten Text fragen: Text auswählen und eine Frage dazu sprechen',
+      quickNote: 'Schnellnotizen: Audio speichern und später wiedergeben',
       settings: 'Einstellungen: Kurzbefehle, Dienste, Datenschutz und Updates',
     },
     footer: {
@@ -505,14 +507,24 @@ export const de: typeof zhCN = {
     clearFailed: 'Verlauf konnte nicht geleert werden: {{err}}',
     deleteFailed: 'Eintrag konnte nicht gelöscht werden: {{err}}',
     copyFailed: 'Kopieren fehlgeschlagen: {{err}}',
+    actionMenu: 'Aufnahmeaktionen',
     playRecording: 'Aufnahme abspielen',
     audioLoading: 'Wird geladen…',
     audioDecodeFailed: 'Audio konnte nicht dekodiert werden: {{err}}',
     exportRecording: 'Aufnahme exportieren',
     exportFailed: 'Export fehlgeschlagen: {{err}}',
+    chooseSaveDirectory: 'Speicherort für Transkriptdateien wählen',
+    saveDirectoryPrompt: 'Ordner für Transkriptdateien eingeben',
+    saveDirectory: 'Speicherort für Transkriptdateien festlegen',
+    changeSaveDirectory: 'Speicherort für Transkriptdateien ändern',
+    resetSaveDirectory: 'Standard-Speicherort verwenden',
+    defaultSaveDirectory: 'Bei jedem Export wählen',
+    saveDirectoryFailed: 'Speicherort konnte nicht aktualisiert werden: {{err}}',
     retranscribe: 'Erneut transkribieren',
     retranscribing: 'Wird transkribiert…',
     retranscribeFailed: 'Erneute Transkription fehlgeschlagen: {{err}}',
+    showRaw: 'Rohtext anzeigen',
+    hideRaw: 'Rohtext ausblenden',
     rawLabel: 'Rohtext',
     rawEmpty: '(leer)',
     selectHint: 'Wähle links einen Eintrag aus, um die Details anzuzeigen.',
@@ -528,6 +540,7 @@ export const de: typeof zhCN = {
     inserted: 'Eingefügt',
     pasteSent: 'Einfügebefehl gesendet',
     copiedFallback: 'Kopiert (mit {{shortcut}} einfügen)',
+    notRequested: 'Nicht eingefügt',
     insertFailed: 'Einfügen fehlgeschlagen',
     confirmClear:
       'Alle {{count}} Verlaufseinträge löschen? Dies kann nicht rückgängig gemacht werden.',
@@ -713,6 +726,10 @@ export const de: typeof zhCN = {
         'Für ASR-Text nach dem Diktat. Lege hier Regeln für gesprochene Sprache, Erkennungsfehler und die Wiederherstellung von Fachbegriffen fest.',
       selectionPromptFallback:
         'Noch kein Prompt für geschriebenen Text eingerichtet. Eine sichere Standardeinstellung wird verwendet.',
+      voiceEditPromptTitle: 'Prompt für Sprachbearbeitung der Auswahl (EditPlan)',
+      voiceEditPromptHint:
+        'Nur für den EditPlan der Auswahl-Sprachbearbeitung. Leer = benutzerdefinierter Prompt aus den Einstellungen oder Standard.',
+      voiceEditPromptPlaceholder: 'Leer = Einstellungen oder Standard',
       selectionActivated: '„{{name}}“ für die Überarbeitung von Textauswahl festgelegt.',
       selectionActivateFailed: 'Stil für Textauswahl konnte nicht gewechselt werden: {{err}}',
       selectionChars: '{{count}} Zeichen',
@@ -894,6 +911,23 @@ export const de: typeof zhCN = {
       step2: 'Wähle Text in einer beliebigen App aus.',
     },
   },
+  quickNote: {
+    kicker: 'Schnellnotizen',
+    title: 'Schnellnotizen',
+    desc: 'Audio dauerhaft behalten, mit Wiedergabe, Export, Neu-Transkription und Überarbeitung.',
+    recording: 'Aufnahme läuft …',
+    failedTitle: 'Aufnahme benötigt Aufmerksamkeit',
+    emptyTitle: 'Unbenannte Aufnahme',
+    noTranscript: 'Noch keine Transkription.',
+    applyResult: 'Auf Notiz anwenden',
+    applying: 'Wird angewendet …',
+    shortcutTitle: 'Schnellnotizen-Kurzbefehl',
+    shortcutDesc: 'Einmal drücken zum Aufnehmen, erneut drücken zum Speichern.',
+    showShortcut: 'Schnellnotizen-Kurzbefehl anzeigen',
+    repolishNeedsTranscript: 'Bitte zuerst die Audiodatei neu transkribieren.',
+    shareRecording: 'Audio teilen',
+    cancelledTitle: 'Aufnahme abgebrochen',
+  },
   settings: {
     selectionWorkspace: {
       title: 'Assistent für Textauswahl',
@@ -913,6 +947,16 @@ export const de: typeof zhCN = {
       editKeywords: 'Weitere Hinweise auf Fragen',
       editKeywordsDesc:
         'Nur bei deaktivierter automatischer Erkennung. Ein Hinweis pro Zeile erzwingt den Fragemodus. Ansonsten wird anhand von „?“ und Fragewörtern entschieden.',
+      editPlanFormat: 'Format des Bearbeitungsplans',
+      editPlanFormatDesc:
+        'Das Modell bevorzugt dieses EditPlan-Format. Bei Parse-Fehlern wird das andere Format versucht.',
+      editPlanFormatXml: 'XML',
+      editPlanFormatJson: 'JSON',
+      editSystemPrompt: 'Systemprompt für Bearbeitungspläne',
+      editSystemPromptDesc:
+        'Überschreibt den EditPlan-Systemprompt aus Stilpaket / Standard. Leer = Benutzerdefiniert → Paket → Standard.',
+      editSystemPromptPlaceholder: 'Leer = Stilpaket oder Standard',
+      editSystemPromptReset: 'Auf Standard zurücksetzen',
     },
     selectionPolish: {
       title: 'Textauswahl überarbeiten',
@@ -1102,9 +1146,16 @@ export const de: typeof zhCN = {
       capsuleDesc:
         'Zeigt während der Aufnahme eine halbtransparente Kapsel am unteren Bildschirmrand.',
       capsuleStyleTypeless: 'Kompakter Typeless-Stil',
+      capsuleTranscriptLabel: 'Live-Transkript anzeigen',
+      capsuleTranscriptDesc:
+        'Erkannten Originaltext statt Audiobalken anzeigen. Ohne Streaming erscheint der Text nach der Erkennung. Deaktivieren stellt die bisherige Anzeige wieder her.',
+      capsuleTranscriptFontSize: 'Transkript-Schriftgröße',
       capsuleStyleLabel: 'Kapselstil',
       capsuleStyleSiri: 'Schimmernder Siri-Stil',
       capsuleStyleClassic: 'OpenLess-Standardstil',
+      stableTranscriptionLabel: 'Stabiler Modus (erst aufnehmen, dann transkribieren)',
+      stableTranscriptionDesc:
+        'Wenn aktiviert, verbindet sich ASR erst nach dem Aufnahmestopp und erhält die gesamte Aufnahme. Das Ergebnis erscheint später, aber Verbindungsaufbau und Netzwerkschwankungen während der Aufnahme stören die Aufzeichnung nicht.',
       muteDuringRecordingLabel: 'Während der Aufnahme stummschalten',
       muteDuringRecordingDesc:
         'Schaltet die Systemausgabe während der Spracheingabe vorübergehend stumm, um Lautsprecherechos zu vermeiden.',
@@ -1208,6 +1259,7 @@ export const de: typeof zhCN = {
       lastCheck: 'Letzte Prüfung',
       verifying: 'Wird geprüft…',
       notVerified: 'Noch nicht geprüft',
+      verificationUnavailable: 'Die Prüfung wird für diesen Kanal nicht unterstützt',
       passed: 'Prüfung bestanden',
       failed: 'Prüfung fehlgeschlagen · {{reason}}',
       elapsed: 'Dauer: {{ms}} ms',
@@ -1286,6 +1338,7 @@ export const de: typeof zhCN = {
       pipelineIsolationNotice:
         'Die beiden Modi speichern ihre Zugangsdaten vollständig getrennt. Beim Wechsel bleiben die Daten des anderen Modus gespeichert und werden beim Zurückwechseln wieder verwendet.',
       presets: {
+        lmstudio: 'LM Studio',
         opencode: 'OpenCode Zen',
         tencentTokenHub: 'Tencent Cloud TokenHub',
         customChatCompletions: 'Benutzerdefiniert · Chat Completions',
@@ -1315,6 +1368,7 @@ export const de: typeof zhCN = {
         asrSiliconflow: 'SiliconFlow SenseVoice',
         asrStepfun: 'StepFun StepAudio ASR',
         asrZhipu: 'Zhipu GLM-ASR',
+        asrMinimax: 'MiniMax ASR',
         asrGroq: 'Groq Whisper-large-v3',
         asrWhisper: 'OpenAI Whisper (kompatibel)',
         asrOpenrouter: 'OpenRouter Whisper',
@@ -1353,6 +1407,12 @@ export const de: typeof zhCN = {
       volcengineAccessKeyLabel: 'Access Token',
       volcengineApiKeyLabel: 'API-Schlüssel',
       volcengineResourceIdLabel: 'Ressourcen-ID',
+      volcengineServiceLabel: 'Dienst',
+      volcengineServiceStandard: 'Standarddienst',
+      volcengineAgentPlanNote:
+        'Verwende einen eigenen Agent-Plan-API-Schlüssel für Doubao Streaming-ASR. Standard-Resource-ID: volc.seedasr.sauc.duration. Standard- und Planschlüssel unterscheiden sich; verwende getrennte Kanäle.',
+      volcengineServiceInvalid:
+        'Ungültige Dienstkonfiguration. Wähle Standarddienst oder Agent Plan erneut.',
       volcengineAuthModeLabel: 'Anmeldemethode',
       volcengineAuthModeAppIdToken: 'Bisherige App-Anmeldung (APP ID + Access Token)',
       volcengineAuthModeApiKey: 'API-Schlüssel (neue Konsole)',
@@ -1392,6 +1452,7 @@ export const de: typeof zhCN = {
       fillDefault: 'Standardwert eintragen',
       readFailed: 'Lesen fehlgeschlagen',
       apiKeyLabel: 'API-Schlüssel',
+      apiKeyOptionalLabel: 'API-Schlüssel (optional)',
       baseUrlLabel: 'Basis-URL',
       modelLabel: 'Modell',
       customModelLabel: 'Eigenes Modell…',
@@ -1430,6 +1491,16 @@ export const de: typeof zhCN = {
       bailianVocabularyIdLabel: 'Wörterbuch-ID für Begriffe (optional)',
       bailianVocabularyIdNote:
         'Wenn du bei DashScope ein Begriffswörterbuch erstellt hast, gib seine vocab-... ID ein. Leer lassen, um keine Begriffe zu übergeben.',
+      bailianProtocolLabel: "API-Typ",
+      bailianProtocolNote: "Die manuelle Auswahl ersetzt die Erkennung anhand des Modellnamens und gilt pro Kanal für Prüfung und Aufnahme. Beachten Sie die Modelldokumentation.",
+      bailianProtocolOptions: {
+        "auto": "Automatisch",
+        "dashscope-realtime": "Echtzeit (DashScope)",
+        "qwen-realtime": "Echtzeit (Qwen Realtime)",
+        "multimodal": "Synchron, nicht in Echtzeit (Fun-ASR / Qwen-Audio)",
+        "qwen-multimodal": "Synchron, nicht in Echtzeit (Qwen3-ASR)",
+        "async-transcription": "Asynchron (Dateitranskription)",
+      },
       bailianModelRealtimeHint: 'Echtzeitmodell · transkribiert während des Sprechens.',
       bailianModelSyncFileHint:
         'Synchrones Aufnahmemodell · transkribiert nach dem Beenden (einzelne Aufnahme ≤ 5 Min.).',
@@ -1443,6 +1514,9 @@ export const de: typeof zhCN = {
         'Speichere die Felder oben und prüfe anschließend das gewählte Modell oder rufe Modelle ab. Falls das Abrufen fehlschlägt, bleibt die manuelle Eingabe möglich.',
       validate: 'Prüfen',
       validating: 'Wird geprüft…',
+      planModelsHint:
+        'Öffnen Sie die Tarifkonsole, kopieren Sie eine unterstützte Textmodell-ID und tragen Sie sie im Modellfeld ein.',
+      viewModels: 'Unterstützte Modelle ansehen',
       fetchModels: 'Modelle abrufen',
       loadingModels: 'Modelle werden abgerufen…',
       modelMissing: 'Kein Modell eingerichtet. Gib zuerst eine Modell-ID ein.',
@@ -1485,6 +1559,9 @@ export const de: typeof zhCN = {
       descNoAcc:
         'Alle Kurzbefehle gelten global. Falls sie nicht reagieren, prüfe ihren Status unter „Berechtigungen“.',
       startStop: 'Aufnahme starten / beenden',
+      quickNote: 'Schnellnotiz',
+      quickNoteDesc:
+        'Einmal drücken, um eine dauerhafte Audionotiz zu starten, und erneut drücken, um sie zu beenden.',
       cancel: 'Aktuelle Aufnahme abbrechen',
       confirm: 'Einfügen über die Kapsel bestätigen',
       switchStyle: 'Zum vorherigen Stil wechseln',
@@ -1702,6 +1779,23 @@ export const de: typeof zhCN = {
       androidOverlayCancelSwipeDirectionHint: {
         up: 'Während der Aufnahme nach oben wischen, um ohne Transkription oder Einfügen abzubrechen.',
         down: 'Während der Aufnahme nach unten wischen, um ohne Transkription oder Einfügen abzubrechen.',
+      },
+      androidOverlayGestureActionsLabel: 'Wischaktionen des schwebenden Fensters',
+      androidOverlayGestureActionsDesc:
+        'Diese Aktionen gelten während der Aufnahme. Ein normaler Tipp beendet das Diktat; ein Schnellnotiz-Wisch speichert das Audio dauerhaft.',
+      androidOverlayGestureDirection: {
+        up: 'Nach oben',
+        down: 'Nach unten',
+        left: 'Nach links',
+        right: 'Nach rechts',
+      },
+      androidOverlayGestureAction: {
+        none: 'Keine Aktion',
+        quick_note: 'Schnellnotiz',
+        translation: 'Übersetzung',
+        style_pack: 'Stil wechseln',
+        cancel: 'Abbrechen',
+        qa: 'Fragen',
       },
       windowsIme: {
         installed:
@@ -2176,9 +2270,10 @@ export const de: typeof zhCN = {
     groupOther: 'Weitere',
     mirrorLabel: 'Download-Spiegelserver',
     mirrorDesc:
-      'huggingface.co ist die offizielle Quelle. hf-mirror.com ist ein Community-Spiegelserver, der aus Festlandchina oft besser erreichbar ist.',
+      'Wählen Sie HuggingFace, den Community-Spiegelserver oder offizielle ModelScope-Repositories für unterstützte Modelle.',
     mirrorHuggingface: 'Offizielles HuggingFace (huggingface.co)',
     mirrorHfMirror: 'Spiegelserver für Festlandchina (hf-mirror.com)',
+    mirrorModelscope: 'Offizielles ModelScope (modelscope.cn)',
     activeBadge: 'In Verwendung',
     downloadedBadge: 'Heruntergeladen',
     notDownloadedBadge: 'Nicht heruntergeladen',
@@ -2209,7 +2304,7 @@ export const de: typeof zhCN = {
     releaseNow: 'Jetzt entladen',
     keepLoadedLabel: 'Geladen halten für',
     keepLoadedDesc:
-      'Wie lange Qwen3-ASR nach der letzten Verwendung im Arbeitsspeicher bleibt, bevor es entladen wird.',
+      'Wie lange die aktuelle lokale ASR-Engine nach der nächsten Transkription geladen bleibt; „Nie entladen“ gilt bis zum manuellen Entladen oder Beenden.',
     keepImmediate: 'Sofort entladen',
     keep1min: '1 Minute nach letzter Verwendung',
     keep5min: '5 Minuten nach letzter Verwendung (Standard)',

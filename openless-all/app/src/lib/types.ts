@@ -7,6 +7,8 @@ import type {
   AndroidInsertStrategy,
   AndroidOverlayActivationMode,
   AndroidOverlayCancelSwipeDirection,
+  AndroidOverlayGestureAction,
+  AndroidOverlayGestureActions,
   AndroidOverlayLeftSwipeAction,
   AndroidOverlayStatus,
   AndroidOverlayTrigger,
@@ -17,6 +19,8 @@ export type {
   AndroidInsertStrategy,
   AndroidOverlayActivationMode,
   AndroidOverlayCancelSwipeDirection,
+  AndroidOverlayGestureAction,
+  AndroidOverlayGestureActions,
   AndroidOverlayLeftSwipeAction,
   AndroidOverlayStatus,
   AndroidOverlayTrigger,
@@ -29,7 +33,14 @@ export type PolishMode = 'raw' | 'light' | 'structured' | 'formal';
  *  两套配置在凭据库中完全隔离，运行时只读当前模式。 */
 export type PipelineMode = 'traditional' | 'multimodal';
 
-export type InsertStatus = 'inserted' | 'pasteSent' | 'copiedFallback' | 'failed';
+export type InsertStatus =
+  | 'inserted'
+  | 'pasteSent'
+  | 'copiedFallback'
+  | 'failed'
+  | 'notRequested';
+
+export type HistorySource = 'voice' | 'quick_note' | 'selection_polish' | 'selection_voice_edit';
 
 /** 概览页年度活动热力图的单日计数（date = 本地日期 YYYY-MM-DD）。 */
 export interface ActivityDay {
@@ -44,6 +55,7 @@ export interface ActivityDay {
 export interface DictationSession {
   id: string;
   createdAt: string; // ISO-8601
+  source?: HistorySource;
   rawTranscript: string;
   /** 纠正规则**之前**的 ASR 原文。`rawTranscript` 存的是规则跑完之后的版本，
    *  两者相同时后端不写这个字段（null）。用于归因：一次误识别到底是 ASR 听错还是
@@ -255,6 +267,8 @@ export type SelectionPolishOutputMode = 'directReplace' | 'previewConfirm';
 
 export type SelectionVoiceIntentMode = 'prompt' | 'auto' | 'manual' | 'heuristic';
 export type SelectionVoiceManualIntent = 'question' | 'edit';
+/** Preferred EditPlan serialization when parsing selection-voice model output. */
+export type EditPlanFormat = 'xml' | 'json';
 
 export interface CustomStylePrompts {
   raw: string;
@@ -288,6 +302,8 @@ export interface StylePack {
   baseMode: PolishMode;
   /** For selected written text. Empty values in legacy packs use a safe backend default. */
   selectionPrompt: string;
+  /** Selection-voice EditPlan system prompt. Empty = prefs custom / built-in default. */
+  voiceEditPrompt: string;
   prompt: string;
   examples: StylePackExample[];
   tags: string[];
@@ -339,8 +355,12 @@ export interface UserPreferences {
   showCapsule: boolean;
   /** 录音胶囊外观；保存后同步到胶囊窗口。 */
   capsuleStyle: CapsuleStyle;
+  capsuleTranscriptEnabled: boolean;
+  capsuleTranscriptFontSize: number;
   /** 录音期间临时静音系统输出，停止/取消/出错后恢复原静音状态。 */
   muteDuringRecording: boolean;
+  /** 先完整录音，停止后再连接当前 ASR 并提交整段音频。默认关闭。 */
+  stableTranscriptionEnabled: boolean;
   /** 按下录音热键进入 recording 状态时，播放一段合成提示音提醒「已开始录音」。
    *  默认开启；在 capsule 窗口用 Web Audio API 合成，不依赖 showCapsule。 */
   audioCueOnRecord: boolean;
@@ -390,6 +410,8 @@ export interface UserPreferences {
   outputLanguagePreference: 'auto' | 'zhCn' | 'zhTw' | 'en' | 'ja' | 'ko';
   /** 划词语音问答快捷键。null = 未启用。详见 issue #118。 */
   qaHotkey: QaHotkeyBinding | null;
+  /** 独立速记快捷键。null = 未配置。 */
+  quickNoteHotkey: ShortcutBinding | null;
   /** 选区润色快捷键。null = 已停用。 */
   selectionPolishHotkey: ShortcutBinding | null;
   /** The style pack used only by selected written-text polishing. */
@@ -404,6 +426,10 @@ export interface UserPreferences {
   selectionVoiceManualIntent: SelectionVoiceManualIntent;
   /** heuristic 模式下命中即走编辑分支的关键词。 */
   selectionVoiceEditKeywords: string[];
+  /** 选区语音 EditPlan 输出格式优先级（默认 xml）。 */
+  selectionVoiceEditPlanFormat: EditPlanFormat;
+  /** 自定义选区语音 EditPlan system prompt；空串 = 风格包 / 内置默认。 */
+  selectionVoiceEditSystemPrompt: string;
   /** 是否把 Q&A 历史写到本地存档。详见 issue #118。 */
   qaSaveHistory: boolean;
   /** 自定义录音组合键。当 hotkey.trigger == 'custom' 时使用。null = 未设置。 */
@@ -442,10 +468,10 @@ export interface UserPreferences {
   localAsrActiveModel: string;
   /** macOS 本地 Whisper 当前激活的模型 id。 */
   localWhisperActiveModel: string;
-  /** 本地模型下载源镜像（'huggingface' / 'hf-mirror'）。 */
+  /** 本地模型下载源（'huggingface' / 'hf-mirror' / 'modelscope'）。 */
   localAsrMirror: string;
   /** 本地 ASR 引擎在内存中的保留时长（秒）。0 = 说完话即释放；
-   *  300 = 默认 5 分钟；86400 ≈ 不释放（保持加载）。 */
+   *  300 = 默认 5 分钟；86400 = 不自动释放（保持加载）。 */
   localAsrKeepLoadedSecs: number;
   /** Windows Foundry Local Whisper 当前激活的模型 alias。 */
   foundryLocalAsrModel: string;
@@ -508,6 +534,8 @@ export interface UserPreferences {
   /** recordings/ 里保留的最近 wav 文件数。null = 跟随 200 硬上限；1..=200 之间为用户自定义。
    *  跟 historyMaxEntries 解耦——「文本档案多但 wav 只留最近 5 条」是合法组合。 */
   audioRecordingMaxEntries: number | null;
+  /** 速记导出的录音文件保存目录。空字符串 = 每次导出时弹出保存对话框。 */
+  quickNoteExportDirectory: string;
   /** Marketplace HTTP 基地址。空 = 本地开发默认 http://127.0.0.1:8090；生产填 https://api.<domain>。 */
   marketplaceBaseUrl: string;
   /** GitHub login 展示缓存。不用于认证；OAuth token 只存在 Rust CredentialsVault。 */
@@ -530,6 +558,8 @@ export interface UserPreferences {
   androidOverlayLeftSwipeAction: AndroidOverlayLeftSwipeAction;
   /** Android: vertical swipe direction that cancels recording. */
   androidOverlayCancelSwipeDirection: AndroidOverlayCancelSwipeDirection;
+  /** Android: action assigned to each overlay swipe direction. */
+  androidOverlayGestureActions: AndroidOverlayGestureActions;
   /** Android: floating overlay control diameter in dp. */
   androidOverlaySizeDp: number;
   /** 开屏 PV 的主版本世代标记（如 '2'）。空 = 从未播过；由 Rust 侧

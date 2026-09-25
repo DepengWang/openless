@@ -435,16 +435,17 @@ fn handle_selection_workspace_hotkey_pressed(inner: &Arc<Inner>) {
     let inner = Arc::clone(inner);
     let host = inner.host.clone();
     host.spawn(async move {
-        let result = inner
-            .backend
-            .services()
-            .selection
-            .begin_polish(openless_core::SelectionPolishRequest {
+        let operation = inner.backend.services().selection.begin_polish(
+            openless_core::SelectionPolishRequest {
                 selected_text: None,
                 mode: openless_core::PolishMode::Raw,
                 instruction: None,
-            })
-            .await;
+            },
+        );
+        let result = await_selection_polish_with_feedback(operation, || {
+            emit_selection_polish_capsule(&inner, CapsuleState::Polishing, "正在润色选区…");
+        })
+        .await;
         match result {
             Ok(_) => match inner.backend.services().selection.snapshot().await {
                 Ok(snapshot) => {
@@ -469,6 +470,9 @@ fn handle_selection_workspace_hotkey_pressed(inner: &Arc<Inner>) {
                     log::warn!("[selection-polish] read completed snapshot failed: {error}");
                 }
             },
+            Err(error) if error.code == openless_core::BackendErrorCode::Busy => {
+                // 连按快捷键不能把仍在运行的选区动画改成 Error 并启动自动隐藏。
+            }
             Err(error) => {
                 log::warn!("[selection-polish] hotkey workflow failed: {error}");
                 let message = match error.message.as_str() {
@@ -478,9 +482,6 @@ fn handle_selection_workspace_hotkey_pressed(inner: &Arc<Inner>) {
                     "selectionPolishTargetUnavailable" => "目标输入框不可用，请重新选择",
                     "selectionPolishTargetChanged" | "selectionPolishSelectionChanged" => {
                         "选区已变化，未替换"
-                    }
-                    _ if error.code == openless_core::BackendErrorCode::Busy => {
-                        "选区润色正在进行中"
                     }
                     _ => "润色失败，请重试",
                 };
@@ -498,6 +499,72 @@ fn handle_selection_workspace_hotkey_pressed(inner: &Arc<Inner>) {
             }
         }
     });
+}
+
+#[cfg(not(mobile))]
+async fn await_selection_polish_with_feedback(
+    operation: impl std::future::Future<
+        Output = Result<openless_core::SessionId, openless_core::BackendError>,
+    >,
+    show_processing: impl FnOnce(),
+) -> Result<openless_core::SessionId, openless_core::BackendError> {
+    let mut operation = std::pin::pin!(operation);
+    // First let Core accept the session and capture its target. A synchronous
+    // Busy/no-selection result must not replace another session's feedback.
+    match futures_util::poll!(operation.as_mut()) {
+        std::task::Poll::Ready(result) => result,
+        std::task::Poll::Pending => {
+            show_processing();
+            operation.await
+        }
+    }
+}
+
+#[cfg(all(test, not(mobile)))]
+mod selection_feedback_tests {
+    use super::await_selection_polish_with_feedback;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn processing_feedback_stays_until_selection_operation_finishes() {
+        let shown = AtomicUsize::new(0);
+        let (completed, pending) = tokio::sync::oneshot::channel();
+        let mut operation = std::pin::pin!(await_selection_polish_with_feedback(
+            async { pending.await.unwrap() },
+            || {
+                shown.fetch_add(1, Ordering::SeqCst);
+            },
+        ));
+        for _ in 0..3 {
+            assert!(futures_util::poll!(operation.as_mut()).is_pending());
+            assert_eq!(
+                shown.load(Ordering::SeqCst),
+                1,
+                "polling must not restart the animation"
+            );
+        }
+        let session = openless_core::SessionId::new();
+        completed.send(Ok(session)).unwrap();
+        assert_eq!(operation.await.unwrap(), session);
+    }
+
+    #[tokio::test]
+    async fn rejected_repeat_does_not_replace_the_running_feedback() {
+        let result = await_selection_polish_with_feedback(
+            async {
+                Err(openless_core::BackendError::new(
+                    openless_core::BackendErrorCode::Busy,
+                    "active",
+                ))
+            },
+            || panic!("a rejected hotkey must not change feedback"),
+        )
+        .await;
+        assert_eq!(
+            result.unwrap_err().code,
+            openless_core::BackendErrorCode::Busy
+        );
+    }
 }
 
 #[cfg(not(mobile))]
@@ -1548,6 +1615,46 @@ pub(super) fn handle_action_hotkey_pressed(inner: &Arc<Inner>, kind: ActionHotke
     match kind {
         ActionHotkeyKind::SwitchStyle => switch_to_previous_style(inner),
         ActionHotkeyKind::OpenApp => inner.host.show_main_window(),
+        ActionHotkeyKind::QuickNote => {
+            let backend = Arc::clone(&inner.backend);
+            inner.host.spawn(async move {
+                let phase = backend.snapshot().dictation.phase;
+                let result = match phase {
+                    openless_core::DictationPhase::Idle => backend
+                        .start_dictation_with_options(openless_core::DictationStartOptions {
+                            insert_text: false,
+                            output_target: openless_core::DictationOutputTarget::QuickNote,
+                            ..openless_core::DictationStartOptions::default()
+                        })
+                        .await
+                        .map(|_| ()),
+                    openless_core::DictationPhase::Starting
+                    | openless_core::DictationPhase::Recording
+                        if matches!(
+                            backend.dictation_output_target(),
+                            Some(
+                                openless_core::DictationOutputTarget::QuickNote
+                                    | openless_core::DictationOutputTarget::Undecided
+                            )
+                        ) =>
+                    {
+                        backend
+                            .stop_dictation_with_options(
+                                openless_core::DictationStopOptions {
+                                    quick_note: Some(true),
+                                    ..openless_core::DictationStopOptions::default()
+                                },
+                            )
+                            .await
+                            .map(|_| ())
+                    }
+                    _ => Ok(()),
+                };
+                if let Err(error) = result {
+                    log::warn!("[coord] quick note hotkey failed: {error}");
+                }
+            });
+        }
     }
 }
 
@@ -1629,6 +1736,7 @@ pub(super) fn action_hotkey_slot(
     match kind {
         ActionHotkeyKind::SwitchStyle => &inner.switch_style_hotkey,
         ActionHotkeyKind::OpenApp => &inner.open_app_hotkey,
+        ActionHotkeyKind::QuickNote => &inner.quick_note_hotkey,
     }
 }
 
@@ -1640,6 +1748,7 @@ pub(super) fn action_hotkey_binding(
     match kind {
         ActionHotkeyKind::SwitchStyle => target.switch_style,
         ActionHotkeyKind::OpenApp => target.open_app,
+        ActionHotkeyKind::QuickNote => target.quick_note,
     }
 }
 
@@ -1661,6 +1770,7 @@ pub(super) fn action_hotkey_bridge_thread_name(kind: ActionHotkeyKind) -> &'stat
     match kind {
         ActionHotkeyKind::SwitchStyle => "openless-switch-style-hotkey-bridge",
         ActionHotkeyKind::OpenApp => "openless-open-app-hotkey-bridge",
+        ActionHotkeyKind::QuickNote => "openless-quick-note-hotkey-bridge",
     }
 }
 
@@ -2243,6 +2353,7 @@ pub(crate) mod windows_less_computer_tests {
             backend,
             less_computer_voice: Mutex::new(None),
             settings_host_gate: Mutex::new(()),
+            overlay_qa_handoff: tokio::sync::Mutex::new(()),
             inserter: TextInserter::new(),
             vocab_card_visible: AtomicBool::new(false),
             hotkey: Mutex::new(None),
@@ -2256,6 +2367,7 @@ pub(crate) mod windows_less_computer_tests {
             translation_hotkey: Mutex::new(None),
             switch_style_hotkey: Mutex::new(None),
             open_app_hotkey: Mutex::new(None),
+            quick_note_hotkey: Mutex::new(None),
             style_pack_hotkeys: Mutex::new(std::collections::HashMap::new()),
             selection_polish_hotkey: Mutex::new(None),
             selection_voice_host: Arc::new(Mutex::new(

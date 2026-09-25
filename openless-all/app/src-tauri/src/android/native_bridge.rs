@@ -339,6 +339,7 @@ fn spawn_stop_dictation() {
     });
 }
 
+#[cfg(target_os = "android")]
 fn spawn_stop_dictation_for_ime() {
     let Some(backend) = CORE_BACKEND.get().cloned() else {
         log::warn!("[android-native] core backend unavailable");
@@ -392,6 +393,18 @@ fn spawn_stop_dictation_for_ime_with_raw(raw: bool) {
     });
 }
 
+fn spawn_stop_dictation_as_quick_note() {
+    let Some(backend) = CORE_BACKEND.get().cloned() else {
+        log::warn!("[android-native] core backend unavailable");
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = stop_core_dictation_as_quick_note(&backend).await {
+            log::warn!("[android-native] stop_quick_note failed: {error}");
+        }
+    });
+}
+
 fn spawn_cancel_dictation() {
     let Some(backend) = CORE_BACKEND.get().cloned() else {
         log::warn!("[android-native] core backend unavailable");
@@ -424,6 +437,48 @@ fn spawn_add_vocabulary_word(phrase: String) {
     tauri::async_runtime::spawn(async move {
         if let Err(error) = backend.add_vocabulary_if_absent(phrase, None) {
             log::warn!("[android-native] add_vocabulary_if_absent failed: {error}");
+        }
+    });
+}
+
+/// Records a correction rule from the IME's "edit result" flow, so a
+/// misrecognition the user just fixed by hand also gets fixed automatically
+/// for future dictations. Uses the same CorrectionRuleStore desktop's
+/// Corrections settings page writes to. Kept alongside
+/// spawn_add_vocabulary_word() above rather than replaced by it — this
+/// branch's own IME flows write to the Dictionary now, but upstream/beta's
+/// other call sites still rely on the CorrectionRule store.
+fn spawn_add_correction_rule(pattern: String, replacement: String) {
+    let Some(backend) = CORE_BACKEND.get().cloned() else {
+        log::warn!("[android-native] core backend unavailable");
+        return;
+    };
+    if pattern.is_empty() || replacement.is_empty() || pattern == replacement {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        // Idempotent by pattern: a rule for this exact wrong text should
+        // never exist twice. The clipboard swipe UI already gates "add" to
+        // only fire when no rule exists yet for that text, but that is only
+        // a UI-level hint — this is also reachable from the dictation "edit
+        // result" flow, so the actual duplicate-prevention guarantee belongs
+        // here, not in either caller.
+        match backend.list_correction_rules() {
+            Ok(existing) => {
+                for rule in existing.into_iter().filter(|rule| rule.pattern == pattern) {
+                    if let Err(error) = backend.remove_correction_rule(&rule.id) {
+                        log::warn!(
+                            "[android-native] remove stale correction rule before re-add failed: {error}"
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                log::warn!("[android-native] list_correction_rules before add failed: {error}");
+            }
+        }
+        if let Err(error) = backend.add_correction_rule(pattern, replacement) {
+            log::warn!("[android-native] add_correction_rule failed: {error}");
         }
     });
 }
@@ -501,6 +556,39 @@ fn spawn_remove_vocabulary_word(phrase: String) {
     });
 }
 
+/// Removes every correction rule whose pattern exactly matches — the
+/// clipboard swipe-left "remove" action. Idempotent like the underlying
+/// store's remove(id): no match is a silent no-op. Kept alongside
+/// spawn_remove_vocabulary_word() above for the same reason
+/// spawn_add_correction_rule() is kept alongside spawn_add_vocabulary_word().
+fn spawn_remove_correction_rule(pattern: String) {
+    let Some(backend) = CORE_BACKEND.get().cloned() else {
+        log::warn!("[android-native] core backend unavailable");
+        return;
+    };
+    if pattern.is_empty() {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let ids: Vec<String> = match backend.list_correction_rules() {
+            Ok(rules) => rules
+                .into_iter()
+                .filter(|rule| rule.pattern == pattern)
+                .map(|rule| rule.id)
+                .collect(),
+            Err(error) => {
+                log::warn!("[android-native] list_correction_rules for remove failed: {error}");
+                return;
+            }
+        };
+        for id in ids {
+            if let Err(error) = backend.remove_correction_rule(&id) {
+                log::warn!("[android-native] remove_correction_rule failed: {error}");
+            }
+        }
+    });
+}
+
 async fn ensure_core_started(backend: &OpenLessBackend) -> Result<(), BackendError> {
     if !backend.snapshot().running {
         backend.start().await?;
@@ -516,6 +604,7 @@ async fn start_core_dictation(
     backend
         .start_dictation_with_options(DictationStartOptions {
             translation_requested: translation,
+            output_target: openless_core::DictationOutputTarget::Undecided,
             ..DictationStartOptions::default()
         })
         .await
@@ -545,8 +634,21 @@ async fn stop_core_dictation(
         .stop_dictation_with_options(DictationStopOptions {
             translation_requested: translation,
             raw_requested: raw,
+            quick_note: Some(false),
         })
         .await
+}
+
+async fn stop_core_dictation_as_quick_note(backend: &OpenLessBackend) -> Result<(), BackendError> {
+    ensure_core_started(backend).await?;
+    backend
+        .stop_dictation_with_options(DictationStopOptions {
+            translation_requested: None,
+            raw_requested: None,
+            quick_note: Some(true),
+        })
+        .await
+        .map(|_| ())
 }
 
 async fn cancel_core_dictation(backend: &OpenLessBackend) -> Result<(), BackendError> {
@@ -666,6 +768,14 @@ mod jni_exports {
     }
 
     #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeStopDictationAsQuickNote(
+        _env: *mut JNIEnv,
+        _class: JClass,
+    ) {
+        spawn_stop_dictation_as_quick_note();
+    }
+
+    #[no_mangle]
     pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeCancelDictation(
         _env: *mut JNIEnv,
         _class: JClass,
@@ -691,6 +801,33 @@ mod jni_exports {
             .map(|value| value.into())
             .unwrap_or_default();
         spawn_add_vocabulary_word(phrase_str);
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeAddCorrectionRule(
+        env: *mut JNIEnv,
+        _class: JClass,
+        pattern: jstring,
+        replacement: jstring,
+    ) {
+        let mut jni_env = match JniEnv::from_raw(env) {
+            Ok(env) => env,
+            Err(error) => {
+                log::warn!(
+                    "[android-native] attach JNI env for add_correction_rule failed: {error}"
+                );
+                return;
+            }
+        };
+        let pattern_str: String = jni_env
+            .get_string(&JString::from_raw(pattern))
+            .map(|value| value.into())
+            .unwrap_or_default();
+        let replacement_str: String = jni_env
+            .get_string(&JString::from_raw(replacement))
+            .map(|value| value.into())
+            .unwrap_or_default();
+        spawn_add_correction_rule(pattern_str, replacement_str);
     }
 
     #[no_mangle]
@@ -735,6 +872,28 @@ mod jni_exports {
             .map(|value| value.into())
             .unwrap_or_default();
         spawn_remove_vocabulary_word(phrase_str);
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeRemoveCorrectionRule(
+        env: *mut JNIEnv,
+        _class: JClass,
+        pattern: jstring,
+    ) {
+        let mut jni_env = match JniEnv::from_raw(env) {
+            Ok(env) => env,
+            Err(error) => {
+                log::warn!(
+                    "[android-native] attach JNI env for remove_correction_rule failed: {error}"
+                );
+                return;
+            }
+        };
+        let pattern_str: String = jni_env
+            .get_string(&JString::from_raw(pattern))
+            .map(|value| value.into())
+            .unwrap_or_default();
+        spawn_remove_correction_rule(pattern_str);
     }
 
     #[no_mangle]
