@@ -150,7 +150,16 @@ internal class LitePinyinRepository(context: Context) {
                 }
             }
         }
-        grouped.forEach { (abbreviation, entries) -> abbreviationIndex[abbreviation] = entries.sortedByDescending { it.weight } }
+        // Within one abbreviation's own phrase list only (never crosses into
+        // the char tier above it) — a manually curated domain term (see
+        // PRIORITY_PHRASES) sorts before any ordinary corpus-ranked phrase
+        // sharing that same code, regardless of either one's raw weight;
+        // ties within each of those two groups still fall back to weight.
+        grouped.forEach { (abbreviation, entries) ->
+            abbreviationIndex[abbreviation] = entries.sortedWith(
+                compareByDescending<Entry> { it.text in PRIORITY_PHRASES }.thenByDescending { it.weight },
+            )
+        }
     }
 
     private companion object {
@@ -159,5 +168,15 @@ internal class LitePinyinRepository(context: Context) {
         // suffix, so cardinality is naturally bounded by realistic typing
         // patterns without needing a larger budget.
         const val CACHE_SIZE = 256
+
+        // Mirrors generate-pinyin-phrases.mjs's own WHITELIST word list
+        // (kept as a separate small constant here, not a 5th TSV column,
+        // since it only ever affects in-app ranking, never the asset's
+        // own membership or generation) — a whitelisted domain term the
+        // user confirmed on 2026-09-25 outranks a same-abbreviation
+        // ordinary corpus phrase on sight, since it was deliberately added
+        // because the generic frequency corpus has no reason to rank it
+        // highly on its own.
+        val PRIORITY_PHRASES = setOf("输入法", "候选词", "剪贴板", "供应商", "物料", "主管")
     }
 }

@@ -25,9 +25,13 @@ Sources:
 
 Generation: this repo's scripts/generate-pinyin-characters.mjs — see that
 script's own header comment for the exact re-fetch/regenerate commands and
-selection/ranking rules (top ~5000 characters by usage weight, primary
-reading always kept, up to 2 additional "常用" polyphone readings kept when
-their own weight clears a threshold). Output rows are tab-separated
+selection/ranking rules. Covers the full 8105-character 《通用规范汉字表》
+set (raised from an initial ~5000-character cutoff on 2026-09-25, once the
+smaller set proved noticeably incomplete in real use — the plan's own 7.1
+anticipated this: "如果5000字实测仍然很小，可在不改变架构的情况下扩展到
+8105个规范汉字"), primary reading always kept, up to 2 additional "常用"
+polyphone readings kept when their own weight clears a threshold. Output
+rows are tab-separated
 "character<TAB>pinyin<TAB>weight", pinyin lowercase ASCII with ü normalized
 to v and tone marks stripped. No runtime code in OpenLess downloads,
 modifies, or redistributes either original source — only this generated,

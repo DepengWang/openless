@@ -37,7 +37,13 @@ Generation: this repo's scripts/generate-pinyin-phrases.mjs — see that
 script's own header comment for the exact re-fetch/regenerate commands and
 selection/ranking rules (2-4 character simplified-only words, top ~2000 by
 usage weight, plus a small manually curated domain-term whitelist confirmed
-with the user on 2026-09-25 — see the WHITELIST constant in that script).
+with the user on 2026-09-25 — see the WHITELIST constant in that script — and
+a small blacklist of corpus noise found by spot-checking the output, e.g.
+"回复日期", a forum/IME-corpus UI-template phrase rather than real vocabulary
+— see the BLACKLIST constant). LitePinyinRepository.kt additionally ranks
+the whitelisted words above an ordinary same-abbreviation phrase at query
+time (its own PRIORITY_PHRASES constant), not something this generator's
+own output encodes.
 Output rows are tab-separated "phrase<TAB>full_pinyin<TAB>abbreviation<TAB>
 weight", pinyin lowercase ASCII with ü normalized to v and tone marks
 stripped, abbreviation = first letter of each syllable. No runtime code in

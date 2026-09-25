@@ -75,6 +75,18 @@ const WHITELIST = [
 // outranks a genuinely common word, just guarantees presence in the list.
 const WHITELIST_FALLBACK_WEIGHT = 500;
 
+// Manually curated corpus-noise blacklist — words that are valid simplified
+// Chinese and technically common in the source corpus but aren't real
+// day-to-day vocabulary (rime-pinyin-simp is derived from an old Android
+// IME's usage corpus, which includes forum/UI boilerplate text). Found by
+// spot-checking the generated top-2000 list, not an exhaustive audit — see
+// docs/pinyin-lite/phase-0-audit.md's sibling phase notes. Removed from the
+// candidate pool entirely (so it can't be re-surfaced by a future weight
+// change) rather than just skipped at output time.
+const BLACKLIST = new Set([
+  '回复日期', // forum/IME-corpus UI template text, not a phrase anyone actually types — ranked #11 in the very first generation run despite that
+]);
+
 function toAsciiPinyin(raw) {
   const uUmlaut = raw.replace(/[üǖǘǚǜÜǕǗǙǛ]/g, (ch) => (ch === ch.toUpperCase() ? 'V' : 'v'));
   return uUmlaut
@@ -120,6 +132,7 @@ for (const line of fs.readFileSync(rimeSimpPath, 'utf8').split(/\r?\n/)) {
   const length = [...word].length;
   if (length < MIN_LENGTH || length > MAX_LENGTH) continue;
   if (!isAllSimplified(word)) continue;
+  if (BLACKLIST.has(word)) continue;
   const weight = Number(parts[2]);
   if (!Number.isFinite(weight) || weight <= 0) continue;
   const rimeSyllables = parts[1].trim().split(/\s+/).map(toAsciiPinyin).filter(Boolean);
