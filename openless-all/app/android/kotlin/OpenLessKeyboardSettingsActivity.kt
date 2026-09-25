@@ -24,14 +24,6 @@ import android.widget.TextView
  * they're added.
  */
 class OpenLessKeyboardSettingsActivity : Activity() {
-    private val debugHandler = Handler(Looper.getMainLooper())
-    private var debugStatusView: TextView? = null
-    private val debugStatusRunnable = object : Runnable {
-        override fun run() {
-            debugStatusView?.text = liveDebugStatus()
-            debugHandler.postDelayed(this, 1000L)
-        }
-    }
     private val prefs by lazy { getSharedPreferences("openless_ime_ui", Context.MODE_PRIVATE) }
     private val englishUi by lazy {
         val locale = prefs.getString("locale", null) ?: resources.configuration.locales[0].toLanguageTag()
@@ -54,21 +46,6 @@ class OpenLessKeyboardSettingsActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(buildContent())
-        debugHandler.post(debugStatusRunnable)
-    }
-
-    override fun onDestroy() {
-        debugHandler.removeCallbacks(debugStatusRunnable)
-        super.onDestroy()
-    }
-
-    private fun liveDebugStatus(): String {
-        val native = runCatching {
-            val json = org.json.JSONObject(OpenLessNative.nativeBackendSnapshot())
-            "rustOk=${json.optBoolean("ok")} contract=${json.optString("contractVersion", "?")}"
-        }.getOrElse { "rust=error" }
-        return "${OpenLessBackendWarmupActivity.debugSnapshot()}\n" +
-            "${OpenLessImeService.backendDebugSnapshot()} $native"
     }
 
     private fun buildContent(): View {
@@ -325,26 +302,40 @@ class OpenLessKeyboardSettingsActivity : Activity() {
         }
         content.addView(View(this), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(14)))
 
-        content.addView(sectionLabel(ui("实时调试状态", "Live debug state")))
-        debugStatusView = TextView(this).apply {
-            text = liveDebugStatus()
-            textSize = 11f
-            typeface = monospace
-            setTextColor(tone(Color.rgb(200, 200, 200), Color.rgb(70, 70, 75)))
-            setPadding(0, 0, 0, dp(14))
-        }
-        content.addView(debugStatusView)
-
+        // "个人偏好数据": read-only counters for the two local, on-device-only
+        // learning stores that make repeated input steadily rank better
+        // (笔画/拼音 both benefit — see each row's own comment). No toggle
+        // here — matches this section's existing convention of pure
+        // display; the underlying preferences (strokeUsageEnabled etc.)
+        // live in the app's own WebView settings, not this native page.
         content.addView(sectionLabel(ui("个人偏好数据", "Personal preference data")))
+        // 笔画输入的个人调频数据：记录"这个笔画码你选过哪个字"，越用越靠前
+        // 排序，不影响词库本身，也不会同步到云端。
         val personalFrequency = StrokeUserFrequency(this)
         content.addView(
             TextView(this).apply {
                 text = ui(
-                    "已记录 ${personalFrequency.size()} / ${personalFrequency.capacity()} 条",
-                    "${personalFrequency.size()} / ${personalFrequency.capacity()} entries recorded",
+                    "笔画调频：已记录 ${personalFrequency.size()} / ${personalFrequency.capacity()} 条",
+                    "Stroke ranking: ${personalFrequency.size()} / ${personalFrequency.capacity()} entries recorded",
                 )
                 textSize = 14f
                 setTextColor(tone(Color.rgb(200, 200, 200), Color.rgb(70, 70, 75)))
+            },
+        )
+        // 简拼优选：不是每次输入都记一条，是"连续两次直接打拼音上屏"的组合
+        // （比如先打 zg 选中国，紧接着打 rm 选人民）达到 3 次后才计入这里——
+        // 见 LitePinyinLearnedPhrases 的文档注释。这里只显示已经达标、正在
+        // 生效的组合数，未达标的候选不计入（避免这个数字本身产生误导）。
+        val learnedPhrases = LitePinyinLearnedPhrases(this)
+        content.addView(
+            TextView(this).apply {
+                text = ui(
+                    "简拼优选：已生效 ${learnedPhrases.promotedCount()} 条",
+                    "Pinyin combo learning: ${learnedPhrases.promotedCount()} promoted",
+                )
+                textSize = 14f
+                setTextColor(tone(Color.rgb(200, 200, 200), Color.rgb(70, 70, 75)))
+                setPadding(0, 0, 0, dp(14))
             },
         )
 
