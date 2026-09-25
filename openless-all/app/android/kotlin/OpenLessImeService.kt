@@ -1237,9 +1237,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // space would switch TO, not the current one.
         val spaceHint = TextView(this).apply {
             text = if (latinInputMode == LatinInputMode.ENGLISH) ui("拼音输入", "Pinyin") else ui("英文输入", "English")
-            textSize = 10f
+            textSize = 12f
             gravity = android.view.Gravity.CENTER
-            setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(140, 140, 145)))
+            // Same cherry red as a first-place candidate (see
+            // styleCandidateFirstState()) — was a muted gray, too faint to
+            // read at 10sp per real-device feedback.
+            setTextColor(if (isDarkTheme) Color.rgb(190, 45, 60) else Color.rgb(153, 26, 40))
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
             isClickable = false
         }
         val spaceWrapper = FrameLayout(this).apply {
