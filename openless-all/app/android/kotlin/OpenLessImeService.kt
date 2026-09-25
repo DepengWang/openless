@@ -3578,7 +3578,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     /**
      * POSTs the verbatim ASR transcript (Raw — never LLM-polished, per
      * toggleDictation()'s rawModeArmed || rambleArmed check) to the
-     * URL/account/token configured in the native settings page's "碎碎念
+     * URL/token configured in the native settings page's "碎碎念
      * 提交" section (OpenLessKeyboardSettingsActivity) — never inserted into
      * the input field, never archived locally either (contrast
      * quickNoteDictation(), which does both of those things quick note's
@@ -3596,12 +3596,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         val preferences = getSharedPreferences("openless_ime_ui", MODE_PRIVATE)
         val url = preferences.getString("key_ramble_webhook_url", null)?.trim().orEmpty()
-        val account = preferences.getString("key_ramble_webhook_account", null)?.trim().orEmpty()
         val token = preferences.getString("key_ramble_webhook_token", null)?.trim().orEmpty()
         recording = false
         processing = false
-        if (url.isEmpty() || account.isEmpty() || token.isEmpty()) {
-            setState("error", "请先在设置中填写碎碎念的地址/账号/Token")
+        if (url.isEmpty() || token.isEmpty()) {
+            setState("error", "请先在设置中填写碎碎念的地址/Token")
             return
         }
         setState("thinking", "正在提交碎碎念")
@@ -3610,7 +3609,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             try {
                 val body = org.json.JSONObject().apply {
                     put("token", token)
-                    put("user_id", account)
                     put("content", text)
                     put("client", "input_method")
                 }.toString()
@@ -3894,7 +3892,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             "笔记已记录" -> "Note saved"
             "正在提交碎碎念" -> "Submitting"
             "已提交碎碎念" -> "Ramble submitted"
-            "请先在设置中填写碎碎念的地址/账号/Token" -> "Fill in the Ramble URL/account/token in settings first"
+            "请先在设置中填写碎碎念的地址/Token" -> "Fill in the Ramble URL/token in settings first"
             "已取消" -> "Cancelled"
             "敏感字段，已禁用听写", "敏感字段，禁止听写", "敏感字段，禁止上屏" -> "Dictation disabled in this field"
             "请先授予麦克风权限" -> "Microphone permission required"

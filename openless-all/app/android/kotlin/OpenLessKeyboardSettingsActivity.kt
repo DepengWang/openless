@@ -343,7 +343,7 @@ class OpenLessKeyboardSettingsActivity : Activity() {
         // 话筒左划进入"碎碎念"：录音的原始转写（不经 LLM 整理，见
         // OpenLessImeService.toggleDictation() 里 rawModeArmed || rambleArmed
         // 那一支）会以 JSON POST 到这里配置的地址，不插入任何输入框，也不
-        // 在本机留存。三项都填了才会真的提交——留空时只会在状态栏提示去
+        // 在本机留存。两项都填了才会真的提交——留空时只会在状态栏提示去
         // 设置里补上，不会静默失败。
         content.addView(sectionLabel(ui("碎碎念提交", "Ramble webhook")))
         content.addView(
@@ -363,14 +363,6 @@ class OpenLessKeyboardSettingsActivity : Activity() {
                 hint = "https://example.com/capture_ingest.php",
                 initial = prefs.getString("key_ramble_webhook_url", "") ?: "",
                 onChange = { prefs.edit().putString("key_ramble_webhook_url", it).apply() },
-            ),
-        )
-        content.addView(
-            textFieldRow(
-                label = ui("账号 (user_id)", "Account (user_id)"),
-                hint = "w",
-                initial = prefs.getString("key_ramble_webhook_account", "") ?: "",
-                onChange = { prefs.edit().putString("key_ramble_webhook_account", it).apply() },
             ),
         )
         content.addView(
@@ -477,7 +469,7 @@ class OpenLessKeyboardSettingsActivity : Activity() {
         return row
     }
 
-    /** One labeled single-line text field, auto-saving on every keystroke (matches every other row on this page — no separate save button). Used by the "碎碎念提交" section for its URL/account/token; reusable for any future free-text setting. */
+    /** One labeled single-line text field, auto-saving on every keystroke (matches every other row on this page — no separate save button). Used by the "碎碎念提交" section for its URL/token; reusable for any future free-text setting. */
     private fun textFieldRow(label: String, hint: String, initial: String, isSecret: Boolean = false, onChange: (String) -> Unit): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
