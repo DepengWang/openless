@@ -79,7 +79,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // TO, not the current one — i.e. it reads "拼音" while latinInputMode
     // is ENGLISH, and "英文" while it's PINYIN.
     private var latinInputMode = LatinInputMode.ENGLISH
-    private val litePinyinController by lazy { LitePinyinController() }
+    private val litePinyinController by lazy { LitePinyinController(this) }
     // The word currently being typed on the English keyboard — appended to
     // per letter, trimmed per backspace, cleared at every word boundary
     // (space/return/punctuation/candidate tap/mode or panel switch). Never
@@ -392,9 +392,27 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         litePinyinController.clear()
         latinInputMode = if (latinInputMode == LatinInputMode.ENGLISH) LatinInputMode.PINYIN else LatinInputMode.ENGLISH
         saveLatinInputMode(latinInputMode)
-        updateEnglishCandidates()
+        refreshLatinCandidateBar()
         performKeyHaptic()
         refreshInputView()
+    }
+
+    /**
+     * Populates/hides the shared candidate bar for whichever of
+     * English/Pinyin mode is current — used both on a cold panel build and
+     * right after toggleLatinInputMode() switches modes. Pinyin's own bar
+     * visibility isn't gated by englishSuggestionsEnabled() (a separate,
+     * English-word-completion-specific preference); its candidates are core
+     * to the mode, not an optional suggestion feature.
+     */
+    private fun refreshLatinCandidateBar() {
+        if (latinInputMode == LatinInputMode.PINYIN) {
+            litePinyinController.preloadAsync()
+            englishCandidateBarContainer?.visibility = View.VISIBLE
+            renderPinyinCandidates(emptyList())
+        } else {
+            updateEnglishCandidates()
+        }
     }
 
     internal fun refreshLanguage() {
@@ -1165,7 +1183,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         })
 
         root.addView(buildEnglishCandidateBar(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        updateEnglishCandidates()
+        refreshLatinCandidateBar()
 
         when (englishLayer) {
             EnglishLayer.LETTERS -> {
@@ -1273,8 +1291,18 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 5f)
         }
         val returnButton = keyboardKey("Return", 1.7f, action = {
-            finalizeEnglishComposingWord()
-            sendEnterKey()
+            // Plan 3.3: "Enter 有候选时提交第一候选，无编码时使用原有回车行为"
+            // — reuses candidateOverlayEntries (already the current row's
+            // (label, action) pairs, pinyin or English, set by whichever
+            // render*Candidates() last ran) rather than a second field
+            // duplicating the same list.
+            val firstPinyinCandidate = candidateOverlayEntries.firstOrNull()
+            if (latinInputMode == LatinInputMode.PINYIN && firstPinyinCandidate != null) {
+                firstPinyinCandidate.second.invoke()
+            } else {
+                finalizeEnglishComposingWord()
+                sendEnterKey()
+            }
         }).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) }
         bottom.addView(modeButton)
         bottom.addView(spaceWrapper)
@@ -1344,8 +1372,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         refreshInputView()
     }
 
-    /** Backspace on the English keyboard: same field edit as everywhere else, plus keeping englishComposingWord (and therefore the candidate bar) in sync. */
+    /** Backspace on the English keyboard: same field edit as everywhere else, plus keeping englishComposingWord (and therefore the candidate bar) in sync. In Pinyin mode, deletes from the (never-committed) encoding instead — falls back to the normal field edit only once the encoding is already empty (plan 3.3: "编码为空时 Backspace 恢复现有普通删除"). */
     private fun englishDeleteBackward() {
+        if (latinInputMode == LatinInputMode.PINYIN && litePinyinController.backspace { renderPinyinCandidates(it) }) {
+            return
+        }
         deleteBackward()
         if (englishComposingWord.isNotEmpty()) {
             englishComposingWord.deleteCharAt(englishComposingWord.length - 1)
@@ -2597,6 +2628,25 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
     private fun commitEnglishChar(char: String) {
         if (char.isEmpty()) return
+        if (latinInputMode == LatinInputMode.PINYIN) {
+            if (char.length == 1 && char[0].isLetter()) {
+                // Never calls commitText() — a letter only feeds the
+                // encoding buffer in Pinyin mode; see
+                // LitePinyinController's own doc comment.
+                litePinyinController.appendLetter(char[0]) { renderPinyinCandidates(it) }
+                if (shiftState == ShiftState.SHIFT_ONCE) {
+                    shiftState = ShiftState.OFF
+                    refreshInputView()
+                }
+                return
+            }
+            // A digit/punctuation typed mid-encoding (e.g. from the 123/
+            // symbols layer) abandons the encoding the same way space does
+            // (plan 3.2 point 9) rather than leaving it stranded, then
+            // falls through to commit the symbol itself normally below.
+            litePinyinController.clear()
+            renderPinyinCandidates(emptyList())
+        }
         currentInputConnection?.commitText(char, 1)
         if (char.length == 1 && char[0].isLetter()) {
             englishComposingWord.append(char.lowercase())
@@ -2784,6 +2834,56 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         performKeyHaptic()
         Toast.makeText(this, ui("已移除“$word”", "Removed \"$word\""), Toast.LENGTH_SHORT).show()
         updateEnglishCandidates()
+    }
+
+    /**
+     * Renders LitePinyinController's own candidate callback into the same
+     * candidateItemView()/englishCandidateRow the English candidates use
+     * (plan 5.3's Option B — see docs/pinyin-lite/phase-0-audit.md section
+     * 4) — a non-clickable encoding label ("guo") is prepended when there's
+     * a non-empty encoding, per phase-0 audit section 5, adding no new row
+     * or container so the fixed 300dp panel height is never touched.
+     */
+    private fun renderPinyinCandidates(candidates: List<String>) {
+        val row = englishCandidateRow ?: return
+        row.removeAllViews()
+        val encoding = litePinyinController.currentEncoding()
+        if (encoding.isNotEmpty()) {
+            val label = TextView(this).apply {
+                text = encoding
+                textSize = 16f
+                setSingleLine(true)
+                gravity = android.view.Gravity.CENTER
+                setTextColor(tone(Color.rgb(180, 180, 180), Color.rgb(120, 120, 125)))
+                setPadding(dp(9), 0, dp(9), 0)
+                isClickable = false
+            }
+            row.addView(label, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+        val overlayEntries = mutableListOf<Pair<String, () -> Unit>>()
+        candidates.forEachIndexed { index, char ->
+            row.addView(
+                candidateItemView(
+                    char,
+                    isFirst = index == 0,
+                    action = { selectPinyinCandidate(char) },
+                ),
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT),
+            )
+            overlayEntries.add(char to { selectPinyinCandidate(char) })
+        }
+        // Shared with the English/stroke candidate rows (only one of the
+        // three is ever visible at a time) — see showCandidateOverlay().
+        candidateOverlayEntries = overlayEntries
+        if (candidates.isEmpty()) englishExpandCandidatesButton?.visibility = View.GONE
+    }
+
+    /** Candidate tap is the ONLY way a pinyin candidate reaches the field — see toggleLatinInputMode()'s doc comment on why Space deliberately never does this. */
+    private fun selectPinyinCandidate(char: String) {
+        currentInputConnection?.commitText(char, 1)
+        litePinyinController.clear()
+        renderPinyinCandidates(emptyList())
+        performKeyHaptic()
     }
 
     /**
