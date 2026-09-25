@@ -24,6 +24,7 @@ import java.util.concurrent.Executors
 internal class LitePinyinRepository(context: Context) {
     private val appContext = context.applicationContext
     private val userFrequency = LitePinyinUserFrequency(context)
+    private val learnedPhrases = LitePinyinLearnedPhrases(context)
     private val executor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "openless-pinyin-candidate").apply { isDaemon = true }
     }
@@ -55,6 +56,10 @@ internal class LitePinyinRepository(context: Context) {
      * Off the caller's thread; posts [callback] back to the main looper.
      * Exact match only — no prefix/fuzzy matching in this phase. Ranks by
      * plan 3.5's five tiers, in order:
+     *   0. a personally-learned two-commit combo for this exact encoding
+     *      (LitePinyinLearnedPhrases — see observeSequence()) — not from
+     *      the static dictionary at all, so it's pinned first outright
+     *      rather than woven into the weight-based tiers below.
      *   1. a candidate the user picked before for this exact encoding
      *      (LitePinyinUserFrequency — see recordSelection())
      *   2. exact single-character full-pinyin matches
@@ -64,7 +69,7 @@ internal class LitePinyinRepository(context: Context) {
      * Tiers 2 and 3 are never weight-interleaved with each other even
      * though pinyin_chars.tsv and pinyin_phrases.tsv share a comparable
      * weight scale (both ultimately from rime-pinyin-simp) — a phrase
-     * never outranks a character on raw weight alone, only via tier 1.
+     * never outranks a character on raw weight alone, only via tier 0/1.
      */
     fun query(encoding: String, limit: Int = 20, callback: (List<String>) -> Unit) {
         val normalized = encoding.trim().lowercase()
@@ -79,8 +84,9 @@ internal class LitePinyinRepository(context: Context) {
                 .filter { userFrequency.score(normalized, it.text) > 0.0 }
                 .sortedByDescending { userFrequency.score(normalized, it.text) }
             val rest = raw.filterNot { entry -> previouslySelected.any { it.text == entry.text } }
-            val ranked = (previouslySelected + rest).map { it.text }.distinct().take(limit)
-            Handler(Looper.getMainLooper()).post { callback(ranked) }
+            var ranked = (previouslySelected + rest).map { it.text }.distinct()
+            learnedPhrases.promoted(normalized)?.let { learned -> ranked = listOf(learned) + ranked.filterNot { it == learned } }
+            Handler(Looper.getMainLooper()).post { callback(ranked.take(limit)) }
         }
     }
 
@@ -89,6 +95,13 @@ internal class LitePinyinRepository(context: Context) {
         val normalized = encoding.trim().lowercase()
         if (normalized.isEmpty() || text.isEmpty()) return
         executor.execute { userFrequency.record(normalized, text) }
+    }
+
+    /** Call after two direct pinyin commits land back-to-back — see LitePinyinController.observeCommitForLearning() — off the caller's thread. */
+    fun observeSequence(combinedEncoding: String, text: String) {
+        val normalized = combinedEncoding.trim().lowercase()
+        if (normalized.isEmpty() || text.isEmpty()) return
+        executor.execute { learnedPhrases.observeSequence(normalized, text) }
     }
 
     /** Warms both indexes off the caller's thread without waiting for a query — mirrors StrokePhraseRepository.preloadAsync(); call once, e.g. when the Pinyin panel first becomes reachable. */
