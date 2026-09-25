@@ -39,6 +39,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // buildKeyboardView()) instead of the old two-state symbolMode boolean,
     // which only ever had room for one merged symbol page.
     private enum class EnglishLayer { LETTERS, NUMBERS, SYMBOLS }
+    // The English QWERTY panel's letter-input semantics — ENGLISH commits
+    // each letter immediately (see commitEnglishChar()), PINYIN instead
+    // routes letters into LitePinyinController's own encoding buffer and
+    // only ever commits a chosen candidate. Long-press space toggles this
+    // (see buildKeyboardView()'s spaceButton); the panel/View tree itself
+    // is never rebuilt into a second layout for PINYIN — see
+    // docs/pinyin-lite/phase-0-audit.md section 7.
+    internal enum class LatinInputMode { ENGLISH, PINYIN }
 
     private var sessionEpoch = 0L
     // Guards the delayed "settle back to Tap to speak" callback — see
@@ -64,12 +72,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     internal var inputMode = InputMode.VOICE
     private var englishLayer = EnglishLayer.LETTERS
-    // UI-only for now: long-pressing the space bar just flips this label
-    // back and forth ("拼音输入" <-> "英文输入") so the affordance can be
-    // reviewed before an actual Pinyin input mode exists to switch to —
-    // see buildKeyboardView()'s spaceButton. true = currently showing
-    // "拼音输入" (the default/starting label).
-    private var spaceHintShowsPinyin = true
+    // Persisted across sessions the same way inputMode is (see
+    // restoreLatinInputMode()/saveLatinInputMode()) — long-pressing space
+    // toggles it (see buildKeyboardView()'s spaceButton). The space key's
+    // own small hint label always names the mode long-press would switch
+    // TO, not the current one — i.e. it reads "拼音" while latinInputMode
+    // is ENGLISH, and "英文" while it's PINYIN.
+    private var latinInputMode = LatinInputMode.ENGLISH
+    private val litePinyinController by lazy { LitePinyinController() }
     // The word currently being typed on the English keyboard — appended to
     // per letter, trimmed per backspace, cleared at every word boundary
     // (space/return/punctuation/candidate tap/mode or panel switch). Never
@@ -356,6 +366,37 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             .apply()
     }
 
+    private fun restoreLatinInputMode() {
+        latinInputMode = when (getSharedPreferences("openless_ime_ui", MODE_PRIVATE).getString("latin_input_mode", "english")) {
+            "pinyin" -> LatinInputMode.PINYIN
+            else -> LatinInputMode.ENGLISH
+        }
+    }
+
+    private fun saveLatinInputMode(mode: LatinInputMode) {
+        getSharedPreferences("openless_ime_ui", MODE_PRIVATE).edit()
+            .putString("latin_input_mode", mode.name.lowercase())
+            .apply()
+    }
+
+    /**
+     * Long-press-space entry point (see buildKeyboardView()'s spaceButton).
+     * Per the lite-pinyin plan's 2026-09-25 revision: switching modes never
+     * saves a half-typed pinyin encoding (matches englishComposingWord's own
+     * "clear, don't carry over" behavior at every other boundary), and never
+     * commits anything on its own — only a candidate tap or the English
+     * path's own commitEnglishChar() ever calls commitText().
+     */
+    private fun toggleLatinInputMode() {
+        englishComposingWord.clear()
+        litePinyinController.clear()
+        latinInputMode = if (latinInputMode == LatinInputMode.ENGLISH) LatinInputMode.PINYIN else LatinInputMode.ENGLISH
+        saveLatinInputMode(latinInputMode)
+        updateEnglishCandidates()
+        performKeyHaptic()
+        refreshInputView()
+    }
+
     internal fun refreshLanguage() {
         val locale = getSharedPreferences("openless_ime_ui", MODE_PRIVATE)
             .getString("locale", null) ?: resources.configuration.locales[0].toLanguageTag()
@@ -375,6 +416,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         super.onCreate()
         restoreInputMode()
         restoreScriptPreference()
+        restoreLatinInputMode()
         activeInstance = java.lang.ref.WeakReference(this)
         OpenLessOverlayBridge.imeListener = this
         OpenLessOverlayBridge.imeTextListener = ::commitImeText
@@ -1043,6 +1085,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         saveInputMode(selected)
         englishLayer = EnglishLayer.LETTERS
         englishComposingWord.clear()
+        litePinyinController.clear()
         strokeController.resetForModeSwitch()
         clipboardSelectionMode = false
         clipboardSelectionAnchor = -1
@@ -1176,22 +1219,24 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             handleEnglishBottomModeToggle()
         }).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) }
         val spaceButton = keyboardKey("", 5f, action = {
+            // Space never commits a pinyin candidate (see
+            // toggleLatinInputMode()'s own doc comment) — a short press
+            // always just inserts a literal space, in both modes, and
+            // abandons whatever was mid-composition. This is deliberate:
+            // it's a software keyboard, not a physical one where "space
+            // selects the first candidate" is a decades-old muscle-memory
+            // convention worth preserving.
             finalizeEnglishComposingWord()
+            litePinyinController.clear()
             currentInputConnection?.commitText(" ", 1)
-        }, longPressAction = {
-            // Toggle-only for now — see spaceHintShowsPinyin's own doc
-            // comment. No mode actually switches yet.
-            spaceHintShowsPinyin = !spaceHintShowsPinyin
-            performKeyHaptic()
-            refreshInputView()
-        })
+        }, longPressAction = { toggleLatinInputMode() })
         // Small hint pinned to the top of the space key — same visual
         // language as buildEnglishCharKey()'s swipe-digit/symbol hints
         // (small, muted, top-anchored, non-interactive so touches still
-        // reach the key beneath it) — labels what long-pressing space
-        // would switch to/from.
+        // reach the key beneath it) — always names the mode long-pressing
+        // space would switch TO, not the current one.
         val spaceHint = TextView(this).apply {
-            text = if (spaceHintShowsPinyin) ui("拼音输入", "Pinyin") else ui("英文输入", "English")
+            text = if (latinInputMode == LatinInputMode.ENGLISH) ui("拼音输入", "Pinyin") else ui("英文输入", "English")
             textSize = 10f
             gravity = android.view.Gravity.CENTER
             setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(140, 140, 145)))
@@ -2760,10 +2805,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         super.onStartInput(attribute, restarting)
         restoreInputMode()
         restoreScriptPreference()
+        restoreLatinInputMode()
         refreshLanguage()
         strokeController.resetForNewInputSession()
         englishLayer = EnglishLayer.LETTERS
         englishComposingWord.clear()
+        litePinyinController.clear()
         startRuntimeService()
         sessionEpoch++
         recording = false
