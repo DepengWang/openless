@@ -4,10 +4,11 @@ import android.content.Context
 
 /**
  * Owns the Pinyin-mode encoding buffer AND its candidate query pipeline on
- * the English keyboard panel (see OpenLessImeService.LatinInputMode) — phase
- * 3 of the lite-pinyin plan (docs/pinyin-lite/phase-0-audit.md): single-
- * character full-pinyin lookup only, no phrase/simple-pinyin matching yet
- * (that's phase 4).
+ * the English keyboard panel (see OpenLessImeService.LatinInputMode) —
+ * phases 3+4 of the lite-pinyin plan (docs/pinyin-lite/phase-0-audit.md):
+ * single-character full-pinyin lookup merged with high-frequency
+ * abbreviation-phrase lookup (LitePinyinRepository.query() does the actual
+ * merging/ranking; this class just owns the buffer and epoch around it).
  *
  * Deliberately does not touch currentInputConnection or any View — callers
  * get results through the [onCandidates] callback and decide what to do
@@ -59,7 +60,7 @@ internal class LitePinyinController(context: Context) {
             return
         }
         val epoch = ++queryEpoch
-        repository.queryExact(encoding.toString()) { results ->
+        repository.query(encoding.toString()) { results ->
             if (epoch == queryEpoch) onCandidates(results)
         }
     }
