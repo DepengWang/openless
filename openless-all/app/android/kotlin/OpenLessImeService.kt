@@ -720,16 +720,20 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         buttonHolder.addView(voiceButton!!, FrameLayout.LayoutParams(dp(176), dp(72), android.view.Gravity.CENTER))
 
-        // Small companion hint under the mic icon — deliberately muted (low
-        // size + alpha) so it doesn't compete with "Tap to speak" for
-        // attention, but discoverable enough that a user notices the
-        // swipe-up-for-Raw gesture exists at all. Tap or long-press
-        // explains what Raw mode actually does via a Toast, rather than
-        // building a dedicated tooltip bubble for a single one-off
-        // explanation. Hidden entirely while recording/thinking in an
-        // ordinary (non-Raw) dictation — see rawModeHintVisible() — since
-        // at that point it's neither teaching a still-relevant gesture nor
-        // confirming anything, just noise next to the mic.
+        // Small companion hint — deliberately muted (low size + alpha) so it
+        // doesn't compete with "Tap to speak" for attention, but
+        // discoverable enough that a user notices the three swipe gestures
+        // exist at all. Sits just above the footer row (right above the
+        // Return key, which is horizontally centered there the same way
+        // this hint is) rather than directly under the mic — out of the way
+        // of the mic capsule and its own waveform/pill animations, but still
+        // close enough to read while a hand hovers over the mic. Tap or
+        // long-press explains what Raw mode actually does via a Toast,
+        // rather than building a dedicated tooltip bubble for a single
+        // one-off explanation. Hidden entirely while recording/thinking in
+        // an ordinary (non-Raw) dictation — see rawModeHintVisible() —
+        // since at that point it's neither teaching a still-relevant
+        // gesture nor confirming anything, just noise.
         val rawModeTooltip = ui("Raw模式，语音原样转写，不做AI润色整理", "Raw mode, verbatim transcription without AI polishing")
         voiceRawHint = TextView(this).apply {
             text = rawModeHintText()
@@ -747,9 +751,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         buttonHolder.addView(
             voiceRawHint,
-            FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, android.view.Gravity.CENTER).apply {
-                // Half the mic button's own dp(72) height, plus a small gap.
-                topMargin = dp(44)
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                android.view.Gravity.BOTTOM or android.view.Gravity.CENTER_HORIZONTAL,
+            ).apply {
+                bottomMargin = dp(6)
             },
         )
         voiceLinkWarning = TextView(this).apply {
@@ -1529,13 +1536,23 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         action: () -> Unit,
     ): TextView {
         return keyboardKey(label, 1f, action = action, longPressAction = onLongPress).apply {
-            textSize = 20f
+            // Was 20f/dp(9) — on at least one Xiaomi MIUI device, stroke's
+            // own fixed-width candidate slot (see renderCandidateRow()'s
+            // STROKE_CANDIDATE_WIDTH_DP) clipped the glyph at that size:
+            // MIUI's default system font renders visibly wider per
+            // character than stock Android at the same sp, so the same
+            // padding budget left less real room for the glyph than on
+            // other devices. Smaller text plus more padding fixes the
+            // clipping and, as a side effect, widens the gap between
+            // candidates — shared by every caller (stroke, English,
+            // Pinyin), so all three get both fixes at once.
+            textSize = 17f
             setSingleLine(true)
             maxLines = 1
             background = null
             elevation = 0f
             translationZ = 0f
-            setPadding(dp(9), 0, dp(9), 0)
+            setPadding(dp(12), 0, dp(12), 0)
             styleCandidateFirstState(this, isFirst)
         }
     }
