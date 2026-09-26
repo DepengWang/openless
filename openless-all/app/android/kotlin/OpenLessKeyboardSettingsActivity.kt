@@ -341,16 +341,16 @@ class OpenLessKeyboardSettingsActivity : Activity() {
         )
 
         // 话筒右划进入"云笔记"：录音的原始转写（不经 LLM 整理，见
-        // OpenLessImeService.toggleDictation() 里 rawModeArmed || ingestArmed
+        // OpenLessImeService.toggleDictation() 里 rawModeArmed || cloudNoteArmed
         // 那一支）会以 JSON POST 到这里配置的地址，不插入任何输入框，也不
         // 在本机留存。两项都填了才会真的提交——留空时只会在状态栏提示去
         // 设置里补上，不会静默失败。
-        content.addView(sectionLabel(ui("云笔记提交", "Ingest webhook")))
+        content.addView(sectionLabel(ui("云笔记提交", "Cloud notes webhook")))
         content.addView(
             TextView(this).apply {
                 text = ui(
                     "话筒右划进入「云笔记」模式：录音的原始转写会提交到下面的地址，不插入输入框，也不保存在本机。",
-                    "Swipe the mic right to enter Ingest mode: the raw transcript is POSTed to the address below instead of being inserted — nothing is kept on this device either.",
+                    "Swipe the mic right to enter Cloud notes mode: the raw transcript is POSTed to the address below instead of being inserted — nothing is kept on this device either.",
                 )
                 textSize = 12f
                 setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(110, 110, 115)))
@@ -361,17 +361,17 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             textFieldRow(
                 label = ui("提交地址", "Submit URL"),
                 hint = "https://example.com/capture_ingest.php",
-                initial = prefs.getString("key_ingest_webhook_url", "") ?: "",
-                onChange = { prefs.edit().putString("key_ingest_webhook_url", it).apply() },
+                initial = prefs.getString("key_cloud_note_webhook_url", "") ?: "",
+                onChange = { prefs.edit().putString("key_cloud_note_webhook_url", it).apply() },
             ),
         )
         content.addView(
             textFieldRow(
                 label = "Token",
                 hint = ui("输入法专用 Token", "IME-only token"),
-                initial = prefs.getString("key_ingest_webhook_token", "") ?: "",
+                initial = prefs.getString("key_cloud_note_webhook_token", "") ?: "",
                 isSecret = true,
-                onChange = { prefs.edit().putString("key_ingest_webhook_token", it).apply() },
+                onChange = { prefs.edit().putString("key_cloud_note_webhook_token", it).apply() },
             ),
         )
 

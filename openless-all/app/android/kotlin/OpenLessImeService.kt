@@ -84,22 +84,22 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // Armed by the mic button's swipe-right gesture, same shape as
     // quickNoteArmed/rawModeArmed above — except the eventual stop rides the
     // Raw stop call too (see toggleDictation()'s own rawModeArmed ||
-    // ingestArmed check — verbatim ASR transcript, no LLM polish), and it's
+    // cloudNoteArmed check — verbatim ASR transcript, no LLM polish), and it's
     // handleImeTextReady() that decides what happens to the resulting text:
     // submitted as JSON to the webhook configured in settings
-    // (submitIngestText()) instead of being committed into the input field.
-    private var ingestArmed = false
+    // (submitCloudNoteText()) instead of being committed into the input field.
+    private var cloudNoteArmed = false
         set(value) {
             field = value
-            voiceButton?.ingestActive = value
+            voiceButton?.cloudNoteActive = value
             status?.setTextColor(recordingAccentColor())
         }
 
-    /** Status text color while a recording prompt is showing — orange for an armed Raw stop, green for an armed quick-note stop, red for an armed Ingest submit, normal otherwise. Single source of truth for rawModeArmed/quickNoteArmed/ingestArmed's setters and updateStatus() alike, so the three gestures can never disagree on which one currently owns the color. */
+    /** Status text color while a recording prompt is showing — orange for an armed Raw stop, green for an armed Quick notes stop, red for an armed Cloud notes submit, normal otherwise. Single source of truth for rawModeArmed/quickNoteArmed/cloudNoteArmed's setters and updateStatus() alike, so the three gestures can never disagree on which one currently owns the color. */
     private fun recordingAccentColor(): Int = when {
         state == "speaking" && rawModeArmed -> LINK_COLOR_RECORDING_RAW
         state == "speaking" && quickNoteArmed -> LINK_COLOR_QUICK_NOTE
-        state == "speaking" && ingestArmed -> LINK_COLOR_INGEST
+        state == "speaking" && cloudNoteArmed -> LINK_COLOR_CLOUD_NOTE
         else -> statusNormalColor
     }
     internal var inputMode = InputMode.VOICE
@@ -561,12 +561,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             // All four swipe gestures follow the same pattern: a LIVE
             // boolean re-evaluated every ACTION_MOVE (not a one-way latch),
             // a matching live visual on VoiceButton (idle capsule orange for
-            // swipe-up-to-raw / green for swipe-left-to-note / red for
-            // swipe-right-to-ingest, waveform light red for swipe-down-to-
+            // swipe-up-to-raw / green for swipe-left-to-quick-notes / red for
+            // swipe-right-to-cloud-notes, waveform light red for swipe-down-to-
             // cancel — all four ease back the moment the finger drops back
             // below their own threshold), a single haptic tick on every
             // crossing in either direction, and the actual action (cancel /
-            // enter raw mode / enter quick-note mode / enter ingest mode)
+            // enter raw mode / enter quick-notes mode / enter cloud-notes mode)
             // only committed on release, gated on whichever one is still
             // active at that instant. Nothing commits mid-drag — swipe down
             // used to cancel the moment the threshold was first crossed
@@ -588,7 +588,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             var swipeDownActive = false
             // Same shape as swipeUpActive (no `recording` gate on the MOVE
             // check — armable both from idle and mid-recording), just on the
-            // horizontal axis — see ingestArmed's own doc comment for what
+            // horizontal axis — see cloudNoteArmed's own doc comment for what
             // release does in each case.
             var swipeRightActive = false
             // Same shape again, mirrored to the other horizontal direction —
@@ -627,7 +627,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                         val activeRight = event.x - downX >= dp(30)
                         if (activeRight != swipeRightActive) {
                             swipeRightActive = activeRight
-                            voiceButton?.armedForIngest = activeRight
+                            voiceButton?.armedForCloudNote = activeRight
                             performKeyHaptic()
                         }
                         val activeLeft = downX - event.x >= dp(30)
@@ -655,14 +655,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                                 }
                             }
                         } else if (swipeRightActive) {
-                            if (recording && !ingestArmed) {
-                                ingestArmed = true
+                            if (recording && !cloudNoteArmed) {
+                                cloudNoteArmed = true
                                 performDoubleKeyHaptic()
                                 updateStatus(currentMessage)
                             } else if (!recording && !processing) {
                                 toggleDictation()
                                 if (recording) {
-                                    ingestArmed = true
+                                    cloudNoteArmed = true
                                     performDoubleKeyHaptic()
                                     updateStatus(currentMessage)
                                 }
@@ -688,7 +688,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                         voiceButton?.armedForRawSwipe = false
                         voiceButton?.armedForCancel = false
                         voiceButton?.armedForQuickNote = false
-                        voiceButton?.armedForIngest = false
+                        voiceButton?.armedForCloudNote = false
                     }
                     MotionEvent.ACTION_CANCEL -> {
                         swipeUpActive = false
@@ -698,7 +698,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                         voiceButton?.armedForRawSwipe = false
                         voiceButton?.armedForCancel = false
                         voiceButton?.armedForQuickNote = false
-                        voiceButton?.armedForIngest = false
+                        voiceButton?.armedForCloudNote = false
                     }
                 }
                 false
@@ -3187,13 +3187,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             // transcript as-is. Mirrors the existing "swipe left on the
             // overlay to finish+translate" gesture contract
             // (OpenLessOverlayService.kt), just decided earlier (at the
-            // swipe) instead of at this exact call. ingestArmed rides the
-            // same raw stop call — the user explicitly asked for Ingest to
-            // skip the LLM too, so its webhook always gets the verbatim ASR
+            // swipe) instead of at this exact call. cloudNoteArmed rides the
+            // same raw stop call — the user explicitly asked for Cloud notes
+            // to skip the LLM too, so its webhook always gets the verbatim ASR
             // transcript, never a polished one — handleImeTextReady() is
             // what actually routes the resulting text to the webhook
             // instead of the input field.
-            if (rawModeArmed || ingestArmed) {
+            if (rawModeArmed || cloudNoteArmed) {
                 runNativeAction("停止听写") { OpenLessNative.nativeStopDictationForImeWithRaw(true) }
             } else {
                 runNativeAction("停止听写") { OpenLessNative.nativeStopDictationForIme() }
@@ -3224,7 +3224,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             processing = false
             rawModeArmed = false
             quickNoteArmed = false
-            ingestArmed = false
+            cloudNoteArmed = false
             // The actual start of a new recording attempt — reset the
             // silence watch and fire the start haptic here, not in
             // onCapsuleStateChanged's "recording" branch: that branch only
@@ -3255,7 +3255,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         processing = false
         rawModeArmed = false
         quickNoteArmed = false
-        ingestArmed = false
+        cloudNoteArmed = false
         invalidateSession("已取消")
         runNativeAction("取消听写") { OpenLessNative.nativeCancelDictation() }
     }
@@ -3513,30 +3513,30 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     /**
-     * Swipe-up-for-Raw / swipe-left-for-Note / swipe-right-for-Ingest
-     * discoverability hint while idle; once a recording is actually armed
-     * into one of those three modes (live through both recording and the
-     * following "thinking"/整理 step for Raw and Ingest — quick note never
-     * reaches "thinking", see quickNoteDictation()), the row repurposes
-     * itself to confirm whichever one is armed instead. Recording-or-
-     * thinking with none armed (an ordinary dictation) never reaches this
-     * text at all — see rawModeHintVisible(), which hides the row entirely
-     * for that case.
+     * Swipe-up-for-Raw / swipe-left-for-Quick-notes / swipe-right-for-
+     * Cloud-notes discoverability hint while idle; once a recording is
+     * actually armed into one of those three modes (live through both
+     * recording and the following "thinking"/整理 step for Raw and Cloud
+     * notes — quick note never reaches "thinking", see
+     * quickNoteDictation()), the row repurposes itself to confirm whichever
+     * one is armed instead. Recording-or-thinking with none armed (an
+     * ordinary dictation) never reaches this text at all — see
+     * rawModeHintVisible(), which hides the row entirely for that case.
      */
     private fun rawModeHintText(): String {
         return when {
             (state == "speaking" || state == "thinking") && rawModeArmed -> ui("原样转写", "Raw Mode")
-            (state == "speaking" || state == "thinking") && ingestArmed -> ui("云笔记", "Ingest")
-            state == "speaking" && quickNoteArmed -> ui("速记模式", "Quick Note")
-            else -> ui("上划RAW · 左划Note · 右划云笔记", "Up: Raw · Left: Note · Right: Ingest")
+            (state == "speaking" || state == "thinking") && cloudNoteArmed -> ui("云笔记", "Cloud notes")
+            state == "speaking" && quickNoteArmed -> ui("速记模式", "Quick notes")
+            else -> ui("上划RAW · 左划速记 · 右划云笔记", "Up: Raw · Left: Quick notes · Right: Cloud notes")
         }
     }
 
-    /** Same orange/green/red as the status line's own Raw/Note/Ingest coloring and every other indicator for each mode (VoiceButton's armed pill/waveform) — muted gray otherwise. */
+    /** Same orange/green/red as the status line's own Raw/Quick-notes/Cloud-notes coloring and every other indicator for each mode (VoiceButton's armed pill/waveform) — muted gray otherwise. */
     private fun rawModeHintColor(): Int {
         return when {
             (state == "speaking" || state == "thinking") && rawModeArmed -> LINK_COLOR_RECORDING_RAW
-            (state == "speaking" || state == "thinking") && ingestArmed -> LINK_COLOR_INGEST
+            (state == "speaking" || state == "thinking") && cloudNoteArmed -> LINK_COLOR_CLOUD_NOTE
             state == "speaking" && quickNoteArmed -> LINK_COLOR_QUICK_NOTE
             else -> Color.argb((0.8f * 255).toInt(), 0xB0, 0xB0, 0xB0)
         }
@@ -3544,31 +3544,31 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
     /**
      * Hidden while actively recording or thinking in an ordinary dictation
-     * (none of Raw/Note/Ingest armed) — at that point it's neither teaching
+     * (none of Raw/Quick-notes/Cloud-notes armed) — at that point it's neither teaching
      * a still-relevant gesture (idle) nor confirming an active one, just a
      * stray label under the mic. Visible the rest of the time: idle
      * (teaches all three gestures) and recording/thinking once one of them
      * is actually armed (confirms it).
      */
     private fun rawModeHintVisible(): Boolean {
-        return !((state == "speaking" || state == "thinking") && !rawModeArmed && !quickNoteArmed && !ingestArmed)
+        return !((state == "speaking" || state == "thinking") && !rawModeArmed && !quickNoteArmed && !cloudNoteArmed)
     }
 
     /**
      * Dispatches a just-finished dictation's text to whichever destination
      * the mic's own swipe gesture armed for this session — an ordinary
-     * commit into the input field (plain or Raw), or (ingestArmed) a JSON
+     * commit into the input field (plain or Raw), or (cloudNoteArmed) a JSON
      * POST to the webhook configured in settings, never both. Wired up as
      * OpenLessOverlayBridge.imeTextListener in onCreate() — both a plain
      * stop and a Raw stop (see toggleDictation()'s own rawModeArmed ||
-     * ingestArmed check) land here the same way; quick note's stop uses a
+     * cloudNoteArmed check) land here the same way; quick note's stop uses a
      * completely separate JNI call/callback that never reaches this
      * function at all (see quickNoteDictation()).
      */
     private fun handleImeTextReady(text: String) {
-        if (ingestArmed) {
-            ingestArmed = false
-            submitIngestText(text)
+        if (cloudNoteArmed) {
+            cloudNoteArmed = false
+            submitCloudNoteText(text)
         } else {
             commitImeText(text)
         }
@@ -3576,7 +3576,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
     /**
      * POSTs the verbatim ASR transcript (Raw — never LLM-polished, per
-     * toggleDictation()'s rawModeArmed || ingestArmed check) to the
+     * toggleDictation()'s rawModeArmed || cloudNoteArmed check) to the
      * URL/token configured in the native settings page's "云笔记
      * 提交" section (OpenLessKeyboardSettingsActivity) — never inserted into
      * the input field, never archived locally either (contrast
@@ -3586,7 +3586,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * once per dictation, not per keystroke) and settles the status bubble
      * once it resolves either way.
      */
-    private fun submitIngestText(text: String) {
+    private fun submitCloudNoteText(text: String) {
         if (text.isBlank()) {
             recording = false
             processing = false
@@ -3594,8 +3594,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             return
         }
         val preferences = getSharedPreferences("openless_ime_ui", MODE_PRIVATE)
-        val url = preferences.getString("key_ingest_webhook_url", null)?.trim().orEmpty()
-        val token = preferences.getString("key_ingest_webhook_token", null)?.trim().orEmpty()
+        val url = preferences.getString("key_cloud_note_webhook_url", null)?.trim().orEmpty()
+        val token = preferences.getString("key_cloud_note_webhook_token", null)?.trim().orEmpty()
         recording = false
         processing = false
         if (url.isEmpty() || token.isEmpty()) {
@@ -3629,7 +3629,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     }
                 }
             } catch (error: Throwable) {
-                android.util.Log.w("OpenLessImeService", "ingest webhook submit failed", error)
+                android.util.Log.w("OpenLessImeService", "cloud note webhook submit failed", error)
                 mainHandler.post {
                     setState("error", "云笔记提交失败，请检查网络")
                 }
@@ -3890,8 +3890,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             "已完成", "已上屏" -> "Done"
             "笔记已记录" -> "Note saved"
             "正在提交云笔记" -> "Submitting"
-            "已提交云笔记" -> "Ingest submitted"
-            "请先在设置中填写云笔记的地址/Token" -> "Fill in the Ingest URL/token in settings first"
+            "已提交云笔记" -> "Cloud notes submitted"
+            "请先在设置中填写云笔记的地址/Token" -> "Fill in the Cloud notes URL/token in settings first"
             "已取消" -> "Cancelled"
             "敏感字段，已禁用听写", "敏感字段，禁止听写", "敏感字段，禁止上屏" -> "Dictation disabled in this field"
             "请先授予麦克风权限" -> "Microphone permission required"
@@ -5150,9 +5150,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // Same idea, for the swipe-left-to-Note gesture's own idle-pill
         // preview — see armedForQuickNote/pillArmedAmountGreen below.
         private val quickNoteArmedPillColor = LINK_COLOR_QUICK_NOTE
-        // Same idea again, for the swipe-right-to-Ingest gesture's own
-        // idle-pill preview — see armedForIngest/pillArmedAmountRed below.
-        private val ingestArmedPillColor = LINK_COLOR_INGEST
+        // Same idea again, for the swipe-right-to-Cloud-notes gesture's own
+        // idle-pill preview — see armedForCloudNote/pillArmedAmountRed below.
+        private val cloudNoteArmedPillColor = LINK_COLOR_CLOUD_NOTE
         // Light red, blended into the waveform bars while a swipe-down-to-
         // cancel gesture is past its commit threshold — same value in both
         // themes, mirroring swipeArmedPillColor's own choice.
@@ -5194,7 +5194,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 invalidate()
             }
 
-        var ingestActive: Boolean = false
+        var cloudNoteActive: Boolean = false
             set(value) {
                 field = value
                 invalidate()
@@ -5249,9 +5249,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             }
         private var pillArmedAnimatorGreen: android.animation.ValueAnimator? = null
 
-        // Same pattern again, for the swipe-right-to-Ingest idle-pill
+        // Same pattern again, for the swipe-right-to-Cloud-notes idle-pill
         // preview.
-        var armedForIngest: Boolean = false
+        var armedForCloudNote: Boolean = false
             set(value) {
                 if (field == value) return
                 field = value
@@ -5350,7 +5350,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                         quickNoteArmedPillColor,
                         pillArmedAmountGreen,
                     ),
-                    ingestArmedPillColor,
+                    cloudNoteArmedPillColor,
                     pillArmedAmountRed,
                 )
                 paint.color = pillColor
@@ -5402,7 +5402,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 val rawWaveformColor = when {
                     rawModeActive -> LINK_COLOR_RECORDING_RAW
                     quickNoteActive -> LINK_COLOR_QUICK_NOTE
-                    ingestActive -> LINK_COLOR_INGEST
+                    cloudNoteActive -> LINK_COLOR_CLOUD_NOTE
                     else -> waveformColor
                 }
                 val currentWaveformColor = lerpColor(rawWaveformColor, cancelArmedWaveformColor, waveformCancelAmount)
@@ -5498,12 +5498,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // inserting) — green, the same treatment LINK_COLOR_RECORDING_RAW
         // gets for its own swipe-up gesture.
         private val LINK_COLOR_QUICK_NOTE = Color.rgb(34, 197, 94)
-        // Recording with ingestArmed set (mic swipe-right: end the dictation
+        // Recording with cloudNoteArmed set (mic swipe-right: end the dictation
         // and POST the verbatim transcript to the configured webhook
         // instead of inserting anything) — red, the third accent alongside
         // LINK_COLOR_RECORDING_RAW's orange and LINK_COLOR_QUICK_NOTE's
         // green.
-        private val LINK_COLOR_INGEST = Color.rgb(239, 68, 68)
+        private val LINK_COLOR_CLOUD_NOTE = Color.rgb(239, 68, 68)
         private val LINK_COLOR_PROCESSING = Color.rgb(56, 189, 248)
         private val LINK_COLOR_ISSUE = Color.rgb(250, 204, 21)
         // Ready is the state the indicator sits in almost all the time, so
