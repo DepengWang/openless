@@ -1,6 +1,6 @@
 [package]
 name = "openless"
-version = "2.0.0-Beta.1"
+version = "2.0.0-Beta.3+build.20260926"
 license = "AGPL-3.0-only"
 description = "OpenLess — local voice input that types where your cursor is"
 authors = ["OpenLess"]
@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 cc = "1.1"
 
 [dependencies]
+zeroize = "1"
 # Framework-independent business core.  Tauri remains an adapter and owns the
 # window/plugin/IPC concerns; Linux must depend on the same crate directly.
 openless-core = { path = "../crates/openless-core" }
@@ -33,6 +34,8 @@ serde_json = "1"
 semver = "1"
 # OpenRouter ASR 把音频以标准 base64（带 padding）放进 JSON body（issue #582）。
 base64 = "0.22"
+# Android in-app updater and host tests for Tauri-wrapped minisign pubkey/signature.
+minisign-verify = "0.2"
 sha2 = "0.10"
 # 讯飞 RTASR/IFASR 签名：signa = Base64(HmacSHA1(MD5(appid + ts), apiKey))。
 md-5 = "0.10"
@@ -120,7 +123,6 @@ features = ["linux-native-sync-persistent", "crypto-rust"]
 jni = "0.21"
 ndk-context = "0.1"
 tao = "0.35"
-minisign-verify = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.5"
@@ -194,5 +196,15 @@ strip = "symbols"
 # issue #801: wayland-scanner 0.31.10 still pins vulnerable quick-xml 0.39.
 # This local copy backports upstream security commit d07c4f91f28b without
 # pulling the breaking, unreleased wayland-rs master branch.
+#
+# wry 0.55.1's Android CreateWebView path (src/android/main_pipe.rs) drops
+# the message silently — a debug_assertions-only eprintln!() to stderr,
+# never reaching Android logcat — when ACTIVITY_PROXY has no entry for the
+# target activity_id; this local copy swaps that (and the equivalent
+# .expect() panic risk in src/android/mod.rs's InnerWebView::new()) for
+# visible log::warn!()/log::info!() calls, to diagnose the settings-reopen
+# black screen investigated in the feature/android-runtime-lifecycle
+# branch. Purely additive logging — no behavior change otherwise.
 [patch.crates-io]
 wayland-scanner = { path = "vendor/wayland-scanner" }
+wry = { path = "vendor/wry-0.55.1" }

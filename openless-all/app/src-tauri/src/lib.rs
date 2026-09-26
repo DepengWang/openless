@@ -33,6 +33,8 @@ mod core_adapters;
 mod correction;
 #[cfg(target_os = "macos")]
 mod macos_dictation_key;
+#[cfg(target_os = "macos")]
+mod macos_streaming_input;
 mod qa_adapter;
 mod tauri_coordinator_host;
 // 托盘麦克风设备变更监听：macOS CoreAudio / Windows MMDevice 原生通知（空闲零唤醒），
@@ -121,6 +123,8 @@ const OPENLESS_BUNDLE_ID: &str = "com.openless.app";
 /// 第一次 show 时把 QA 浮窗摆到屏幕底部居中；之后的 show 不再 reposition，
 /// 让用户拖动后的位置在 hide → show 之间得以保持。详见 issue #118 v2。
 static QA_WINDOW_POSITIONED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static LESS_COMPUTER_WINDOW_POSITIONED: AtomicBool = AtomicBool::new(false);
 /// 聊天面板退场动画的世代计数：hide 先发 `chat-panel:closing` 让前端播 220ms
 /// 退场动画、240ms 后才真正 hide；期间再次 show 会推进世代，作废挂起的 hide。
 static QA_PANEL_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -220,6 +224,7 @@ macro_rules! app_invoke_handler_desktop {
             commands::read_audio_recording,
             commands::export_audio_recording,
             commands::retranscribe_recording,
+            commands::apply_quick_note_repolish,
             commands::marketplace_list,
             commands::marketplace_detail,
             commands::marketplace_install,
@@ -237,6 +242,26 @@ macro_rules! app_invoke_handler_desktop {
             commands::cloud_sync_upload,
             commands::cloud_sync_restore,
             commands::cloud_sync_delete,
+            commands::cloud_sync_e2ee_status,
+            commands::cloud_sync_e2ee_claim_setup_prompt,
+            commands::cloud_sync_e2ee_prepare_enable,
+            commands::cloud_sync_e2ee_create,
+            commands::cloud_sync_e2ee_unlock,
+            commands::cloud_sync_e2ee_lock,
+            commands::cloud_sync_e2ee_set_enabled,
+            commands::cloud_sync_e2ee_sync_now,
+            commands::cloud_sync_e2ee_cancel,
+            commands::cloud_sync_e2ee_preview_restore,
+            commands::cloud_sync_e2ee_apply_restore,
+            commands::cloud_sync_e2ee_change_password,
+            commands::cloud_sync_e2ee_delete_remote,
+            commands::cloud_sync_e2ee_sign_out,
+            commands::cloud_sync_e2ee_begin_sign_in,
+            commands::cloud_sync_e2ee_poll_sign_in,
+            commands::cloud_sync_e2ee_cancel_sign_in,
+            commands::cloud_sync_e2ee_get_ui_preferences,
+            commands::cloud_sync_e2ee_get_ui_preferences_snapshot,
+            commands::cloud_sync_e2ee_set_ui_preferences_checked,
             commands::marketplace_logout,
             commands::list_vocab,
             commands::add_vocab,
@@ -325,8 +350,11 @@ macro_rules! app_invoke_handler_desktop {
             commands::set_translation_hotkey,
             commands::set_switch_style_hotkey,
             commands::set_open_app_hotkey,
+            commands::set_quick_note_hotkey,
             commands::set_style_pack_hotkeys,
             commands::qa_window_dismiss,
+            commands::qa_window_set_expanded,
+            commands::qa_get_snapshot,
             commands::qa_toggle_recording,
             commands::qa_submit_text,
             commands::qa_set_edit_instruction_mode,
@@ -336,6 +364,10 @@ macro_rules! app_invoke_handler_desktop {
             commands::less_computer_submit_text,
             commands::less_computer_sync,
             commands::less_computer_approve,
+            commands::less_computer_voice_start,
+            commands::less_computer_voice_stop,
+            commands::less_computer_voice_cancel,
+            commands::less_computer_task_cancel,
             commands::validate_combo_hotkey,
             commands::set_combo_hotkey,
             commands::list_provider_descriptors,
@@ -358,6 +390,7 @@ macro_rules! app_invoke_handler_desktop {
             commands::local_asr_reveal_model_dir,
             commands::local_asr_reveal_models_root,
             commands::local_asr_test_model,
+            commands::local_asr_test_channel,
             commands::local_asr_engine_status,
             commands::local_asr_release_engine,
             commands::local_asr_preload,
@@ -367,6 +400,7 @@ macro_rules! app_invoke_handler_desktop {
             commands::foundry_local_asr_set_model,
             commands::foundry_local_asr_set_language_hint,
             commands::foundry_local_asr_set_runtime_source,
+            commands::foundry_local_asr_set_keep_loaded_secs,
             commands::foundry_local_asr_prepare,
             commands::foundry_local_asr_cancel_prepare,
             commands::foundry_local_asr_release,
@@ -466,6 +500,7 @@ macro_rules! app_invoke_handler_mobile {
             $crate::commands::read_audio_recording,
             $crate::commands::export_audio_recording,
             $crate::commands::retranscribe_recording,
+            $crate::commands::apply_quick_note_repolish,
             $crate::commands::marketplace_list,
             $crate::commands::marketplace_detail,
             $crate::commands::marketplace_install,
@@ -483,6 +518,26 @@ macro_rules! app_invoke_handler_mobile {
             $crate::commands::cloud_sync_upload,
             $crate::commands::cloud_sync_restore,
             $crate::commands::cloud_sync_delete,
+            $crate::commands::cloud_sync_e2ee_status,
+            $crate::commands::cloud_sync_e2ee_claim_setup_prompt,
+            $crate::commands::cloud_sync_e2ee_prepare_enable,
+            $crate::commands::cloud_sync_e2ee_create,
+            $crate::commands::cloud_sync_e2ee_unlock,
+            $crate::commands::cloud_sync_e2ee_lock,
+            $crate::commands::cloud_sync_e2ee_set_enabled,
+            $crate::commands::cloud_sync_e2ee_sync_now,
+            $crate::commands::cloud_sync_e2ee_cancel,
+            $crate::commands::cloud_sync_e2ee_preview_restore,
+            $crate::commands::cloud_sync_e2ee_apply_restore,
+            $crate::commands::cloud_sync_e2ee_change_password,
+            $crate::commands::cloud_sync_e2ee_delete_remote,
+            $crate::commands::cloud_sync_e2ee_sign_out,
+            $crate::commands::cloud_sync_e2ee_begin_sign_in,
+            $crate::commands::cloud_sync_e2ee_poll_sign_in,
+            $crate::commands::cloud_sync_e2ee_cancel_sign_in,
+            $crate::commands::cloud_sync_e2ee_get_ui_preferences,
+            $crate::commands::cloud_sync_e2ee_get_ui_preferences_snapshot,
+            $crate::commands::cloud_sync_e2ee_set_ui_preferences_checked,
             $crate::commands::marketplace_logout,
             $crate::commands::list_vocab,
             $crate::commands::add_vocab,
@@ -499,6 +554,8 @@ macro_rules! app_invoke_handler_mobile {
             $crate::commands::stop_dictation,
             $crate::commands::cancel_dictation,
             $crate::commands::qa_window_dismiss,
+            $crate::commands::qa_window_set_expanded,
+            $crate::commands::qa_get_snapshot,
             $crate::commands::qa_toggle_recording,
             $crate::commands::qa_submit_text,
             $crate::commands::qa_set_edit_instruction_mode,
@@ -524,6 +581,8 @@ macro_rules! app_invoke_handler_mobile {
             $crate::commands::open_system_settings,
             $crate::commands::trigger_microphone_prompt,
             $crate::commands::export_error_log,
+            #[cfg(target_os = "android")]
+            $crate::commands::export_error_log_to_downloads,
             $crate::commands::get_update_channel,
             $crate::commands::set_update_channel,
             $crate::commands::fetch_latest_beta_release,
@@ -548,13 +607,8 @@ fn run_desktop() {
     #[cfg(not(target_os = "windows"))]
     let coordinator = Arc::new(coordinator::Coordinator::new());
     let core_backend = coordinator.backend();
-    // 启动时把偏好里的 active ASR 同步进凭据库；get_credentials 按凭据库的 active 渠道取密钥。
-    let startup_active_asr = core_backend.get_preferences().active_asr_provider;
-    if !startup_active_asr.is_empty() {
-        if let Err(error) = commands::sync_active_asr_provider_to_vault(&startup_active_asr) {
-            log::warn!("[startup] sync active ASR provider from preferences failed: {error}");
-        }
-    }
+    // Runtime effects and active-provider mirroring follow Core startup/recovery
+    // in tauri_events::start; pending restore must not mutate the old vault here.
     let builder = tauri::Builder::default();
     // macOS：胶囊要叠到别的 app 的全屏 Space 之上，必须是「非激活 NSPanel」(普通
     // NSWindow 即便设 collectionBehavior 也做不到 —— tauri#9556 / #11488)。下面 setup 里
@@ -584,7 +638,8 @@ fn run_desktop() {
                 .try_state::<Arc<coordinator::Coordinator>>()
                 .map(|s| Arc::clone(&*s))
             {
-                if coordinator.backend().get_preferences().start_minimized {
+                if coordinator.startup_error().is_none()
+                    && coordinator.backend().get_preferences().start_minimized {
                     log::info!(
                         "[single-instance] start_minimized=true → skipping show on relaunch"
                     );
@@ -616,20 +671,6 @@ fn run_desktop() {
         .setup(move |app| {
             init_file_logger();
             log::info!("=== OpenLess 启动 ===");
-
-            #[cfg(target_os = "windows")]
-            {
-                let target = openless_core::WindowsKeyboardRuntimeTarget::from(
-                    &coordinator.backend().get_preferences(),
-                );
-                if let Err(err) = crate::windows_ime_profile::apply_windows_openless_keyboard_list(
-                    target.openless_language_profile_enabled,
-                ) {
-                    log::warn!(
-                        "[windows-ime] apply keyboard list visibility pref on startup failed: {err}"
-                    );
-                }
-            }
 
             // Capsule 启动时定位到屏幕底部居中并隐藏；coordinator 按需显示。
             // 与 Swift `CapsuleWindowController.repositionToBottomCenter` 同语义。
@@ -686,9 +727,9 @@ fn run_desktop() {
                 let _ = capsule.hide();
             }
 
-            // QA / Less Computer / glow 浮窗改为懒创建（不再在 tauri.conf.json eager 声明）：
+            // QA / Less Computer 浮窗懒创建（不在 tauri.conf.json eager 声明）：
             // 用到时才 build（ensure_qa_window / ensure_less_computer_window /
-            // ensure_less_computer_glow_window），idle 时根本没有它们的 WebKit 进程 ——
+            // ensure_less_computer_window），idle 时没有额外的 WebKit 进程 ——
             // 省 3 个常驻 webview。定位 + QA 拖拽修复在创建/show 路径里补。
 
             // 主窗口磨砂：macOS 用 NSVisualEffectView，Windows 用 Mica。
@@ -734,8 +775,8 @@ fn run_desktop() {
                 // 于 prefs。
                 let force_show =
                     std::env::var("OPENLESS_SHOW_MAIN_ON_START").ok().as_deref() == Some("1");
-                let suppress_show =
-                    !force_show && coordinator.backend().get_preferences().start_minimized;
+                let suppress_show = !force_show && coordinator.startup_error().is_none()
+                    && coordinator.backend().get_preferences().start_minimized;
                 if suppress_show {
                     log::info!("[main] start_minimized=true → 跳过初始 show，等用户点托盘");
                 } else {
@@ -844,12 +885,15 @@ fn run_desktop() {
                 log::warn!("[startup] default window icon missing; tray icon disabled");
             }
 
-            // Spin up hotkey listener; coordinator owns the lifecycle.
+            // Bind recovery effects before Core startup; the Ready handler
+            // starts hotkey supervisors once the recovery fence is clear.
             let app_handle = app.handle().clone();
             coordinator.tauri_host().bind(app_handle);
-            coordinator.sync_capsule_style_from_preferences();
+            coordinator.bind_restore_runtime_effects()?;
+            if core_backend.ensure_runtime_ready().is_ok() {
+                coordinator.sync_capsule_style_from_preferences();
+            }
             crate::tauri_events::start(app.handle().clone(), Arc::clone(&core_backend));
-            coordinator.start_hotkey_listener();
             // QA / custom combo hotkeys use `global-hotkey` (Carbon on macOS).
             // Start those after RunEvent::Ready, when the AppKit event loop is live.
             if std::env::var("OPENLESS_SHOW_MAIN_ON_START").ok().as_deref() == Some("1") {
@@ -872,18 +916,7 @@ fn run_desktop() {
         .run(|app, event| match event {
             RunEvent::Ready => {
                 let coordinator = app.state::<Arc<coordinator::Coordinator>>();
-                // 同步启动 QA hotkey listener。和 dictation hotkey 平行，互不抢状态。
-                coordinator.start_qa_hotkey_listener();
-                coordinator.start_selection_polish_hotkey_listener();
-                // 选区语音复用选区润色热键，不再单独注册 voice hotkey。
-                // 启动「快速 Agent」双热键监听（功能默认关闭，启用后才注册）。
-                coordinator.start_coding_agent_hotkey_listener();
-                // 启动自定义组合键监听器。当 trigger == Custom 时替代 modifier-only 监听器。
-                coordinator.start_combo_hotkey_listener();
-                coordinator.start_translation_hotkey_listener();
-                coordinator.start_switch_style_hotkey_listener();
-                coordinator.start_open_app_hotkey_listener();
-                coordinator.start_style_pack_hotkey_listeners();
+                coordinator.start_hotkey_supervisors_when_ready();
             }
             #[cfg(target_os = "macos")]
             RunEvent::Reopen { .. } => show_main_window(app),
@@ -906,6 +939,7 @@ fn run_desktop() {
                 coordinator.stop_translation_hotkey_listener();
                 coordinator.stop_switch_style_hotkey_listener();
                 coordinator.stop_open_app_hotkey_listener();
+                coordinator.stop_quick_note_hotkey_listener();
                 coordinator.stop_style_pack_hotkey_listeners();
                 let backend = coordinator.backend();
                 tauri::async_runtime::spawn(async move {
@@ -1938,14 +1972,13 @@ fn wait_for_app_activation<R: Runtime>(app: &AppHandle<R>) {
 #[cfg(not(target_os = "macos"))]
 fn wait_for_app_activation<R: Runtime>(_app: &AppHandle<R>) {}
 
-/// QA 浮窗的目标尺寸（issue #118；统一聊天面板后与 Less Computer 同尺寸）。
-/// 窗口固定大小，内容在面板内部的 MessageScroller 里滚动。
-const QA_WINDOW_WIDTH: f64 = 420.0;
-const QA_WINDOW_HEIGHT: f64 = 540.0;
+/// QA starts as a small composer and grows downwards after a question.
+const QA_WINDOW_WIDTH: f64 = 480.0;
+const QA_WINDOW_HEIGHT: f64 = 80.0;
+const QA_WINDOW_EXPANDED_HEIGHT: f64 = 560.0;
 /// 胶囊与 QA 窗口的间距，与设计稿一致。
 const QA_WINDOW_GAP_TO_CAPSULE: f64 = 8.0;
 /// 给 macOS Dock 留的下边距（与 capsule 同源）。
-const DOCK_BOTTOM_PADDING_FOR_QA: f64 = 80.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LogicalMonitorFrame {
@@ -2140,6 +2173,23 @@ fn floating_window_monitor_frame<R: tauri::Runtime>(
         size.height,
         monitor.scale_factor(),
     )))
+}
+
+/// First presentation may follow the pointer; resizing an existing chat stays
+/// on its own monitor. Work areas exclude the Dock/menu bar/taskbar.
+fn chat_window_work_area<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, initial: bool) -> tauri::Result<Option<(LogicalMonitorFrame, f64)>> {
+    #[cfg(target_os = "macos")]
+    if initial {
+        if let Some(target) = capsule_target_monitor(window) {
+            return Ok(Some((target.logical_work_area(), target.scale.max(0.1))));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = initial;
+    let Some(monitor) = window.current_monitor()? else { return Ok(None); };
+    let area = monitor.work_area();
+    let scale = monitor.scale_factor().max(0.1);
+    Ok(Some((logical_monitor_frame(area.position.x, area.position.y, area.size.width, area.size.height, scale), scale)))
 }
 
 #[cfg(target_os = "macos")]
@@ -2422,18 +2472,39 @@ fn clamp_to_monitor(
 /// 把 QA 浮窗放到屏幕底部居中、紧贴胶囊上方。tauri 启动期 + show 之前都会调一次，
 /// 防止用户切换显示器后位置错乱。
 fn position_qa_window<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> tauri::Result<()> {
-    let Some(frame) = floating_window_monitor_frame(window)? else {
+    let Some((frame, scale)) = chat_window_work_area(window, true)? else {
         return Ok(());
     };
     let capsule_height = capsule_height_for_qa();
     let (x, y) = bottom_center_position(
         frame,
         QA_WINDOW_WIDTH,
-        QA_WINDOW_HEIGHT,
-        DOCK_BOTTOM_PADDING_FOR_QA + capsule_height + QA_WINDOW_GAP_TO_CAPSULE,
+        QA_WINDOW_EXPANDED_HEIGHT,
+        capsule_height + QA_WINDOW_GAP_TO_CAPSULE,
     );
-    window.set_size(tauri::LogicalSize::new(QA_WINDOW_WIDTH, QA_WINDOW_HEIGHT))?;
-    window.set_position(LogicalPosition::new(x, y))?;
+    window.set_position(tauri::PhysicalPosition::new((x * scale).round() as i32, (y * scale).round() as i32))?;
+    window.set_size(tauri::PhysicalSize::new((QA_WINDOW_WIDTH * scale).round() as u32, (QA_WINDOW_HEIGHT * scale).round() as u32))?;
+    Ok(())
+}
+
+/// Called on the native main thread by the restricted QA command. The compact
+/// state has a genuinely small native frame, so hidden content cannot eat clicks.
+pub(crate) fn set_qa_window_expanded<R: tauri::Runtime>(app: &AppHandle<R>, expanded: bool) -> Result<(), String> {
+    let window = app.get_webview_window("qa").ok_or_else(|| "qa_window_unavailable".to_string())?;
+    let area = chat_window_work_area(&window, false).map_err(|_| "qa_geometry_unavailable")?;
+    let scale = area.map(|(_, scale)| scale).unwrap_or(window.scale_factor().map_err(|_| "qa_geometry_unavailable")?);
+    let position = window.inner_position().map_err(|_| "qa_geometry_unavailable")?.to_logical::<f64>(scale);
+    let mut width = QA_WINDOW_WIDTH;
+    let mut height = if expanded { QA_WINDOW_EXPANDED_HEIGHT } else { QA_WINDOW_HEIGHT };
+    let (mut x, mut y) = (position.x, position.y);
+    if let Some((frame, _)) = area {
+        width = width.min((frame.width - 32.0).max(240.0));
+        height = height.min((frame.height - 64.0).max(QA_WINDOW_HEIGHT));
+        x = x.clamp(frame.x + 16.0, (frame.x + frame.width - width - 16.0).max(frame.x + 16.0));
+        y = y.clamp(frame.y + 32.0, (frame.y + frame.height - height - 16.0).max(frame.y + 32.0));
+    }
+    window.set_position(tauri::PhysicalPosition::new((x * scale).round() as i32, (y * scale).round() as i32)).map_err(|_| "qa_position_failed")?;
+    window.set_size(tauri::PhysicalSize::new((width * scale).round() as u32, (height * scale).round() as u32)).map_err(|_| "qa_resize_failed")?;
     Ok(())
 }
 
@@ -2444,21 +2515,11 @@ fn position_qa_window<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> ta
 pub(crate) fn show_qa_window<R: tauri::Runtime>(app: &AppHandle<R>, content_kind: &str) {
     #[cfg(target_os = "android")]
     {
-        const FLAG_ACTIVITY_NEW_TASK: i32 = 0x10000000;
-        const FLAG_ACTIVITY_REORDER_TO_FRONT: i32 = 0x00020000;
-        const FLAG_ACTIVITY_SINGLE_TOP: i32 = 0x20000000;
-        let flags =
-            FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_REORDER_TO_FRONT | FLAG_ACTIVITY_SINGLE_TOP;
         match crate::android::jni::android::with_android_env(|env, context| {
-            crate::android::jni::android::start_activity_class_with_flags(
-                env,
-                context,
-                "com.openless.app.MainActivity",
-                flags,
-            )
+            crate::android::jni::android::open_qa_host(env, context)
         }) {
-            Ok(()) => log::info!("[qa] android requested MainActivity foreground for QA"),
-            Err(error) => log::warn!("[qa] android failed to foreground MainActivity: {error}"),
+            Ok(()) => log::info!("[qa] android requested WarmupActivity foreground for QA"),
+            Err(error) => log::warn!("[qa] android failed to foreground WarmupActivity: {error}"),
         }
         log::info!("[qa] android publish qa:state to main kind={content_kind}");
         tauri_events::publish(
@@ -2552,8 +2613,15 @@ fn make_chat_window_panel_macos<R: tauri::Runtime>(window: &tauri::WebviewWindow
     use tauri_nspanel::WebviewWindowExt;
     match window.to_panel() {
         Ok(panel) => {
-            const NS_NONACTIVATING_PANEL_MASK: i32 = 1 << 7;
-            panel.set_style_mask(NS_NONACTIVATING_PANEL_MASK);
+            use objc2::msg_send;
+            use objc2::runtime::AnyObject;
+            let raw = &*panel as *const _ as *mut AnyObject;
+            if !raw.is_null() {
+                unsafe {
+                    let current: usize = msg_send![raw, styleMask];
+                    let _: () = msg_send![raw, setStyleMask: current | (1usize << 7)];
+                }
+            }
             // 浮层级别（NSFloatingWindowLevel）：盖普通窗口，不盖菜单栏/胶囊(25)。
             panel.set_level(3);
             panel.set_collection_behaviour(
@@ -2683,7 +2751,8 @@ fn ensure_less_computer_window<R: tauri::Runtime>(
     .shadow(true)
     .always_on_top(true)
     .skip_taskbar(true)
-    .resizable(false)
+    .resizable(true)
+    .min_inner_size(760.0, 520.0)
     .focused(false)
     .visible(false)
     .accept_first_mouse(true)
@@ -2696,6 +2765,7 @@ fn ensure_less_computer_window<R: tauri::Runtime>(
             let _ = app.run_on_main_thread(move || {
                 make_chat_window_panel_macos(&w_clone, "less-computer");
                 make_chat_window_draggable_macos(&w_clone, "less-computer");
+                LESS_COMPUTER_WINDOW_POSITIONED.store(false, Ordering::Relaxed);
             });
             Some(w)
         }
@@ -2725,7 +2795,8 @@ fn ensure_less_computer_window<R: tauri::Runtime>(
     .shadow(true)
     .always_on_top(true)
     .skip_taskbar(true)
-    .resizable(false)
+    .resizable(true)
+    .min_inner_size(760.0, 520.0)
     .focused(false)
     .visible(false)
     .build()
@@ -2734,41 +2805,6 @@ fn ensure_less_computer_window<R: tauri::Runtime>(
         log::warn!("[less-computer] lazy window create failed: {error}");
         None
     })
-}
-
-/// 懒创建 Less Computer glow 描边窗（macOS only）。shadow:false、无 acceptFirstMouse。
-/// 它的 level/collectionBehavior/ignore-mouse 在每次 show_less_computer_glow 里幂等设置，
-/// 所以创建时不需要额外原生配置。
-#[cfg(target_os = "macos")]
-fn ensure_less_computer_glow_window<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-) -> Option<tauri::WebviewWindow<R>> {
-    if let Some(w) = app.get_webview_window("less-computer-glow") {
-        return Some(w);
-    }
-    match WebviewWindowBuilder::new(
-        app,
-        "less-computer-glow",
-        WebviewUrl::App("index.html?window=less-computer-glow".into()),
-    )
-    .title("OpenLess Less Computer Glow")
-    .inner_size(800.0, 600.0)
-    .decorations(false)
-    .transparent(true)
-    .shadow(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .focused(false)
-    .visible(false)
-    .build()
-    {
-        Ok(w) => Some(w),
-        Err(e) => {
-            log::warn!("[less-computer-glow] lazy window create failed: {e}");
-            None
-        }
-    }
 }
 
 /// 带退场动画地隐藏聊天面板：先发 `chat-panel:closing` 让前端播退场动画，
@@ -2812,28 +2848,232 @@ pub(crate) fn hide_qa_window<R: tauri::Runtime>(app: &AppHandle<R>) {
 /// 选区润色预览是独立、可编辑的小窗：模型结果不会直接覆盖，用户确认后才回到原选区粘贴。
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn ensure_selection_polish_preview_window<R: tauri::Runtime>(
-    app: &AppHandle<R>,
+    app: &tauri::AppHandle<R>,
 ) -> Option<tauri::WebviewWindow<R>> {
     if let Some(window) = app.get_webview_window("selection-polish-preview") {
         return Some(window);
     }
-    WebviewWindowBuilder::new(
+    let built = WebviewWindowBuilder::new(
         app,
         "selection-polish-preview",
         WebviewUrl::App("index.html?window=selection-polish-preview".into()),
     )
-    .title("OpenLess 选区润色预览")
+    .title("OpenLess 選區潤色預覽")
     .inner_size(640.0, 440.0)
     .min_inner_size(480.0, 320.0)
     .resizable(true)
     .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(false)
     .visible(false)
-    .build()
-    .map(Some)
-    .unwrap_or_else(|error| {
-        log::warn!("[selection-polish] create preview window failed: {error}");
-        None
-    })
+    // Nonactivating NSPanel 的 WebKit 內容不可靠地接受 first mouse；native flag
+    // 仍保留作輔助，HTML 第一擊由下方 local NSEvent monitor 保證。
+    .accept_first_mouse(true)
+    .build();
+    match built {
+        Ok(window) => {
+            // macOS：转「非激活 NSPanel」（胶囊/QA 同手法）。预览窗展示期间 LLM 可能
+            // 还在等待、用户也可能切回原 app 继续工作——普通窗口的 show + set_focus
+            // 会把 OpenLess 整个激活成 frontmost，原 app 失去前台后很多编辑器的选区
+            // 直接消失，之后 confirm 的 reactivate/validate 就「有时」失败。
+            // 转成 NonactivatingPanel 后窗口可见、可编辑，但 app 保持后台。
+            // 必须在主线程执行（NSWindow class 切换是 AppKit 操作，worker 线程
+            // 调用可能触发 NSException 直接 abort）。
+            #[cfg(target_os = "macos")]
+            {
+                let window_clone = window.clone();
+                let _ = app.run_on_main_thread(move || {
+                    make_selection_polish_preview_panel_macos(&window_clone);
+                });
+            }
+            Some(window)
+        }
+        Err(error) => {
+            log::warn!("[selection-polish] create preview window failed: {error}");
+            None
+        }
+    }
+}
+
+/// 选区润色预览窗转「非激活 NSPanel」（macOS，胶囊/QA 同手法）。
+///
+/// `set_style_mask` 是全量替换而非 OR——只设 NSPanel 位会丢掉 titled/resizable，
+/// 所以先读当前 mask 再叠加 NonactivatingPanel 位（NSWindowStyleMaskNonactivatingPanel
+/// = 1 << 7）。面板保留标题栏（用户仍可拖动定位、点 X 关闭），只是不再
+/// 激活整个 app。
+#[cfg(target_os = "macos")]
+fn make_selection_polish_preview_panel_macos<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    use tauri_nspanel::cocoa::appkit::NSWindowCollectionBehavior;
+    use tauri_nspanel::WebviewWindowExt;
+    match window.to_panel() {
+        Ok(panel) => {
+            // style mask 要先读再 OR（set_style_mask 是全量替换）。RawNSPanel 实现
+            // 的是 objc (v0) 的 Message trait，与 objc2::msg_send 不兼容，所以按
+            // QA 的手法对原生指针直接发消息（ZST 包装指针即 ObjC 对象指针）。
+            use objc2::msg_send;
+            use objc2::runtime::AnyObject;
+            let raw = &*panel as *const _ as *mut AnyObject;
+            if !raw.is_null() {
+                unsafe {
+                    let current: usize = msg_send![raw, styleMask];
+                    const NS_NONACTIVATING_PANEL_MASK: usize = 1 << 7;
+                    let _: () = msg_send![raw, setStyleMask: current | NS_NONACTIVATING_PANEL_MASK];
+                    log::info!(
+                        "[selection-polish] preview converted to nonactivating NSPanel (mask {current:#x} -> {:#x})",
+                        current | NS_NONACTIVATING_PANEL_MASK
+                    );
+                }
+            }
+            // 浮层级别（NSFloatingWindowLevel）：盖普通窗口，不盖菜单栏/胶囊(25)。
+            // to_panel 类切换后显式重设一次，与 QA 同配置。
+            panel.set_level(3);
+            // 划词常发生在全屏 app 里：CanJoinAllSpaces + FullScreenAuxiliary
+            // 让面板能叠到全屏空间上（QA 同配置）。
+            panel.set_collection_behaviour(
+                NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary
+                    | NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces,
+            );
+            install_selection_preview_first_click_guard(raw);
+        }
+        Err(e) => log::warn!("[selection-polish] preview to_panel failed: {e:?}"),
+    }
+}
+
+/// 圈選預覽窗第一擊護欄（macOS）。
+///
+/// local monitor 在 AppKit 派發前，若左鍵事件屬於目前的選區預覽窗且該窗不是 key，
+/// 先 makeKeyWindow，再原樣放行事件。監聽器只永久保存 windowNumber，不保存 NSPanel
+/// 裸指標；預覽窗重建時更新 windowNumber，避免 stale pointer。
+#[cfg(target_os = "macos")]
+fn install_selection_preview_first_click_guard(panel: *mut objc2::runtime::AnyObject) {
+    use block2::RcBlock;
+    use objc2::msg_send;
+    use objc2::runtime::{AnyObject, Bool};
+    use std::sync::atomic::{AtomicI64, AtomicPtr, Ordering};
+
+    static TARGET_WINDOW_NUMBER: AtomicI64 = AtomicI64::new(-1);
+    static MONITOR: AtomicPtr<AnyObject> = AtomicPtr::new(std::ptr::null_mut());
+
+    if panel.is_null() {
+        return;
+    }
+    let window_number = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        objc2::exception::catch(std::panic::AssertUnwindSafe(|| {
+            let number: isize = msg_send![panel, windowNumber];
+            number as i64
+        }))
+    })) {
+        Ok(Ok(number)) if number >= 0 => number,
+        Ok(Ok(_)) => {
+            log::warn!("[selection-polish] first-click guard: invalid windowNumber");
+            return;
+        }
+        Ok(Err(error)) => {
+            log::warn!("[selection-polish] first-click guard: windowNumber raised: {error:?}");
+            return;
+        }
+        Err(_) => {
+            log::error!("[selection-polish] first-click guard: Rust panic reading windowNumber");
+            return;
+        }
+    };
+    TARGET_WINDOW_NUMBER.store(window_number, Ordering::SeqCst);
+
+    if !MONITOR.load(Ordering::SeqCst).is_null() {
+        log::info!(
+            "[selection-polish] first-click guard target updated window_number={window_number}"
+        );
+        return;
+    }
+
+    let block = RcBlock::new(move |event: *mut AnyObject| -> *mut AnyObject {
+        let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            objc2::exception::catch(std::panic::AssertUnwindSafe(|| {
+                if event.is_null() {
+                    return false;
+                }
+                let win: *mut AnyObject = msg_send![event, window];
+                if win.is_null() {
+                    return false;
+                }
+                let event_window_number: isize = msg_send![win, windowNumber];
+                if event_window_number as i64 != TARGET_WINDOW_NUMBER.load(Ordering::SeqCst) {
+                    return false;
+                }
+                // windowNumber 可能在視窗銷毀後被 AppKit 重用；再用固定 title 驗證
+                // 事件確實來自選區預覽窗，避免誤把其他 OpenLess 視窗扶成 key。
+                let title: *mut AnyObject = msg_send![win, title];
+                if title.is_null() {
+                    return false;
+                }
+                let expected: *mut AnyObject = msg_send![
+                    objc2::runtime::AnyClass::get("NSString").expect("NSString class"),
+                    stringWithUTF8String: c"OpenLess 選區潤色預覽".as_ptr()
+                ];
+                if expected.is_null() {
+                    return false;
+                }
+                let title_matches: Bool = msg_send![title, isEqualToString: expected];
+                if !title_matches.as_bool() {
+                    return false;
+                }
+                let is_key: Bool = msg_send![win, isKeyWindow];
+                if !is_key.as_bool() {
+                    let _: () = msg_send![win, makeKeyWindow];
+                    return true;
+                }
+                false
+            }))
+        }));
+        match guarded {
+            Ok(Ok(true)) => log::info!(
+                "[selection-polish] first-click guard: panel made key before first mouse-down"
+            ),
+            Ok(Ok(false)) => {}
+            Ok(Err(error)) => log::warn!(
+                "[selection-polish] first-click guard: ObjC exception caught; event passed through: {error:?}"
+            ),
+            Err(_) => log::error!(
+                "[selection-polish] first-click guard: Rust panic caught; event passed through"
+            ),
+        }
+        event
+    });
+
+    let registration = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        objc2::exception::catch(std::panic::AssertUnwindSafe(|| {
+            let Some(cls) = objc2::runtime::AnyClass::get("NSEvent") else {
+                return std::ptr::null_mut();
+            };
+            const MASK_LEFT_MOUSE_DOWN: u64 = 1 << 1;
+            let monitor: *mut AnyObject = msg_send![
+                cls,
+                addLocalMonitorForEventsMatchingMask: MASK_LEFT_MOUSE_DOWN,
+                handler: &*block
+            ];
+            if !monitor.is_null() {
+                let _: *mut AnyObject = msg_send![monitor, retain];
+            }
+            monitor
+        }))
+    }));
+    match registration {
+        Ok(Ok(monitor)) if !monitor.is_null() => {
+            MONITOR.store(monitor, Ordering::SeqCst);
+            log::info!(
+                "[selection-polish] first-click guard installed window_number={window_number}"
+            );
+        }
+        Ok(Ok(_)) => log::warn!(
+            "[selection-polish] first-click guard: monitor registration unavailable; will retry"
+        ),
+        Ok(Err(error)) => log::warn!(
+            "[selection-polish] first-click guard: registration raised; will retry: {error:?}"
+        ),
+        Err(_) => log::error!(
+            "[selection-polish] first-click guard: Rust panic during registration; will retry"
+        ),
+    }
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -2841,26 +3081,180 @@ pub(crate) fn show_selection_polish_preview<R: tauri::Runtime>(app: &AppHandle<R
     let Some(window) = ensure_selection_polish_preview_window(app) else {
         return;
     };
-    if let Err(error) = window.show() {
-        log::warn!("[selection-polish] show preview failed: {error}");
-        return;
-    }
-    if let Err(error) = window.set_focus() {
-        log::warn!("[selection-polish] focus preview failed: {error}");
-    }
     let _ = app.emit_to(
         "selection-polish-preview",
         "selection-polish-preview:shown",
         (),
     );
+    #[cfg(target_os = "macos")]
+    {
+        // 不用 window.show()/set_focus()：tao 的 show 走 makeKeyAndOrderFront +
+        // NSApp.activate（已核对 tao 源码）——都会把 OpenLess 推成 frontmost，原
+        // app 丢前台后选区被清，之后的 confirm reactivate/validate 就「有时」失败。
+        // 改走 QA 同手法：主线程 orderFrontRegardless（可见但不抢前台、不成为 key
+        // window）；面板已是 NonactivatingPanel（ensure 阶段转换，同一主线程队列，
+        // 顺序有保证），textarea 的 autofocus 在点击/聚焦时自行 makeKey，而
+        // nonactivating 面板的 makeKey 不会激活 app。
+        let window_clone = window.clone();
+        let _ = app.run_on_main_thread(move || {
+            use objc2::msg_send;
+            use objc2::runtime::AnyObject;
+            match window_clone.ns_window() {
+                Ok(handle) => {
+                    let ns = handle as *mut AnyObject;
+                    if ns.is_null() {
+                        log::warn!("[selection-polish] ns_window null; falling back to show()");
+                        let _ = window_clone.show();
+                    } else {
+                        // 每次 show 都刷新 target；若初次 monitor 註冊失敗，這裡也會重試。
+                        install_selection_preview_first_click_guard(ns);
+                        unsafe {
+                            let _: () = msg_send![ns, orderFrontRegardless];
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!(
+                        "[selection-polish] ns_window unavailable: {e}; falling back to show()"
+                    );
+                    let _ = window_clone.show();
+                }
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Err(error) = window.show() {
+            log::warn!("[selection-polish] show preview failed: {error}");
+            return;
+        }
+        if let Err(error) = window.set_focus() {
+            log::warn!("[selection-polish] focus preview failed: {error}");
+        }
+    }
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub(crate) fn show_selection_polish_preview<R: tauri::Runtime>(_app: &AppHandle<R>) {}
 
 pub(crate) fn hide_selection_polish_preview<R: tauri::Runtime>(app: &AppHandle<R>) {
-    if let Some(window) = app.get_webview_window("selection-polish-preview") {
+    let Some(window) = app.get_webview_window("selection-polish-preview") else {
+        return;
+    };
+    // macOS：转换后的 NSPanel 不能从 worker 线程操作（AppKit 硬约束，resize/hide
+    // 都可能让进程 abort），统一 dispatch 回主线程；其他平台 hide 走 Tauri 内部
+    // 主线程调度即可。
+    #[cfg(target_os = "macos")]
+    {
+        let window_clone = window.clone();
+        let _ = app.run_on_main_thread(move || {
+            let _ = window_clone.hide();
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
         let _ = window.hide();
+    }
+}
+
+/// Confirm 前同步撤掉選區預覽 NSPanel 的 key-window 狀態。
+///
+/// NonactivatingPanel 可以在來源 app 已是 frontmost 時仍保有 key window；若不先
+/// resign，validate 的全域 Cmd+C 可能仍送進預覽 WebView，讀到空剪貼簿後誤判
+/// SelectionChanged。只 resign、不 hide：失敗時預覽仍可見並可重試；成功後沿用
+/// selection service 原本的 hide 流程。
+#[cfg(target_os = "macos")]
+fn resign_selection_polish_preview_key_macos<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<bool, String> {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyObject, Bool};
+
+    let handle = window
+        .ns_window()
+        .map_err(|error| format!("ns_window unavailable: {error}"))?;
+    let ns = handle as *mut AnyObject;
+    if ns.is_null() {
+        return Err("ns_window returned null".to_string());
+    }
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        objc2::exception::catch(std::panic::AssertUnwindSafe(|| {
+            let was_key: Bool = msg_send![ns, isKeyWindow];
+            if was_key.as_bool() {
+                let _: () = msg_send![ns, resignKeyWindow];
+            }
+            was_key.as_bool()
+        }))
+    }));
+    match caught {
+        Ok(Ok(was_key)) => Ok(was_key),
+        Ok(Err(error)) => Err(format!("resignKeyWindow raised: {error:?}")),
+        Err(_) => Err("Rust panic while resigning preview key window".to_string()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn resign_selection_polish_preview_key_for_apply<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> bool {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, Bool};
+
+    let Some(window) = app.get_webview_window("selection-polish-preview") else {
+        log::warn!("[selection-polish] apply: preview window missing before focus handoff");
+        return false;
+    };
+
+    let on_main_thread = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        objc2::exception::catch(std::panic::AssertUnwindSafe(|| {
+            AnyClass::get("NSThread").is_some_and(|class| {
+                let is_main: Bool = msg_send![class, isMainThread];
+                is_main.as_bool()
+            })
+        }))
+    })) {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => {
+            log::warn!("[selection-polish] apply: NSThread lookup raised: {error:?}");
+            return false;
+        }
+        Err(_) => {
+            log::error!("[selection-polish] apply: Rust panic checking main thread");
+            return false;
+        }
+    };
+    let result = if on_main_thread {
+        resign_selection_polish_preview_key_macos(&window)
+    } else {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let window_clone = window.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            let result = resign_selection_polish_preview_key_macos(&window_clone);
+            let _ = tx.send(result);
+        }) {
+            log::warn!(
+                "[selection-polish] apply: main-thread focus handoff dispatch failed: {error}"
+            );
+            return false;
+        }
+        // 呼叫端是 blocking apply；事件已排入主執行緒後等待唯一結果。主執行緒路徑
+        // 已在上方直接執行，不會 self-deadlock；不設 timeout，避免回報失敗後延遲
+        // resign 又在別的互動中生效。
+        rx.recv()
+            .unwrap_or_else(|error| Err(format!("preview resign channel closed: {error}")))
+    };
+
+    match result {
+        Ok(was_key) => {
+            log::info!(
+                "[selection-polish] apply: preview resigned key before reactivate was_key={was_key}"
+            );
+            true
+        }
+        Err(error) => {
+            log::warn!("[selection-polish] apply: preview resign failed: {error}");
+            false
+        }
     }
 }
 
@@ -2877,7 +3271,7 @@ fn ensure_selection_voice_intent_prompt_window<R: tauri::Runtime>(
         "selection-voice-intent",
         WebviewUrl::App("index.html?window=selection-voice-intent".into()),
     )
-    .title("OpenLess 选区语音")
+    .title("OpenLess 選區語音")
     .inner_size(420.0, 280.0)
     .min_inner_size(360.0, 240.0)
     .resizable(true)
@@ -2926,33 +3320,26 @@ pub(crate) fn hide_selection_voice_intent_prompt<R: tauri::Runtime>(_app: &AppHa
 // 操作仍按平台分支，macOS 的 NSWindow/AppKit 调整不能流入 Windows 构建。
 // Linux 的产品窗口由 egui Host 接入，不在 Tauri 创建；不支持的平台保留 no-op。
 
-/// Less Computer 浮窗尺寸：与 QA 同款「统一聊天面板」固定大小 —— 窗口出现即
-/// 定死，内容只在面板内部的 MessageScroller 里滚动，不再按内容自适应缩放窗口。
+/// Less Computer defaults to a desktop workspace; users can resize it afterwards.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-const LESS_COMPUTER_WINDOW_WIDTH: f64 = 420.0;
+const LESS_COMPUTER_WINDOW_WIDTH: f64 = 990.0;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-const LESS_COMPUTER_WINDOW_HEIGHT: f64 = 540.0;
+const LESS_COMPUTER_WINDOW_HEIGHT: f64 = 680.0;
 
-/// 把 Less Computer 浮窗（固定尺寸）摆到屏幕底部居中、紧贴胶囊上方。
+/// Position the initial workspace within the monitor; subsequent shows preserve user geometry.
 #[cfg(target_os = "macos")]
 fn position_less_computer_window<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> tauri::Result<()> {
-    let Some(frame) = floating_window_monitor_frame(window)? else {
+    let Some((frame, scale)) = chat_window_work_area(window, true)? else {
         return Ok(());
     };
-    let capsule_height = capsule_height_for_qa();
-    let (x, y) = bottom_center_position(
-        frame,
-        LESS_COMPUTER_WINDOW_WIDTH,
-        LESS_COMPUTER_WINDOW_HEIGHT,
-        DOCK_BOTTOM_PADDING_FOR_QA + capsule_height + QA_WINDOW_GAP_TO_CAPSULE,
-    );
-    window.set_size(tauri::LogicalSize::new(
-        LESS_COMPUTER_WINDOW_WIDTH,
-        LESS_COMPUTER_WINDOW_HEIGHT,
-    ))?;
-    window.set_position(LogicalPosition::new(x, y))?;
+    let width = LESS_COMPUTER_WINDOW_WIDTH.min((frame.width - 32.0).max(760.0));
+    let height = LESS_COMPUTER_WINDOW_HEIGHT.min((frame.height - 32.0).max(520.0));
+    let x = frame.x + (frame.width - width).max(0.0) / 2.0;
+    let y = frame.y + (frame.height - height).max(0.0) / 2.0;
+    window.set_position(tauri::PhysicalPosition::new((x * scale).round() as i32, (y * scale).round() as i32))?;
+    window.set_size(tauri::PhysicalSize::new((width * scale).round() as u32, (height * scale).round() as u32))?;
     Ok(())
 }
 
@@ -2971,8 +3358,11 @@ pub(crate) fn show_less_computer_window<R: tauri::Runtime>(app: &AppHandle<R>) {
         // voice Agent turn. Keep every AppKit-backed window mutation on the main
         // thread; macOS aborts the process if a converted NSPanel is resized or moved
         // from that worker while WebKit is servicing its custom URL scheme.
-        if let Err(e) = position_less_computer_window(&window_clone) {
-            log::warn!("[less-computer] position before show failed: {e}");
+        if !LESS_COMPUTER_WINDOW_POSITIONED.load(Ordering::Relaxed) {
+            match position_less_computer_window(&window_clone) {
+                Ok(()) => LESS_COMPUTER_WINDOW_POSITIONED.store(true, Ordering::Relaxed),
+                Err(e) => log::warn!("[less-computer] position before show failed: {e}"),
+            }
         }
         // A lazily-created window starts with Tauri's visible=false state. Cocoa's
         // orderFrontRegardless alone does not always clear that state, leaving the first
@@ -3028,88 +3418,8 @@ pub(crate) fn hide_less_computer_window<R: tauri::Runtime>(app: &AppHandle<R>) {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub(crate) fn hide_less_computer_window<R: tauri::Runtime>(_app: &AppHandle<R>) {}
 
-/// 显示全屏彩虹描边浮层：盖满当前显示器、点击穿透、置顶。Agent 工作时点亮整屏边缘。
-#[cfg(target_os = "macos")]
-pub(crate) fn show_less_computer_glow<R: tauri::Runtime>(app: &AppHandle<R>) {
-    let Some(window) = ensure_less_computer_glow_window(app) else {
-        return;
-    };
-    // 盖满胶囊所在的那块显示器（跟随鼠标光标，见 floating_window_monitor_frame），
-    // 含菜单栏/Dock 区域。frame 已是「逻辑坐标」—— Retina 上 monitor.size() 是物理像素(2x)，
-    // 直接拿去 set_size 会把窗口铺成两倍、错位、不贴边。
-    let frame = floating_window_monitor_frame(&window)
-        .ok()
-        .flatten()
-        .or_else(|| {
-            let monitor = app.primary_monitor().ok().flatten()?;
-            let size = monitor.size();
-            let pos = monitor.position();
-            Some(logical_monitor_frame(
-                pos.x,
-                pos.y,
-                size.width,
-                size.height,
-                monitor.scale_factor(),
-            ))
-        });
-    if let Some(frame) = frame {
-        let _ = window.set_position(tauri::LogicalPosition::new(frame.x, frame.y));
-        let _ = window.set_size(tauri::LogicalSize::new(frame.width, frame.height));
-    }
-    // 点击穿透：纯视觉浮层，绝不拦截鼠标。
-    let _ = window.set_ignore_cursor_events(true);
-    // issue #470：通知 glow 前端「可见」，恢复发光动画（隐藏时会 emit(false) 卸载发光层以释放 GPU）。
-    let _ = window.emit("less-computer-glow:active", true);
-    let window_clone = window.clone();
-    let app_for_reassert = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        use objc2::msg_send;
-        use objc2::runtime::AnyObject;
-        match window_clone.ns_window() {
-            Ok(handle) => {
-                let ns = handle as *mut AnyObject;
-                if ns.is_null() {
-                    let _ = window_clone.show();
-                } else {
-                    unsafe {
-                        // 抬到菜单栏(24)/Dock 之上，让描边能真正贴到屏幕最外缘（含顶部菜单栏区域）。
-                        let _: () = msg_send![ns, setLevel: 25i64];
-                        // 所有 Space 都显示、不参与窗口循环、全屏 app 上也叠加（273 =
-                        // CanJoinAllSpaces|Stationary|FullScreenAuxiliary）。macOS 26 会在
-                        // 运行中把窗口从「全 Space 贴附」剥离且同值写入救不回（详见
-                        // show_capsule_window_no_activate 的重注册注释）；glow show 频率低，
-                        // 每次都走重注册序列：先以去掉 CanJoinAllSpaces 位的 272 上屏，
-                        // 下一个 tick 再写 273 —— 可见状态下的位翻转才触发重新注册。
-                        let _: () = msg_send![ns, setCollectionBehavior: 272u64];
-                        let _: () = msg_send![ns, setIgnoresMouseEvents: true];
-                        let _: () = msg_send![ns, orderFrontRegardless];
-                    }
-                    let window_for_reassert = window_clone.clone();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(30));
-                        let _ = app_for_reassert.run_on_main_thread(move || {
-                            let Ok(handle) = window_for_reassert.ns_window() else {
-                                return;
-                            };
-                            let ns = handle as *mut AnyObject;
-                            if ns.is_null() {
-                                return;
-                            }
-                            unsafe {
-                                let _: () = msg_send![ns, setCollectionBehavior: 273u64];
-                            }
-                        });
-                    });
-                }
-            }
-            Err(_) => {
-                let _ = window_clone.show();
-            }
-        }
-    });
-}
-
-#[cfg(not(target_os = "macos"))]
+/// Less Computer presents work and recording feedback inside its panel.
+/// Keep the host port callable without creating a full-screen glow WebView.
 pub(crate) fn show_less_computer_glow<R: tauri::Runtime>(_app: &AppHandle<R>) {}
 
 /// 隐藏全屏彩虹描边浮层。

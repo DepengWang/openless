@@ -82,6 +82,7 @@ impl From<openless_core::LocalAsrStorageSettings> for LocalAsrStorageSettings {
 #[serde(rename_all = "camelCase")]
 pub struct LocalAsrModelStatus {
     pub id: String,
+    pub runtime: LocalAsrRuntime,
     pub hf_repo: String,
     pub display_name: String,
     pub family: String,
@@ -96,6 +97,7 @@ impl From<openless_core::LocalAsrModel> for LocalAsrModelStatus {
     fn from(model: openless_core::LocalAsrModel) -> Self {
         Self {
             id: model.target.model_id().to_string(),
+            runtime: model.target.runtime,
             hf_repo: model.repository.clone().unwrap_or_default(),
             display_name: model.display_name,
             family: model.family,
@@ -436,6 +438,35 @@ pub async fn local_asr_test_model(
         .map_err(core_error)
 }
 
+/// 验证设置页上的本地渠道。与通用云端 provider 验证不同，这里必须真正
+/// 加载该渠道对应的本地模型并跑一次内置音频，且不能偷偷切换全局 active 渠道。
+#[tauri::command]
+pub async fn local_asr_test_channel(
+    backend: CoreState<'_>,
+    channel_id: String,
+) -> Result<LocalAsrTestResult, String> {
+    log::info!("[local-asr verify] start channel={channel_id}");
+    let result = backend
+        .services()
+        .local_asr
+        .test_channel(channel_id.clone())
+        .await
+        .map(LocalAsrTestResult::from)
+        .map_err(|error| {
+            let message = core_error(error);
+            log::warn!("[local-asr verify] failed channel={channel_id}: {message}");
+            message
+        })?;
+    log::info!(
+        "[local-asr verify] success channel={channel_id} model={} backend={} load_ms={} transcribe_ms={}",
+        result.model_id,
+        result.backend,
+        result.load_ms,
+        result.transcribe_ms
+    );
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn local_asr_engine_status(
     backend: CoreState<'_>,
@@ -540,6 +571,7 @@ mod wire_contract_tests {
             value,
             serde_json::json!({
                 "id": "qwen3-asr-0.6b",
+                "runtime": "generic",
                 "hfRepo": "Qwen/Qwen3-ASR-0.6B",
                 "displayName": "Qwen3 ASR 0.6B",
                 "family": "qwen3_asr",

@@ -51,6 +51,17 @@ impl Default for BackendConfig {
     }
 }
 
+/// Absolute, idempotent Host convergence during a journalled sync restore.
+/// Called only after the complete repository target is installed and while
+/// the restore fence still blocks runtime admission. A failure must propagate
+/// so the journal can reinstall and reconcile its previous target.
+pub trait RestoreRuntimeEffects: Send + Sync {
+    fn apply_target(
+        &self,
+        target: crate::shared_types::UserPreferences,
+    ) -> BoxFuture<'static, Result<(), BackendError>>;
+}
+
 pub trait TaskSpawner: Send + Sync {
     fn spawn(&self, task: BoxFuture<'static, ()>);
 }
@@ -119,6 +130,20 @@ impl TaskSpawner for TokioTaskSpawner {
 pub struct UnsupportedDictationEngine;
 
 impl DictationEngine for UnsupportedDictationEngine {
+    fn prepare_transcription(
+        self: Arc<Self>,
+        _session_id: crate::types::SessionId,
+        _context: Arc<crate::dictation_context::DictationContext>,
+    ) -> BoxFuture<'static, Result<Arc<dyn crate::ports::PreparedTranscription>, BackendError>>
+    {
+        Box::pin(async {
+            Err(BackendError::new(
+                crate::errors::BackendErrorCode::Unsupported,
+                "dictation engine is not configured",
+            ))
+        })
+    }
+
     fn start(
         &self,
         _session_id: crate::types::SessionId,

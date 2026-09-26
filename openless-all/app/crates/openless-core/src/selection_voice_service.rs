@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use futures_util::future::BoxFuture;
 
@@ -17,7 +18,7 @@ use crate::domains::{
     SelectionVoicePhase, SelectionVoicePreview, SelectionVoicePreviewUpdate, SelectionVoiceRoute,
     SelectionVoiceSnapshot,
 };
-use crate::edit_plan::{apply_edit_plan, parse_edit_plan, EditOperation, EditPlan};
+use crate::edit_plan::{apply_edit_plan, parse_edit_plan_with_priority, EditOperation, EditPlan};
 use crate::errors::{BackendError, BackendErrorCode};
 use crate::events::{BackendEventKind, BackendEventPublisher};
 use crate::ports::{TextPolisher, TextStreamChunk, TextStreamSink};
@@ -27,6 +28,8 @@ use crate::selection_voice_intent::{
     SelectionVoiceIntent,
 };
 use crate::shared_types::SelectionPolishOutputMode;
+use crate::style_pack_store::StylePackStore;
+use crate::style_packs::{style_pack_prompt, StylePromptKind};
 use crate::types::{
     DictationSession, HistoryChange, HistoryInsertStatus, HistorySource, PolishMode, SessionId,
     VocabularyChange,
@@ -132,12 +135,15 @@ pub(crate) struct SelectionVoiceService {
     voice_sessions: Arc<crate::voice_session::VoiceSessionGate>,
     qa: Arc<RwLock<Option<Weak<dyn QaApi>>>>,
     auto_press_at: Arc<RwLock<Option<std::time::Instant>>>,
+    runtime_work: Arc<crate::voice_session::RuntimeActivityGate>,
+    applying_work: Arc<Mutex<HashMap<SessionId, crate::voice_session::RuntimeActivityHold>>>,
 }
 
 struct SelectionVoiceWorkflow {
     preferences: Arc<PreferencesStore>,
     correction_rules: Arc<CorrectionRuleStore>,
     credential_store: Arc<dyn CredentialStore>,
+    style_packs: Arc<StylePackStore>,
     polisher: Option<Arc<dyn TextPolisher>>,
 }
 
@@ -166,6 +172,7 @@ impl SelectionVoiceService {
         correction_rules: Arc<CorrectionRuleStore>,
         activity: Arc<ActivityStore>,
         credential_store: Arc<dyn CredentialStore>,
+        style_packs: Arc<StylePackStore>,
         polisher: Option<Arc<dyn TextPolisher>>,
         voice_sessions: Arc<crate::voice_session::VoiceSessionGate>,
     ) -> Self {
@@ -187,11 +194,35 @@ impl SelectionVoiceService {
                 preferences,
                 correction_rules,
                 credential_store,
+                style_packs,
                 polisher,
             }),
             voice_sessions,
             qa: Arc::new(RwLock::new(None)),
             auto_press_at: Arc::new(RwLock::new(None)),
+            runtime_work: Arc::new(crate::voice_session::RuntimeActivityGate::default()),
+            applying_work: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn begin_runtime_work(
+        &self,
+    ) -> Result<crate::voice_session::RuntimeActivityHold, BackendError> {
+        let state = self
+            .state
+            .write()
+            .expect("selection voice state lock poisoned");
+        if matches!(
+            state.phase,
+            SelectionVoicePhase::Recording
+                | SelectionVoicePhase::Processing
+                | SelectionVoicePhase::AwaitingIntent
+                | SelectionVoicePhase::Preview
+                | SelectionVoicePhase::Applying
+        ) {
+            Ok(self.runtime_work.existing_work())
+        } else {
+            self.runtime_work.acquire()
         }
     }
 
@@ -214,6 +245,7 @@ impl SelectionVoiceService {
         capture: SelectionCapture,
         phase: SelectionVoicePhase,
     ) -> Result<SessionId, BackendError> {
+        let _runtime = self.begin_runtime_work()?;
         if capture.text.trim().is_empty() {
             return Err(BackendError::new(
                 BackendErrorCode::InvalidArgument,
@@ -285,6 +317,7 @@ impl SelectionVoiceWorkflow {
         input: String,
         system_prompt: String,
         translation_target: Option<&str>,
+        edit_plan_input: bool,
     ) -> Result<String, BackendError> {
         let polisher = self.polisher.as_ref().ok_or_else(|| {
             BackendError::new(
@@ -328,6 +361,7 @@ impl SelectionVoiceWorkflow {
             system_prompt
         };
         context.polish.translation_active = translation_only;
+        context.polish.edit_plan_input = edit_plan_input;
         context.polish.translation_target_language = translation_target.unwrap_or_default().into();
         context.polish.hotwords.clear();
         context.polish.cursor_context = None;
@@ -363,6 +397,7 @@ impl SelectionVoiceWorkflow {
             instruction,
             crate::prompts::selection_voice_instruction_polish_prompt(),
             None,
+            false,
         )
         .await
     }
@@ -383,6 +418,7 @@ impl SelectionVoiceWorkflow {
                 instruction.to_string(),
                 crate::prompts::selection_voice_intent_classification_prompt(),
                 None,
+                false,
             )
             .await
         {
@@ -418,16 +454,22 @@ impl SelectionVoiceWorkflow {
         let input = format!(
             "<field_context></field_context>\n<draft>\n{safe_draft}\n</draft>\n\n<instruction>\n{safe_instruction}\n</instruction>"
         );
+        let pack_prompt = self
+            .style_packs
+            .get_or_default_active(&preferences.selection_polish_style_pack_id)
+            .ok()
+            .map(|pack| style_pack_prompt(&pack, StylePromptKind::VoiceEdit))
+            .unwrap_or_default();
+        let format = preferences.selection_voice_edit_plan_format;
+        let system_prompt = crate::prompts::resolve_voice_edit_system_prompt(
+            &preferences.selection_voice_edit_system_prompt,
+            &pack_prompt,
+            format,
+        );
         let raw = self
-            .model_text(
-                session_id,
-                &preferences,
-                input,
-                crate::prompts::voice_edit_system_prompt(),
-                None,
-            )
+            .model_text(session_id, &preferences, input, system_prompt, None, true)
             .await?;
-        match parse_edit_plan(&raw) {
+        match parse_edit_plan_with_priority(&raw, format) {
             Ok(plan) => Ok(plan),
             Err(error) => {
                 log::warn!(
@@ -443,7 +485,12 @@ impl SelectionVoiceWorkflow {
                             .await;
                     }
                 }
-                Err(BackendError::new(BackendErrorCode::Provider, error))
+                Err(BackendError::new(
+                    BackendErrorCode::Provider,
+                    format!(
+                        "invalid EditPlan: {error}\n\n---model_output---\n{raw}\n---end_model_output---"
+                    ),
+                ))
             }
         }
     }
@@ -462,6 +509,7 @@ impl SelectionVoiceWorkflow {
                 draft.to_string(),
                 crate::prompts::translate_system_prompt(target_language),
                 Some(target_language),
+                false,
             )
             .await?;
         let translated = clean_selection_voice_translation_output(&translated_raw);
@@ -597,6 +645,26 @@ impl SelectionVoicePersistence {
 }
 
 impl SelectionVoiceApi for SelectionVoiceService {
+    fn bind_runtime_restore_guard(
+        &self,
+        guard: crate::domains::RuntimeRestoreGuard,
+        spawner: Arc<dyn crate::config::TaskSpawner>,
+    ) -> Result<(), BackendError> {
+        self.runtime_work.bind(guard, spawner)
+    }
+
+    fn runtime_restore_idle(&self) -> bool {
+        self.state.read().is_ok_and(|state| {
+            matches!(
+                state.phase,
+                SelectionVoicePhase::Idle
+                    | SelectionVoicePhase::Completed
+                    | SelectionVoicePhase::Cancelled
+                    | SelectionVoicePhase::Failed
+            ) && self.runtime_work.runtime_restore_idle()
+        })
+    }
+
     fn bind_qa(&self, qa: Weak<dyn QaApi>) {
         *self
             .qa
@@ -782,6 +850,7 @@ impl SelectionVoiceApi for SelectionVoiceService {
     ) -> BoxFuture<'static, Result<SelectionVoiceDisposition, BackendError>> {
         let service = self.clone();
         Box::pin(async move {
+            let _runtime = service.begin_runtime_work()?;
             {
                 let state = service
                     .state
@@ -927,6 +996,7 @@ impl SelectionVoiceApi for SelectionVoiceService {
     ) -> BoxFuture<'static, Result<SelectionVoiceRoute, BackendError>> {
         let service = self.clone();
         Box::pin(async move {
+            let _runtime = service.begin_runtime_work()?;
             let session_id = match &disposition {
                 SelectionVoiceDisposition::AwaitingIntent { prompt } => prompt.session_id,
                 SelectionVoiceDisposition::Question { session_id, .. }
@@ -985,6 +1055,7 @@ impl SelectionVoiceApi for SelectionVoiceService {
     ) -> BoxFuture<'static, Result<SelectionVoiceEditAction, BackendError>> {
         let service = self.clone();
         Box::pin(async move {
+            let _runtime = service.begin_runtime_work()?;
             let (selection, instruction) = {
                 let state = service
                     .state
@@ -1046,6 +1117,7 @@ impl SelectionVoiceApi for SelectionVoiceService {
     ) -> BoxFuture<'static, Result<SelectionVoiceEditPreviewResult, BackendError>> {
         let service = self.clone();
         Box::pin(async move {
+            let _runtime = service.begin_runtime_work()?;
             let instruction = request.instruction.trim().to_string();
             if instruction.is_empty() {
                 return Err(BackendError::new(
@@ -1258,6 +1330,7 @@ impl SelectionVoiceApi for SelectionVoiceService {
         owner_session_id: Option<SessionId>,
         text: String,
     ) -> Result<SelectionVoiceApplyTicket, BackendError> {
+        let _runtime = self.begin_runtime_work()?;
         let replacement_text = self.persistence.corrected_text(text.trim().to_string());
         if replacement_text.is_empty() {
             return Err(BackendError::new(
@@ -1293,6 +1366,13 @@ impl SelectionVoiceApi for SelectionVoiceService {
             summary,
             source_app: selection.source_app.clone(),
         };
+        // The native apply can outlive logical cancellation. Its ticket owns
+        // this lease until the Host reports completion, even if cancel clears
+        // the visible preview and the old ticket becomes stale.
+        self.applying_work
+            .lock()
+            .expect("selection voice apply work lock poisoned")
+            .insert(ticket.ticket_id, _runtime);
         state.applying_ticket = Some(ticket.clone());
         state.apply_outcome = None;
         state.phase = SelectionVoicePhase::Applying;
@@ -1314,8 +1394,15 @@ impl SelectionVoiceApi for SelectionVoiceService {
         let events = self.events.clone();
         let persistence = Arc::clone(&self.persistence);
         let voice_sessions = Arc::clone(&self.voice_sessions);
+        let runtime_work = Arc::clone(&self.runtime_work);
+        let applying_work = Arc::clone(&self.applying_work);
         Box::pin(async move {
+            let _apply = applying_work
+                .lock()
+                .expect("selection voice apply work lock poisoned")
+                .remove(&ticket_id);
             let mut state = state.write().expect("selection voice state lock poisoned");
+            let _runtime = runtime_work.existing_work();
             let ticket = state
                 .applying_ticket
                 .as_ref()
@@ -1393,7 +1480,7 @@ impl SelectionVoiceApi for SelectionVoiceService {
         let events = self.events.clone();
         let polisher = self.workflow.polisher.clone();
         let voice_sessions = Arc::clone(&self.voice_sessions);
-        Box::pin(async move {
+        self.runtime_work.cleanup(Box::pin(async move {
             let (active_session, snapshot, control) = {
                 let mut state = state.write().expect("selection voice state lock poisoned");
                 let Some(active_session) = state.session_id else {
@@ -1430,7 +1517,7 @@ impl SelectionVoiceApi for SelectionVoiceService {
                 }
             }
             host_result
-        })
+        }))
     }
 }
 

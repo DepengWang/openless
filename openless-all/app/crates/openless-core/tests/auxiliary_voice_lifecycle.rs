@@ -135,6 +135,23 @@ struct SlowAsr {
     inner: testing::FixtureTranscriptionEngine,
 }
 
+struct CountingAsr {
+    starts: Arc<AtomicUsize>,
+    inner: testing::FixtureTranscriptionEngine,
+}
+
+impl TranscriptionEngine for CountingAsr {
+    fn start(
+        &self,
+        id: SessionId,
+        context: Arc<DictationContext>,
+        sink: Arc<dyn TextStreamSink>,
+    ) -> BoxFuture<'static, Result<Arc<dyn TranscriptionSession>, BackendError>> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+        self.inner.start(id, context, sink)
+    }
+}
+
 // Model only the native archive boundary: once an archive was requested, a
 // filesystem sharing violation would make its final deletion fail. PCM remains
 // available in memory and must not depend on this optional disk side effect.
@@ -439,6 +456,105 @@ async fn qa_and_selection_voice_never_request_disk_archives() {
 }
 
 #[tokio::test]
+async fn stable_mode_is_shared_by_dictation_qa_selection_and_less_computer() {
+    for entry in ["dictation", "qa", "selection", "less"] {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let (backend, path) = backend(
+            Arc::new(testing::FixtureAudioRecorder::new(
+                vec![vec![0; 320]],
+                Vec::new(),
+            )),
+            Arc::new(CountingAsr {
+                starts: Arc::clone(&starts),
+                inner: testing::FixtureTranscriptionEngine::successful("instruction", 10),
+            }),
+            Arc::new(QaRuntime::default()),
+        );
+        let mut preferences = backend.get_preferences();
+        preferences.stable_transcription_enabled = true;
+        backend
+            .update_settings(
+                preferences,
+                SettingsUpdateOptions::STRICT,
+                &NoopSettingsRuntime,
+            )
+            .unwrap();
+        backend.start().await.unwrap();
+
+        match entry {
+            "dictation" => {
+                backend
+                    .start_dictation_with_options(DictationStartOptions {
+                        insert_text: false,
+                        ..DictationStartOptions::default()
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(starts.load(Ordering::SeqCst), 0, "{entry}");
+                backend.stop_dictation().await.unwrap();
+            }
+            "qa" => {
+                backend.services().qa.toggle_recording().await.unwrap();
+                let id = backend
+                    .services()
+                    .qa
+                    .snapshot()
+                    .await
+                    .unwrap()
+                    .session_id
+                    .unwrap();
+                let capture = backend
+                    .start_qa_voice_capture(
+                        id,
+                        DictationStartOptions::default(),
+                        Arc::new(Progress),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(starts.load(Ordering::SeqCst), 0, "{entry}");
+                capture.finish().await.unwrap();
+                backend.services().qa.dismiss().await.unwrap();
+            }
+            "selection" => {
+                let id = backend
+                    .services()
+                    .selection_voice
+                    .begin(SelectionCapture {
+                        text: "selection".into(),
+                        source_app: None,
+                    })
+                    .await
+                    .unwrap();
+                let capture = backend
+                    .start_selection_voice_capture(id, Arc::new(Control))
+                    .await
+                    .unwrap();
+                assert_eq!(starts.load(Ordering::SeqCst), 0, "{entry}");
+                capture.finish().await.unwrap();
+                backend
+                    .services()
+                    .selection_voice
+                    .cancel(Some(id))
+                    .await
+                    .unwrap();
+            }
+            "less" => {
+                let capture = backend
+                    .start_less_computer_voice(SessionId::new(), Arc::new(Control))
+                    .await
+                    .unwrap();
+                assert_eq!(starts.load(Ordering::SeqCst), 0, "{entry}");
+                let _ = capture.finish().await;
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(starts.load(Ordering::SeqCst), 1, "{entry}");
+        drop(backend);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[tokio::test]
 async fn cli_cancel_covers_less_capture_without_expanding_to_qa() {
     let recorder = Arc::new(testing::FixtureAudioRecorder::default());
     let (backend, path) = backend(
@@ -552,7 +668,7 @@ async fn cancelled_auxiliary_capture_keeps_gate_until_native_stop_finishes() {
 }
 
 #[tokio::test]
-async fn cancellation_during_cold_asr_never_starts_the_microphone() {
+async fn cancellation_during_cold_asr_stops_the_already_started_microphone() {
     for less in [true, false] {
         let starts = Arc::new(AtomicUsize::new(0));
         let entered = Arc::new(Semaphore::new(0));
@@ -614,24 +730,32 @@ async fn cancellation_during_cold_asr_never_starts_the_microphone() {
         }
         gate.add_permits(1);
         assert!(starting.await.unwrap().is_err());
-        assert_eq!(starts.load(Ordering::SeqCst), 0);
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
         if less {
-            let phases = std::iter::from_fn(|| events.try_recv().ok())
+            let mut snapshots = std::iter::from_fn(|| events.try_recv().ok())
                 .filter_map(|event| match event.kind {
                     BackendEventKind::LessComputerEvent(LessComputerEvent {
-                        kind: LessComputerEventKind::VoiceState { phase, .. },
+                        kind:
+                            LessComputerEventKind::VoiceState {
+                                phase, transcript, ..
+                            },
                         ..
-                    }) => Some(phase),
+                    }) => Some((phase, transcript)),
                     _ => None,
                 })
                 .collect::<Vec<_>>();
+            let terminal = snapshots.pop().unwrap();
             assert_eq!(
-                phases,
-                [
-                    LessComputerVoicePhase::Starting,
-                    LessComputerVoicePhase::Idle
-                ]
+                terminal,
+                (LessComputerVoicePhase::Idle, String::new()),
+                "a cancelled cold start must not leave live transcript text behind"
             );
+            // The ASR fixture streams a live partial while starting; it is
+            // mirrored into the same Starting phase, never a later phase.
+            assert!(!snapshots.is_empty());
+            assert!(snapshots
+                .iter()
+                .all(|(phase, _)| *phase == LessComputerVoicePhase::Starting));
         }
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -1042,26 +1166,30 @@ async fn less_voice_feedback_preserves_phases_and_rejects_late_levels() {
                         session_id,
                         phase,
                         level,
+                        transcript,
                         ..
                     },
                 ..
             }) = event.kind
             {
                 assert_eq!(session_id, id);
-                Some((phase, level))
+                Some((phase, level, transcript))
             } else {
                 None
             }
         })
         .collect::<Vec<_>>();
+    let live = || "instruction".to_string();
     assert_eq!(
         phases,
         vec![
-            (LessComputerVoicePhase::Starting, 0.0),
-            (LessComputerVoicePhase::Recording, 0.0),
-            (LessComputerVoicePhase::Recording, 0.7),
-            (LessComputerVoicePhase::Transcribing, 0.0),
-            (LessComputerVoicePhase::Idle, 0.0)
+            (LessComputerVoicePhase::Starting, 0.0, String::new()),
+            // The fixture ASR streams its text as a live partial at start.
+            (LessComputerVoicePhase::Starting, 0.0, live()),
+            (LessComputerVoicePhase::Recording, 0.0, live()),
+            (LessComputerVoicePhase::Recording, 0.7, live()),
+            (LessComputerVoicePhase::Transcribing, 0.0, live()),
+            (LessComputerVoicePhase::Idle, 0.0, live())
         ]
     );
     std::fs::remove_dir_all(path).unwrap();

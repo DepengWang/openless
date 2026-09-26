@@ -2,7 +2,14 @@ import type { OS } from '../../components/WindowChrome';
 import type { PlatformKind } from '../../lib/types';
 
 export type SettingsSectionId =
-  'general' | 'shortcuts' | 'appearance' | 'services' | 'privacy' | 'advanced' | 'about';
+  | 'general'
+  | 'inputMethod'
+  | 'shortcuts'
+  | 'appearance'
+  | 'services'
+  | 'privacy'
+  | 'advanced'
+  | 'about';
 
 export const ADVANCED_PAGES = [
   { id: 'lessComputer', icon: 'mac', titleKey: 'settings.codingAgent.title' },
@@ -30,6 +37,7 @@ export interface SettingsNavigationItem {
 
 export const SETTINGS_SECTIONS: SettingsNavigationItem[] = [
   { id: 'general', icon: 'mic' },
+  { id: 'inputMethod', icon: 'keyboard' },
   { id: 'shortcuts', icon: 'bolt' },
   { id: 'services', icon: 'cloud' },
   { id: 'appearance', icon: 'settings' },
@@ -38,8 +46,15 @@ export const SETTINGS_SECTIONS: SettingsNavigationItem[] = [
   { id: 'about', icon: 'info' },
 ];
 
-export function visibleSettingsSections(supportsDesktopHotkey: boolean): SettingsNavigationItem[] {
-  return SETTINGS_SECTIONS.filter((item) => item.id !== 'shortcuts' || supportsDesktopHotkey);
+export function visibleSettingsSections(
+  supportsDesktopHotkey: boolean,
+  platform?: PlatformKind,
+): SettingsNavigationItem[] {
+  return SETTINGS_SECTIONS.filter((item) => {
+    if (item.id === 'shortcuts') return supportsDesktopHotkey;
+    if (item.id === 'inputMethod') return platform === 'android';
+    return true;
+  });
 }
 
 export interface SearchableSettingsSection extends SettingsNavigationItem {
@@ -62,10 +77,20 @@ export function searchSettingsSections<T extends SearchableSettingsSection>(
 
 export type ServiceViewId = 'llm' | 'asr' | 'omni' | 'models' | 'connections';
 
-export function availableServiceViews(multimodal: boolean, localModels: boolean): ServiceViewId[] {
+/**
+ * 多模态总开关（multimodalPipelineEnabled）打开即展示 omni 视图——
+ * 管线模式（传统 / 多模态）的切换器就在该视图里，否则开关打开后没有任何入口
+ * 进入多模态配置。只有真正切到多模态模式后才隐藏传统 llm/asr 页。
+ */
+export function availableServiceViews(
+  multimodalPipelineEnabled: boolean,
+  multimodalMode: boolean,
+  localModels: boolean,
+): ServiceViewId[] {
   return [
-    ...(multimodal ? ['omni' as const] : ['llm' as const, 'asr' as const]),
-    ...(localModels ? ['models' as const] : []),
+    ...(multimodalPipelineEnabled ? (['omni'] as const) : []),
+    ...(!multimodalMode ? (['llm', 'asr'] as const) : []),
+    ...(localModels ? (['models'] as const) : []),
     'connections',
   ];
 }

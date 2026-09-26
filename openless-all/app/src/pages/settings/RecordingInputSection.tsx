@@ -448,6 +448,43 @@ export function RecordingInputSection() {
             </div>
           </SettingRow>
         )}
+        {os !== 'linux' && !isAndroid && (
+          <>
+            <SettingRow
+              label={t('settings.recording.capsuleTranscriptLabel')}
+              desc={t('settings.recording.capsuleTranscriptDesc')}
+            >
+              <Toggle
+                on={prefs.capsuleTranscriptEnabled ?? true}
+                onToggle={(next) => savePrefs({ ...prefs, capsuleTranscriptEnabled: next })}
+              />
+            </SettingRow>
+            {(prefs.capsuleTranscriptEnabled ?? true) && (
+              <SettingRow label={t('settings.recording.capsuleTranscriptFontSize')}>
+                <SelectLite
+                  value={String(prefs.capsuleTranscriptFontSize ?? 14)}
+                  onChange={(next) =>
+                    savePrefs({ ...prefs, capsuleTranscriptFontSize: Number(next) })
+                  }
+                  options={[12, 14, 16, 18, 20].map((size) => ({
+                    value: String(size),
+                    label: `${size}px`,
+                  }))}
+                  ariaLabel={t('settings.recording.capsuleTranscriptFontSize')}
+                />
+              </SettingRow>
+            )}
+          </>
+        )}
+        <SettingRow
+          label={t('settings.recording.stableTranscriptionLabel')}
+          desc={t('settings.recording.stableTranscriptionDesc')}
+        >
+          <Toggle
+            on={prefs.stableTranscriptionEnabled}
+            onToggle={(next) => savePrefs({ ...prefs, stableTranscriptionEnabled: next })}
+          />
+        </SettingRow>
         <SettingRow
           label={t('settings.recording.muteDuringRecordingLabel')}
           desc={t('settings.recording.muteDuringRecordingDesc')}
@@ -641,7 +678,7 @@ export function RecordingInputSection() {
       )}
       {/* ─── 启动（折叠） ──────────────────────────────────────────── */}
       {showDesktopStartup && (
-        <Collapsible title={t('settings.recording.startupGroupTitle')}>
+        <Collapsible title={t('settings.recording.startupGroupTitle')} defaultOpen>
           <AutostartRow />
           <SettingRow label={t('settings.recording.startMinimizedLabel')}>
             <Toggle on={prefs.startMinimized} onToggle={onStartMinimizedChange} />
@@ -701,7 +738,10 @@ function AutostartRow() {
   };
 
   return (
-    <SettingRow label={t('settings.recording.startupAtBoot')}>
+    <SettingRow
+      label={t('settings.recording.startupAtBoot')}
+      desc={t('settings.recording.startupAtBootDesc')}
+    >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         {loaded ? <Toggle on={enabled} onToggle={onToggle} /> : null}
         {error && (

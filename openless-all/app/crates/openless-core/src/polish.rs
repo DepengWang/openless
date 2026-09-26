@@ -170,6 +170,13 @@ pub fn openai_compatible_temperature_for_provider(
     }
 }
 
+/// Preserve the configured f32's shortest decimal representation on the wire.
+/// Widening directly into a JSON Value sends 0.30000001192092896 for 0.3;
+/// non-finite values retain serde_json's null representation.
+pub(crate) fn temperature_json(temperature: f32) -> Value {
+    serde_json::from_str::<f64>(&temperature.to_string()).map_or(Value::Null, |value| json!(value))
+}
+
 fn is_builtin_llm_provider(provider_id: &str) -> bool {
     matches!(
         provider_id,
@@ -183,6 +190,7 @@ fn is_builtin_llm_provider(provider_id: &str) -> bool {
             | "mimo"
             | "cometapi"
             | "openrouterFree"
+            | "requesty"
             | "orcarouter"
             | "alibabaCoding"
             | "codingPlanX"
@@ -266,6 +274,7 @@ impl ActiveLLMProvider {
         front_app: Option<&str>,
         cursor_context: Option<&str>,
         prior_turns: &[(String, String)],
+        edit_plan_input: bool,
         on_delta: F,
         should_cancel: C,
     ) -> Result<String, LLMError>
@@ -287,6 +296,7 @@ impl ActiveLLMProvider {
                         front_app,
                         cursor_context,
                         prior_turns,
+                        edit_plan_input,
                         on_delta,
                         should_cancel,
                     )
@@ -305,6 +315,7 @@ impl ActiveLLMProvider {
                         front_app,
                         cursor_context,
                         prior_turns,
+                        edit_plan_input,
                         on_delta,
                         should_cancel,
                     )
@@ -325,6 +336,7 @@ impl ActiveLLMProvider {
         front_app: Option<&str>,
         cursor_context: Option<&str>,
         prior_turns: &[(String, String)],
+        edit_plan_input: bool,
     ) -> Result<String, LLMError> {
         match self {
             Self::OpenAI(provider) => {
@@ -340,6 +352,7 @@ impl ActiveLLMProvider {
                         front_app,
                         cursor_context,
                         prior_turns,
+                        edit_plan_input,
                     )
                     .await
             }
@@ -356,6 +369,7 @@ impl ActiveLLMProvider {
                         front_app,
                         cursor_context,
                         prior_turns,
+                        edit_plan_input,
                     )
                     .await
             }
@@ -535,8 +549,9 @@ impl OpenAICompatibleLLMProvider {
         front_app: Option<&str>,
         cursor_context: Option<&str>,
         prior_turns: &[(String, String)],
+        edit_plan_input: bool,
     ) -> Result<String, LLMError> {
-        let (system_prompt, user_prompt) = compose_polish_prompts(
+        let (system_prompt, user_prompt) = crate::prompt_compose::compose_polish_prompts_for_input(
             raw_text,
             mode,
             hotwords,
@@ -547,6 +562,7 @@ impl OpenAICompatibleLLMProvider {
             front_app,
             cursor_context,
             !prior_turns.is_empty(),
+            edit_plan_input,
         );
         log::info!(
             "[style-pack] llm polish assembled provider={} model={} mode={:?} base_prompt_chars={} effective_prompt_chars={} hotwords={} front_app={} prior_turns={}",
@@ -594,6 +610,7 @@ impl OpenAICompatibleLLMProvider {
         front_app: Option<&str>,
         cursor_context: Option<&str>,
         prior_turns: &[(String, String)],
+        edit_plan_input: bool,
         on_delta: F,
         should_cancel: C,
     ) -> Result<String, LLMError>
@@ -601,7 +618,7 @@ impl OpenAICompatibleLLMProvider {
         F: Fn(&str) + Send + Sync,
         C: Fn() -> bool + Send + Sync,
     {
-        let (system_prompt, user_prompt) = compose_polish_prompts(
+        let (system_prompt, user_prompt) = crate::prompt_compose::compose_polish_prompts_for_input(
             raw_text,
             mode,
             hotwords,
@@ -612,6 +629,7 @@ impl OpenAICompatibleLLMProvider {
             front_app,
             cursor_context,
             !prior_turns.is_empty(),
+            edit_plan_input,
         );
         let messages = build_polish_history_messages(&system_prompt, prior_turns, &user_prompt);
         log::info!(
@@ -786,7 +804,7 @@ impl OpenAICompatibleLLMProvider {
             if !(self.config.provider_id.trim() == "openai"
                 && openai_model_is_gpt5_family(&self.config.model))
             {
-                body["temperature"] = json!(temperature);
+                body["temperature"] = temperature_json(temperature);
             }
         }
         apply_openai_compatible_thinking_control(
@@ -1164,6 +1182,7 @@ impl CodexOAuthLLMProvider {
         front_app: Option<&str>,
         cursor_context: Option<&str>,
         prior_turns: &[(String, String)],
+        edit_plan_input: bool,
     ) -> Result<String, LLMError> {
         self.polish_streaming(
             raw_text,
@@ -1176,6 +1195,7 @@ impl CodexOAuthLLMProvider {
             front_app,
             cursor_context,
             prior_turns,
+            edit_plan_input,
             |_| {},
             || false,
         )
@@ -1249,6 +1269,7 @@ impl CodexOAuthLLMProvider {
         front_app: Option<&str>,
         cursor_context: Option<&str>,
         prior_turns: &[(String, String)],
+        edit_plan_input: bool,
         on_delta: F,
         should_cancel: C,
     ) -> Result<String, LLMError>
@@ -1256,7 +1277,7 @@ impl CodexOAuthLLMProvider {
         F: Fn(&str) + Send + Sync,
         C: Fn() -> bool + Send + Sync,
     {
-        let (system_prompt, user_prompt) = compose_polish_prompts(
+        let (system_prompt, user_prompt) = crate::prompt_compose::compose_polish_prompts_for_input(
             raw_text,
             mode,
             hotwords,
@@ -1267,6 +1288,7 @@ impl CodexOAuthLLMProvider {
             front_app,
             cursor_context,
             !prior_turns.is_empty(),
+            edit_plan_input,
         );
         self.codex_responses(
             build_polish_history_messages(&system_prompt, prior_turns, &user_prompt),
@@ -1429,7 +1451,13 @@ pub(crate) fn append_utf8_sse_chunk(
     chunk: &[u8],
 ) -> Result<(), LLMError> {
     pending.extend_from_slice(chunk);
-    drain_complete_utf8(buffer, pending)
+    drain_complete_utf8(buffer, pending)?;
+    // Normalize only after reassembling UTF-8, including CR/LF split across chunks.
+    // Omni, Codex and TextEventStream share this framing boundary.
+    if buffer.contains("\r\n") {
+        *buffer = buffer.replace("\r\n", "\n");
+    }
+    Ok(())
 }
 
 pub(crate) fn finish_utf8_sse_chunks(
@@ -1862,6 +1890,14 @@ pub(crate) fn apply_openai_compatible_thinking_control(
                 "type": if thinking_enabled { "adaptive" } else { "disabled" },
             });
         }
+        // 仅显式选择 LM Studio 预设时下发，不根据地址或端口推断本地服务。
+        Some(ThinkingControl::LmStudioThinking) => {
+            body["chat_template_kwargs"] = json!({ "enable_thinking": thinking_enabled });
+            if !thinking_enabled {
+                body["reasoning_effort"] = json!("none");
+                body["reasoning"] = json!({ "type": "disabled" });
+            }
+        }
         None => {}
     }
 }
@@ -1898,10 +1934,12 @@ pub(crate) enum ThinkingControl {
     OpenRouterReasoning,
     DeepSeekThinking,
     MiniMaxThinking,
+    LmStudioThinking,
 }
 
 pub(crate) fn openai_compatible_thinking_control(provider_id: &str) -> Option<ThinkingControl> {
     match provider_id.trim() {
+        "lmstudio" => Some(ThinkingControl::LmStudioThinking),
         "deepseek" => Some(ThinkingControl::DeepSeekThinking),
         // provider_id 预设(见 ProvidersSection.tsx::LLM_PRESETS)。
         "minimax" => Some(ThinkingControl::MiniMaxThinking),
@@ -2139,6 +2177,96 @@ mod tests {
     }
 
     #[test]
+    fn utf8_sse_decoder_emits_each_crlf_or_lf_frame_before_the_next_one() {
+        let frames = [
+            "data: {\"delta\":\"你好🙂\"}\r\n\r\n",
+            "data: {\"delta\":\"second\"}\n\n",
+            "data: [DONE]\r\n\r\n",
+        ];
+        let mut buffer = String::new();
+        let mut pending = Vec::new();
+        let mut emitted = Vec::new();
+        for (index, frame) in frames.iter().enumerate() {
+            // One byte per HTTP chunk splits both CRLF pairs and UTF-8 codepoints.
+            for byte in frame.as_bytes() {
+                append_utf8_sse_chunk(&mut buffer, &mut pending, &[*byte]).unwrap();
+                while let Some(end) = buffer.find("\n\n") {
+                    emitted.push(buffer[..end].to_string());
+                    buffer.drain(..end + 2);
+                }
+            }
+            assert_eq!(
+                emitted.len(),
+                index + 1,
+                "must emit before another frame or EOF"
+            );
+        }
+        finish_utf8_sse_chunks(&mut buffer, &mut pending).unwrap();
+        assert_eq!(
+            emitted,
+            [
+                "data: {\"delta\":\"你好🙂\"}",
+                "data: {\"delta\":\"second\"}",
+                "data: [DONE]"
+            ]
+        );
+        assert!(buffer.is_empty());
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn utf8_sse_decoder_normalizes_crlf_at_every_network_split() {
+        let frame = "data: {\"delta\":\"你好🙂\"}\r\n\r\n";
+        for split in 0..=frame.len() {
+            let mut buffer = String::new();
+            let mut pending = Vec::new();
+            append_utf8_sse_chunk(&mut buffer, &mut pending, &frame.as_bytes()[..split]).unwrap();
+            append_utf8_sse_chunk(&mut buffer, &mut pending, &frame.as_bytes()[split..]).unwrap();
+            assert_eq!(buffer, "data: {\"delta\":\"你好🙂\"}\n\n", "split={split}");
+            assert!(pending.is_empty());
+        }
+    }
+
+    #[test]
+    fn codex_crlf_deltas_and_completion_do_not_wait_for_eof() {
+        for terminal in ["response.done", "response.completed"] {
+            let frames = [
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你🙂\"}\r\n\r\n".to_string(),
+                "data: {\"type\":\"response.text.delta\",\"text\":\"好\"}\n\n".to_string(),
+                format!("data: {{\"type\":\"{terminal}\",\"response\":{{\"output_text\":\"最终文本\"}}}}\r\n\r\n"),
+                "data: [DONE]\r\n\r\n".to_string(),
+            ];
+            let mut buffer = String::new();
+            let mut pending = Vec::new();
+            let mut full_text = String::new();
+            let mut final_text = String::new();
+            let callbacks = StdMutex::new(Vec::new());
+            for (index, frame) in frames.iter().enumerate() {
+                for byte in frame.as_bytes() {
+                    append_utf8_sse_chunk(&mut buffer, &mut pending, &[*byte]).unwrap();
+                    while let Some(end) = buffer.find("\n\n") {
+                        let event = buffer[..end].to_string();
+                        buffer.drain(..end + 2);
+                        handle_codex_sse_event(&event, &mut full_text, &mut final_text, &|text| {
+                            callbacks.lock().unwrap().push(text.to_string());
+                        });
+                    }
+                }
+                assert_eq!(full_text, if index == 0 { "你🙂" } else { "你🙂好" });
+                assert_eq!(
+                    callbacks.lock().unwrap().len(),
+                    if index == 0 { 1 } else { 2 }
+                );
+                if index >= 2 {
+                    assert_eq!(final_text, "最终文本", "retain Codex completion fallback");
+                }
+            }
+            finish_utf8_sse_chunks(&mut buffer, &mut pending).unwrap();
+            assert!(buffer.is_empty());
+        }
+    }
+
+    #[test]
     fn utf8_sse_decoder_preserves_multibyte_split_across_chunks() {
         let mut buffer = String::new();
         let mut pending = Vec::new();
@@ -2212,6 +2340,7 @@ mod tests {
                 None,
                 None,
                 &[],
+                false,
                 |delta| deltas.lock().unwrap().push_str(delta),
                 || false,
             )
@@ -2324,14 +2453,28 @@ mod tests {
 
     #[tokio::test]
     async fn all_text_entrypoints_use_the_selected_protocol_over_http() {
-        for (format, (preset, prefix)) in LlmRequestFormat::ALL.into_iter().flat_map(|format| {
-            [
-                ("custom", "/gateway/v1"),
-                ("opencode", "/zen/v1"),
-                ("opencode", "/zen/go/v1"),
-            ]
-            .map(|entry| (format, entry))
-        }) {
+        for (format, preset, prefix, thinking_enabled, api_key) in LlmRequestFormat::ALL
+            .into_iter()
+            .flat_map(|format| {
+                [
+                    ("custom", "/gateway/v1"),
+                    ("opencode", "/zen/v1"),
+                    ("opencode", "/zen/go/v1"),
+                ]
+                .map(|(preset, prefix)| (format, preset, prefix, false, "fixture-key"))
+            })
+            .chain([false, true].into_iter().flat_map(|enabled| {
+                ["", "fixture-key"].map(|key| {
+                    (
+                        LlmRequestFormat::ChatCompletions,
+                        "lmstudio",
+                        "/gateway/v1",
+                        enabled,
+                        key,
+                    )
+                })
+            }))
+        {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap();
             let server = thread::spawn(move || {
@@ -2341,6 +2484,11 @@ mod tests {
                     let split = request.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
                     let headers = String::from_utf8_lossy(&request[..split]).to_ascii_lowercase();
                     let body: Value = serde_json::from_slice(&request[split + 4..]).unwrap();
+                    if format == LlmRequestFormat::Responses {
+                        assert!(body.get("temperature").is_none());
+                    } else {
+                        assert_eq!(body["temperature"].to_string(), "0.7");
+                    }
                     let path = match format {
                         LlmRequestFormat::ChatCompletions => "chat/completions",
                         LlmRequestFormat::Responses => "responses",
@@ -2353,7 +2501,26 @@ mod tests {
                         assert!(!headers.contains("authorization:"));
                         assert!(body["system"].as_str().is_some_and(|text| !text.is_empty()));
                     } else {
-                        assert!(headers.contains("authorization: bearer fixture-key"));
+                        assert_eq!(
+                            headers.contains("authorization: bearer fixture-key"),
+                            !api_key.is_empty()
+                        );
+                        if api_key.is_empty() {
+                            assert!(!headers.contains("authorization:"));
+                        }
+                    }
+                    if preset == "lmstudio" {
+                        assert_eq!(
+                            body["chat_template_kwargs"]["enable_thinking"],
+                            thinking_enabled
+                        );
+                        if thinking_enabled {
+                            assert!(body.get("reasoning_effort").is_none());
+                            assert!(body.get("reasoning").is_none());
+                        } else {
+                            assert_eq!(body["reasoning_effort"], "none");
+                            assert_eq!(body["reasoning"]["type"], "disabled");
+                        }
                     }
                     assert!(!headers.contains("chatgpt-account-id"));
                     let messages = if format == LlmRequestFormat::Responses {
@@ -2378,7 +2545,11 @@ mod tests {
                             LlmRequestFormat::Responses => json!({"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"你好"}]}]}),
                             LlmRequestFormat::Messages => json!({"stop_reason":"end_turn","content":[{"type":"text","text":"你好"}]}),
                         }.to_string();
-                        write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+                        let _ = write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                            response.len()
+                        );
                     } else {
                         assert_eq!(body["stream"], true);
                         let response = match format {
@@ -2398,9 +2569,11 @@ mod tests {
                 preset,
                 "test",
                 format!("http://{address}{prefix}/chat/completions?tenant=1"),
-                "fixture-key",
+                api_key,
                 "test",
             )
+            .with_temperature(Some(0.7))
+            .with_thinking_enabled(thinking_enabled)
             .with_protocol(LlmProtocolConfig {
                 format,
                 ..Default::default()
@@ -2419,7 +2592,8 @@ mod tests {
                             OutputLanguagePreference::Auto,
                             None,
                             None,
-                            &history
+                            &history,
+                            false,
                         )
                         .await
                         .unwrap(),
@@ -2477,6 +2651,7 @@ mod tests {
                         None,
                         None,
                         &[],
+                        false,
                         delta,
                         || false
                     )
@@ -2573,17 +2748,27 @@ mod tests {
     }
 
     fn write_chunked_sse_response(stream: &mut std::net::TcpStream, chunks: &[&[u8]]) {
-        stream
+        // Client may finish/drop before the trailing chunk; treat BrokenPipe as done.
+        if stream
             .write_all(
                 b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
             )
-            .unwrap();
-        for chunk in chunks {
-            write!(stream, "{:X}\r\n", chunk.len()).unwrap();
-            stream.write_all(chunk).unwrap();
-            stream.write_all(b"\r\n").unwrap();
+            .is_err()
+        {
+            return;
         }
-        stream.write_all(b"0\r\n\r\n").unwrap();
+        for chunk in chunks {
+            if write!(stream, "{:X}\r\n", chunk.len()).is_err() {
+                return;
+            }
+            if stream.write_all(chunk).is_err() {
+                return;
+            }
+            if stream.write_all(b"\r\n").is_err() {
+                return;
+            }
+        }
+        let _ = stream.write_all(b"0\r\n\r\n");
     }
 
     #[tokio::test]
@@ -2920,53 +3105,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn polish_request_omits_temperature_for_unconfigured_custom_provider() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let request = read_http_request(&mut stream);
-            let header_end = request
-                .windows(4)
-                .position(|window| window == b"\r\n\r\n")
-                .expect("request must contain headers");
-            let body: serde_json::Value = serde_json::from_slice(&request[header_end + 4..])
-                .expect("request body must be JSON");
-            assert!(body.get("temperature").is_none());
+    async fn polish_request_sends_default_temperature_only_for_builtin_provider() {
+        for (provider_id, expected_temperature) in [("custom", None), ("ark", Some("0.3"))] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_http_request(&mut stream);
+                let header_end = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .expect("request must contain headers");
+                let body: Value = serde_json::from_slice(&request[header_end + 4..]).unwrap();
+                let response_body = r#"{"choices":[{"message":{"content":"polished"}}]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                body
+            });
 
-            let body = r#"{"choices":[{"message":{"content":"polished"}}]}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            stream.write_all(response.as_bytes()).unwrap();
-        });
-
-        let provider = OpenAICompatibleLLMProvider::new(OpenAICompatibleConfig::new(
-            "custom",
-            "Custom",
-            format!("http://{addr}"),
-            "",
-            "test-model",
-        ));
-        let output = provider
-            .polish(
-                "raw text",
-                PolishMode::Raw,
-                &[],
+            let provider = OpenAICompatibleLLMProvider::new(OpenAICompatibleConfig::new(
+                provider_id,
+                provider_id,
+                format!("http://{addr}"),
                 "",
-                &[],
-                ChineseScriptPreference::Auto,
-                OutputLanguagePreference::Auto,
-                None,
-                None,
-                &[],
-            )
-            .await
-            .unwrap();
+                "test-model",
+            ));
+            let output = provider
+                .polish(
+                    "raw text",
+                    PolishMode::Raw,
+                    &[],
+                    "",
+                    &[],
+                    ChineseScriptPreference::Auto,
+                    OutputLanguagePreference::Auto,
+                    None,
+                    None,
+                    &[],
+                    false,
+                )
+                .await
+                .unwrap();
 
-        assert_eq!(output, "polished");
-        server.join().unwrap();
+            assert_eq!(output, "polished");
+            let request = server.join().unwrap();
+            assert_eq!(
+                request.get("temperature").map(Value::to_string).as_deref(),
+                expected_temperature,
+                "{provider_id} default temperature"
+            );
+        }
     }
 
     // ──────────────── 对话感知 polish 的 chat 消息构造 ────────────────
@@ -3158,7 +3349,7 @@ mod tests {
 
     #[test]
     fn chat_body_sends_configured_temperature() {
-        for temperature in [0.0, 0.3, 1.0] {
+        for (temperature, expected) in [(0.0, "0.0"), (0.3, "0.3"), (1.0, "1.0")] {
             let provider = OpenAICompatibleLLMProvider::new(
                 OpenAICompatibleConfig::new(
                     "custom",
@@ -3172,7 +3363,7 @@ mod tests {
 
             let body = provider.chat_body(true, vec![json!({ "role": "user", "content": "hi" })]);
 
-            assert_eq!(body["temperature"], json!(temperature));
+            assert_eq!(body["temperature"].to_string(), expected);
         }
     }
 
@@ -3188,7 +3379,7 @@ mod tests {
 
         let body = provider.chat_body(true, vec![json!({ "role": "user", "content": "hi" })]);
 
-        assert_eq!(body["temperature"], json!(DEFAULT_TEMPERATURE));
+        assert_eq!(body["temperature"].to_string(), "0.3");
     }
 
     #[test]
@@ -3230,7 +3421,7 @@ mod tests {
 
             let body = provider.chat_body(false, vec![json!({ "role": "user", "content": "hi" })]);
 
-            assert_eq!(body["temperature"], json!(DEFAULT_TEMPERATURE));
+            assert_eq!(body["temperature"].to_string(), "0.3");
         }
     }
 
@@ -3612,6 +3803,39 @@ mod tests {
     }
 
     #[test]
+    fn lmstudio_thinking_control_uses_only_the_preset() {
+        for endpoint in [
+            "http://localhost:1234/v1",
+            "http://127.0.0.1:8080/v1/",
+            "http://192.168.1.50:12345/v1",
+            "https://gateway.example/v1",
+        ] {
+            for enabled in [false, true] {
+                for preset in ["lmstudio", "custom"] {
+                    let provider = OpenAICompatibleLLMProvider::new(
+                        OpenAICompatibleConfig::new(preset, preset, endpoint, "", "model")
+                            .with_thinking_enabled(enabled),
+                    );
+                    let body =
+                        provider.chat_body(false, vec![json!({"role": "user", "content": "hi"})]);
+                    if preset == "lmstudio" {
+                        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], enabled);
+                        if !enabled {
+                            assert_eq!(body["reasoning_effort"], "none");
+                            assert_eq!(body["reasoning"]["type"], "disabled");
+                            continue;
+                        }
+                    } else {
+                        assert!(body.get("chat_template_kwargs").is_none());
+                    }
+                    assert!(body.get("reasoning_effort").is_none());
+                    assert!(body.get("reasoning").is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn openai_chat_body_omits_thinking_control_for_unknown_provider() {
         let provider = OpenAICompatibleLLMProvider::new(
             OpenAICompatibleConfig::new(
@@ -3629,6 +3853,7 @@ mod tests {
         assert!(body.get("reasoning_effort").is_none());
         assert!(body.get("enable_thinking").is_none());
         assert!(body.get("reasoning").is_none());
+        assert!(body.get("chat_template_kwargs").is_none());
     }
 
     #[test]
@@ -4248,6 +4473,7 @@ mod tests {
                 None,
                 None,
                 &[],
+                false,
                 |delta| deltas.lock().unwrap().push_str(delta),
                 || false,
             )
@@ -4311,6 +4537,7 @@ mod tests {
                 None,
                 None,
                 &[],
+                false,
             )
             .await
             .unwrap();

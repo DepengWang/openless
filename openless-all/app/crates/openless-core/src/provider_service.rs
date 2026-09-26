@@ -47,6 +47,9 @@ pub struct ProviderService {
     credentials: Arc<dyn CredentialStore>,
     task_spawner: Arc<dyn TaskSpawner>,
     transport: Arc<dyn ProviderTransport>,
+    /// Host-owned native engines (e.g. Apple Speech). Only consulted by the
+    /// [`ValidationProbe::AsrNativeSilence`] probe; cloud probes ignore it.
+    native_transcription: Option<Arc<dyn TranscriptionEngine>>,
 }
 
 impl ProviderService {
@@ -72,7 +75,20 @@ impl ProviderService {
             credentials,
             task_spawner,
             transport,
+            native_transcription: None,
         }
+    }
+
+    /// Inject the host's native transcription engine so local providers whose
+    /// descriptor probes [`ValidationProbe::AsrNativeSilence`] (Apple Speech)
+    /// validate through the real engine — exercising authorization and
+    /// recognizer availability — instead of reporting unavailable.
+    pub fn with_native_transcription(
+        mut self,
+        native_transcription: Arc<dyn TranscriptionEngine>,
+    ) -> Self {
+        self.native_transcription = Some(native_transcription);
+        self
     }
 
     async fn resolve(&self, request: ProviderRequest) -> Result<ResolvedProvider, BackendError> {
@@ -158,7 +174,21 @@ impl ProviderService {
             None => None,
         };
 
+        let bailian_protocol = if request.kind == ProviderKind::Asr {
+            let raw = self
+                .read(
+                    namespace,
+                    &provider_id,
+                    crate::credentials::ASR_ADVANCED_CONFIG_ACCOUNT,
+                )
+                .await?;
+            crate::provider_rules::BailianProtocol::from_config(&provider_type, raw.as_deref())
+                .map_err(invalid_request)?
+        } else {
+            crate::provider_rules::BailianProtocol::Auto
+        };
         Ok(ResolvedProvider {
+            bailian_protocol,
             thinking_enabled: request.thinking_enabled,
             protocol: if request.kind == ProviderKind::Llm {
                 LlmProtocolConfig::load(self.credentials.as_ref(), &provider_id, &provider_type)
@@ -211,12 +241,8 @@ impl ProviderService {
             return Err(cancelled_request());
         }
         ensure_supported_kind(&resolved)?;
-        validate_configuration(&resolved)?;
-        let probe = validation_probe_for(
-            resolved.kind,
-            &resolved.provider_type,
-            resolved.model.as_deref(),
-        );
+        validate_configuration(&resolved, true)?;
+        let probe = resolved.validation_probe()?;
         if probe == ValidationProbe::AsrNonSilent {
             return tokio::select! {
                 _ = wait_for_cancellation(cancellation) => Err(cancelled_request()),
@@ -227,10 +253,24 @@ impl ProviderService {
         let session_id = SessionId::new();
         match resolved.kind {
             ProviderKind::Asr => {
-                let engine = SharedCloudTranscriptionEngine::with_task_spawner(
-                    Arc::clone(&self.credentials),
-                    Arc::clone(&self.task_spawner),
-                );
+                // Native probes run through the host-registered engine so the
+                // check exercises the same engine dictation uses (Apple Speech
+                // authorization + recognizer availability); silence probes for
+                // cloud providers keep using the shared cloud engine.
+                let engine: Arc<dyn TranscriptionEngine> = match probe {
+                    ValidationProbe::AsrNativeSilence => {
+                        self.native_transcription.clone().ok_or_else(|| {
+                            BackendError::new(
+                                BackendErrorCode::Unsupported,
+                                "host native transcription engine is not configured",
+                            )
+                        })?
+                    }
+                    _ => Arc::new(SharedCloudTranscriptionEngine::with_task_spawner(
+                        Arc::clone(&self.credentials),
+                        Arc::clone(&self.task_spawner),
+                    )),
+                };
                 let session = tokio::select! {
                     _ = wait_for_cancellation(cancellation.clone()) => return Err(cancelled_request()),
                     result = engine.start(session_id, context, Arc::new(DiscardTextStream)) => {
@@ -303,7 +343,7 @@ impl ProviderService {
             self.validate_resolved(resolved, cancellation).await?;
             return Ok(ProviderModelsResult { models });
         }
-        validate_configuration(&resolved)?;
+        validate_configuration(&resolved, false)?;
         let models = fetch_models(&resolved, Arc::clone(&self.transport), cancellation).await?;
         Ok(ProviderModelsResult { models })
     }
@@ -359,6 +399,7 @@ impl ProviderApi for ProviderService {
 #[derive(Debug, Clone)]
 struct ResolvedProvider {
     thinking_enabled: bool,
+    bailian_protocol: crate::provider_rules::BailianProtocol,
     protocol: LlmProtocolConfig,
     kind: ProviderKind,
     provider_id: String,
@@ -370,6 +411,30 @@ struct ResolvedProvider {
 }
 
 impl ResolvedProvider {
+    fn validation_probe(&self) -> Result<ValidationProbe, BackendError> {
+        let effective_provider = if self.kind == ProviderKind::Asr {
+            self.bailian_protocol
+                .resolve_provider(
+                    &self.provider_type,
+                    self.model.as_deref().unwrap_or_default(),
+                )
+                .map_err(invalid_request)?
+        } else {
+            self.provider_type.clone()
+        };
+        Ok(
+            if self.bailian_protocol != crate::provider_rules::BailianProtocol::Auto {
+                if self.bailian_protocol.batch_protocol("").is_some() {
+                    ValidationProbe::AsrNonSilent
+                } else {
+                    validation_probe_for(self.kind, &effective_provider, None)
+                }
+            } else {
+                validation_probe_for(self.kind, &effective_provider, self.model.as_deref())
+            },
+        )
+    }
+
     fn context(&self) -> DictationContext {
         let mut context = DictationContext::default();
         context.polish.llm_thinking_enabled = self.thinking_enabled;
@@ -407,7 +472,10 @@ fn ensure_supported_kind(resolved: &ResolvedProvider) -> Result<(), BackendError
     }
 }
 
-fn validate_configuration(resolved: &ResolvedProvider) -> Result<(), BackendError> {
+fn validate_configuration(
+    resolved: &ResolvedProvider,
+    require_model: bool,
+) -> Result<(), BackendError> {
     let descriptor = provider_descriptor(resolved.kind, &resolved.provider_type)
         .ok_or_else(|| provider_error("provider descriptor is not configured"))?;
     let api_key = resolved.api_key.as_deref().unwrap_or_default();
@@ -433,7 +501,8 @@ fn validate_configuration(resolved: &ResolvedProvider) -> Result<(), BackendErro
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .or(descriptor.default_model.as_deref());
-    if model.is_none()
+    if require_model
+        && model.is_none()
         && !matches!(
             descriptor.auth_requirement,
             AuthRequirement::None
@@ -483,8 +552,8 @@ fn validate_provider_endpoint(endpoint: &str, allow_websocket: bool) -> Result<(
     let url =
         url::Url::parse(endpoint).map_err(|_| invalid_request("provider endpoint is invalid"))?;
     if url.host_str().is_none()
-        || !matches!(url.scheme(), "http" | "https")
-            && !(allow_websocket && matches!(url.scheme(), "ws" | "wss"))
+        || !(matches!(url.scheme(), "http" | "https")
+            || allow_websocket && matches!(url.scheme(), "ws" | "wss"))
     {
         return Err(invalid_request("provider endpoint is invalid"));
     }
@@ -506,8 +575,13 @@ async fn validate_dashscope_probe(resolved: &ResolvedProvider) -> Result<(), Bac
         .filter(|value| !value.trim().is_empty())
         .or_else(|| default_asr_model(&resolved.provider_type))
         .ok_or_else(|| invalid_request("ASR model is not configured"))?;
-    crate::provider_rules::validate_dashscope_multimodal_model(model).map_err(invalid_request)?;
-    let protocol = crate::provider_rules::dashscope_batch_protocol_for_model(model)
+    if resolved.bailian_protocol == crate::provider_rules::BailianProtocol::Auto {
+        crate::provider_rules::validate_dashscope_multimodal_model(model)
+            .map_err(invalid_request)?;
+    }
+    let protocol = resolved
+        .bailian_protocol
+        .batch_protocol(model)
         .unwrap_or(crate::provider_rules::DashScopeBatchProtocol::Multimodal);
     let stored_endpoint = resolved
         .endpoint
@@ -553,9 +627,10 @@ async fn validate_dashscope_probe(resolved: &ResolvedProvider) -> Result<(), Bac
 
     let url = crate::asr::dashscope_multimodal::generation_url(&endpoint)
         .map_err(|_| invalid_request("ASR endpoint is invalid"))?;
-    let body = crate::asr::dashscope_multimodal::dashscope_multimodal_body_from_uri(
+    let body = crate::asr::dashscope_multimodal::dashscope_multimodal_body_with_protocol(
         model,
         DASHSCOPE_ASR_VALIDATE_SAMPLE_URL,
+        resolved.bailian_protocol,
     );
     let response = crate::net::credential_http()
         .post(url)
@@ -965,6 +1040,216 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ark_endpoint_key_validation_runs_before_network_probes() {
+        for endpoint in [
+            "https://ark.cn-beijing.volces.com/api/v3",
+            "https://ark.cn-beijing.volces.com/api/plan/v3",
+            "https://ark.cn-beijing.volces.com/api/coding/v3",
+            "http://127.0.0.1:8080/v1",
+        ] {
+            for key in [None, Some(""), Some(" \t\n"), Some("fixture-key")] {
+                let credentials = Arc::new(InMemoryCredentialStore::default());
+                let mut values = vec![
+                    (LLM_ENDPOINT_ACCOUNT, endpoint),
+                    (LLM_MODEL_ACCOUNT, "fixture-model"),
+                ];
+                if let Some(key) = key {
+                    values.push((LLM_API_KEY_ACCOUNT, key));
+                }
+                let channel =
+                    create_channel_with_values(&credentials, ChannelKind::Llm, "ark", &values)
+                        .await;
+                let service = ProviderService::new(credentials, Arc::new(crate::TokioTaskSpawner));
+                let resolved = service
+                    .resolve(ProviderRequest {
+                        kind: ProviderKind::Llm,
+                        channel_id: Some(channel),
+                        thinking_enabled: false,
+                    })
+                    .await
+                    .unwrap();
+                let result = validate_configuration(&resolved, true);
+                if !endpoint.starts_with("http://127.0.0.1")
+                    && key.is_none_or(|value| value.trim().is_empty())
+                {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.code, BackendErrorCode::Provider);
+                    assert_eq!(error.message, "LLM API key is not configured");
+                } else {
+                    result.unwrap();
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn lmstudio_model_listing_allows_an_empty_model_and_optional_key() {
+        for api_key in ["", "fixture-key"] {
+            let (endpoint, request) =
+                spawn_http_response("200 OK", "application/json", r#"{"data":[{"id":"model"}]}"#);
+            let credentials = Arc::new(InMemoryCredentialStore::default());
+            let channel = create_channel_with_values(
+                &credentials,
+                ChannelKind::Llm,
+                "lmstudio",
+                &[
+                    (LLM_ENDPOINT_ACCOUNT, &endpoint),
+                    (LLM_API_KEY_ACCOUNT, api_key),
+                ],
+            )
+            .await;
+            let service = ProviderService::new(credentials, Arc::new(crate::TokioTaskSpawner));
+            let parameters = ProviderRequest {
+                kind: ProviderKind::Llm,
+                channel_id: Some(channel),
+                thinking_enabled: false,
+            };
+            assert_eq!(
+                service
+                    .list_models(parameters.clone())
+                    .await
+                    .unwrap()
+                    .models,
+                vec!["model"]
+            );
+            let request = String::from_utf8(request.recv_timeout(Duration::from_secs(2)).unwrap())
+                .unwrap()
+                .to_ascii_lowercase();
+            assert!(request.starts_with("get /v1/models "));
+            assert_eq!(
+                request.contains("authorization: bearer fixture-key"),
+                !api_key.is_empty()
+            );
+            if api_key.is_empty() {
+                assert!(!request.contains("authorization:"));
+            }
+            assert_eq!(
+                service.validate(parameters).await.unwrap_err().message,
+                "provider model is not configured"
+            );
+        }
+
+        // Listing skips only the model requirement, not endpoint or authentication checks.
+        for (preset, endpoint, expected) in [
+            ("lmstudio", "file:///models", "provider endpoint is invalid"),
+            (
+                "openai",
+                "https://api.openai.com/v1",
+                "LLM API key is not configured",
+            ),
+        ] {
+            let credentials = Arc::new(InMemoryCredentialStore::default());
+            let channel = create_channel_with_values(
+                &credentials,
+                ChannelKind::Llm,
+                preset,
+                &[(LLM_ENDPOINT_ACCOUNT, endpoint)],
+            )
+            .await;
+            let service = ProviderService::new(credentials, Arc::new(crate::TokioTaskSpawner));
+            let error = service
+                .list_models(ProviderRequest {
+                    kind: ProviderKind::Llm,
+                    channel_id: Some(channel),
+                    thinking_enabled: false,
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(error.message, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn lmstudio_validation_preserves_channel_values_and_uses_its_thinking_control() {
+        for enabled in [false, true] {
+            for api_key in ["", "fixture-key"] {
+                let (endpoint, request) = spawn_http_response(
+                    "200 OK",
+                    "text/event-stream",
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n",
+                );
+                let credentials = Arc::new(InMemoryCredentialStore::default());
+                let values = [
+                    (LLM_ENDPOINT_ACCOUNT, endpoint.as_str()),
+                    (LLM_MODEL_ACCOUNT, "test-model"),
+                    (LLM_API_KEY_ACCOUNT, api_key),
+                ];
+                let channel = create_channel_with_values(
+                    &credentials,
+                    ChannelKind::Llm,
+                    "custom_responses",
+                    &values,
+                )
+                .await;
+                credentials
+                    .mutate_channel(ChannelMutation::SetProviderType {
+                        kind: ChannelKind::Llm,
+                        id: channel.clone(),
+                        provider_type: "lmstudio".into(),
+                    })
+                    .await
+                    .unwrap();
+                // Even a stale format written after the switch must not override the fixed protocol.
+                credentials
+                    .write(
+                        CredentialKey::new(
+                            CredentialNamespace::Llm,
+                            Some(channel.clone()),
+                            crate::llm_protocol::REQUEST_FORMAT_ACCOUNT,
+                        )
+                        .unwrap(),
+                        SecretValue::new("messages"),
+                    )
+                    .await
+                    .unwrap();
+                let service =
+                    ProviderService::new(credentials.clone(), Arc::new(crate::TokioTaskSpawner));
+                for (account, value) in values {
+                    assert_eq!(
+                        service
+                            .read(CredentialNamespace::Llm, &channel, account)
+                            .await
+                            .unwrap()
+                            .as_deref(),
+                        Some(value)
+                    );
+                }
+                assert_eq!(
+                    credentials.list_channels(ChannelKind::Llm).await.unwrap()[0].provider_type,
+                    "lmstudio"
+                );
+                service
+                    .validate(ProviderRequest {
+                        kind: ProviderKind::Llm,
+                        channel_id: Some(channel),
+                        thinking_enabled: enabled,
+                    })
+                    .await
+                    .unwrap();
+                let request =
+                    String::from_utf8(request.recv_timeout(Duration::from_secs(2)).unwrap())
+                        .unwrap();
+                assert!(request.starts_with("POST /v1/chat/completions "));
+                let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+                assert_eq!(
+                    headers.to_ascii_lowercase().contains("authorization:"),
+                    !api_key.is_empty()
+                );
+                let body: serde_json::Value = serde_json::from_str(body).unwrap();
+                assert_eq!(body["model"], "test-model");
+                assert_eq!(body["chat_template_kwargs"]["enable_thinking"], enabled);
+                if enabled {
+                    assert!(body.get("reasoning_effort").is_none());
+                    assert!(body.get("reasoning").is_none());
+                } else {
+                    assert_eq!(body["reasoning_effort"], "none");
+                    assert_eq!(body["reasoning"]["type"], "disabled");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn validation_and_model_lists_use_channel_protocol_and_thinking() {
         use crate::llm_protocol::*;
         for (format, preset, sse, path) in [
@@ -1037,6 +1322,70 @@ mod tests {
         assert!(!request.contains("authorization:"));
     }
 
+    /// Minimal host-engine fixture: accepts any PCM and finishes successfully,
+    /// mirroring what the Apple Speech engine returns for a silence probe.
+    struct FixtureNativeEngine;
+
+    struct FixtureNativeSession;
+
+    impl crate::ports::AudioConsumer for FixtureNativeSession {
+        fn consume_pcm_chunk(&self, _pcm: &[u8]) {}
+    }
+
+    impl crate::ports::TranscriptionSession for FixtureNativeSession {
+        fn finish(
+            &self,
+        ) -> BoxFuture<'static, Result<crate::ports::TranscriptOutput, BackendError>> {
+            Box::pin(async {
+                Ok(crate::ports::TranscriptOutput {
+                    text: String::new(),
+                    duration_ms: 500,
+                })
+            })
+        }
+
+        fn cancel(&self) -> BoxFuture<'static, Result<(), BackendError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    impl TranscriptionEngine for FixtureNativeEngine {
+        fn start(
+            &self,
+            _session_id: SessionId,
+            context: Arc<DictationContext>,
+            _partials: Arc<dyn TextStreamSink>,
+        ) -> BoxFuture<'static, Result<Arc<dyn crate::ports::TranscriptionSession>, BackendError>>
+        {
+            assert_eq!(context.asr.provider_type, "apple-speech");
+            Box::pin(async {
+                Ok(Arc::new(FixtureNativeSession) as Arc<dyn crate::ports::TranscriptionSession>)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn apple_speech_validates_through_the_injected_native_engine() {
+        let credentials = Arc::new(InMemoryCredentialStore::default());
+        let channel =
+            create_channel_with_values(&credentials, ChannelKind::Asr, "apple-speech", &[]).await;
+        let request = ProviderRequest {
+            thinking_enabled: false,
+            kind: ProviderKind::Asr,
+            channel_id: Some(channel),
+        };
+
+        // Without the host engine the native probe stays explicitly unsupported.
+        let without = ProviderService::new(credentials.clone(), Arc::new(crate::TokioTaskSpawner));
+        let error = without.validate(request.clone()).await.unwrap_err();
+        assert_eq!(error.code, BackendErrorCode::Unsupported);
+
+        // With the engine injected the probe runs against the real engine port.
+        let with = ProviderService::new(credentials, Arc::new(crate::TokioTaskSpawner))
+            .with_native_transcription(Arc::new(FixtureNativeEngine));
+        with.validate(request).await.unwrap();
+    }
+
     #[tokio::test]
     async fn custom_llm_without_key_reaches_its_explicit_endpoint() {
         let (endpoint, request) = spawn_http_response(
@@ -1102,6 +1451,58 @@ mod tests {
 
         assert_eq!(error.message, "providerHttpStatus:401");
         assert!(!format!("{error:?}").contains("response-secret"));
+    }
+
+    #[tokio::test]
+    async fn manual_bailian_protocol_is_loaded_per_channel_for_validation() {
+        let credentials = Arc::new(InMemoryCredentialStore::default());
+        for (selected, model, expected) in [
+            ("dashscope-realtime", "fun-asr", ValidationProbe::AsrSilence),
+            (
+                "qwen-realtime",
+                "unknown-model",
+                ValidationProbe::AsrSilence,
+            ),
+            (
+                "multimodal",
+                "qwen3-asr-flash-realtime",
+                ValidationProbe::AsrNonSilent,
+            ),
+            (
+                "qwen-multimodal",
+                "unknown-model",
+                ValidationProbe::AsrNonSilent,
+            ),
+            (
+                "async-transcription",
+                "unknown-model",
+                ValidationProbe::AsrNonSilent,
+            ),
+        ] {
+            let raw = format!(r#"{{"bailianProtocol":"{selected}"}}"#);
+            let channel = create_channel_with_values(
+                &credentials,
+                ChannelKind::Asr,
+                "bailian",
+                &[
+                    (ASR_API_KEY_ACCOUNT, "fixture-key"),
+                    (ASR_MODEL_ACCOUNT, model),
+                    (crate::credentials::ASR_ADVANCED_CONFIG_ACCOUNT, &raw),
+                ],
+            )
+            .await;
+            let service =
+                ProviderService::new(credentials.clone(), Arc::new(crate::TokioTaskSpawner));
+            let resolved = service
+                .resolve(ProviderRequest {
+                    thinking_enabled: false,
+                    kind: ProviderKind::Asr,
+                    channel_id: Some(channel),
+                })
+                .await
+                .unwrap();
+            assert_eq!(resolved.validation_probe().unwrap(), expected, "{selected}");
+        }
     }
 
     #[tokio::test]
@@ -1876,6 +2277,7 @@ mod tests {
         for (provider_type, expected_models) in expected {
             let resolved = ResolvedProvider {
                 thinking_enabled: false,
+                bailian_protocol: crate::provider_rules::BailianProtocol::Auto,
                 protocol: LlmProtocolConfig::default(),
                 kind: ProviderKind::Asr,
                 provider_id: provider_type.to_string(),

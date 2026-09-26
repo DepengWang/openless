@@ -3,18 +3,21 @@
 // 功能：
 //  - 顶部：当前激活模型 + 镜像源切换
 //  - 模型列表：每行模型 = 真实尺寸 / 进度 / [下载|取消|删除|设为默认]
-//  - 真实尺寸通过 fetchLocalAsrRemoteInfo 实时从 HuggingFace API 拉，**不硬编码**
+//  - 真实尺寸通过 fetchLocalAsrRemoteInfo 实时从所选模型源拉，**不硬编码**
 //  - 监听 `local-asr-download-progress` 事件实时刷新进度
 //  - Win 端引擎不可用时禁用下载按钮，提示见 issue #256
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { LocalModelMetadataCache } from '../../lib/localModelMetadataCache';
+import type { LocalAsrRemoteInfo, SherpaOnnxRemoteInfo } from '../../lib/localAsr';
 import { restartApp } from '../../lib/ipc/permissions';
 import { isTauri } from '../../lib/ipc';
 import { emitSaved } from '../../lib/savedEvent';
 import { useLayoutStack } from '../../lib/useMobileLayout';
 import {
   FOUNDRY_LOCAL_ASR_MODELS,
+  LOCAL_ASR_KEEP_LOADED_OPTIONS,
   SHERPA_ONNX_ASR_MODELS,
   activateLocalAsr,
   cancelFoundryLocalAsrPrepare,
@@ -49,6 +52,7 @@ import {
   revealSherpaOnnxAsrModelDir,
   setLocalAsrModelsBaseDir,
   setFoundryLocalAsrLanguageHint,
+  setFoundryLocalAsrKeepLoadedSecs,
   setFoundryLocalRuntimeSource,
   setLocalAsrKeepLoadedSecs,
   setLocalAsrMirror,
@@ -63,6 +67,7 @@ import {
   type HfModelCard,
   type LocalAsrDownloadProgress,
   type LocalAsrEngineStatus,
+  type LocalAsrMirror,
   type LocalAsrModelStatus,
   type LocalAsrSettings,
   type LocalAsrTestResult,
@@ -108,6 +113,15 @@ import type { RemoteSize } from './types';
 const OS = detectOS();
 const IS_WINDOWS = OS === 'win';
 const IS_QWEN_PLATFORM = OS === 'mac' || OS === 'linux';
+
+function effectiveModelMirror(modelId: string, mirror: string): LocalAsrMirror {
+  if (mirror === 'modelscope' && !modelId.startsWith('qwen3-asr-')) return 'huggingface';
+  return mirror as LocalAsrMirror;
+}
+
+function effectiveSherpaMirror(mirror: string): string {
+  return mirror === 'modelscope' ? 'huggingface' : mirror;
+}
 
 interface LocalAsrProps {
   /// `embedded=true` 表示作为子组件嵌入「高级」设置页（Settings → Advanced）；
@@ -159,8 +173,16 @@ function LocalAsrGroupTitle({ children }: { children: ReactNode }) {
 
 type RefreshGuard = () => boolean;
 
+const remoteInfoCache = new LocalModelMetadataCache<LocalAsrRemoteInfo>();
+const sherpaInfoCache = new LocalModelMetadataCache<SherpaOnnxRemoteInfo>();
+const modelCardCache = new LocalModelMetadataCache<HfModelCard>();
+
 export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
   const { t } = useTranslation();
+  const keepLoadedOptions = LOCAL_ASR_KEEP_LOADED_OPTIONS.map(({ seconds, labelKey }) => ({
+    value: String(seconds),
+    label: t(labelKey),
+  }));
   const stackLayout = useLayoutStack(1000);
   const { prefs, updatePrefs } = useHotkeySettings();
   const [settings, setSettings] = useState<LocalAsrSettings | null>(null);
@@ -218,6 +240,14 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
   const catalogReloadRequestedRef = useRef(false);
   const downloadDialogOpenRef = useRef(downloadDialogOpen);
   const refreshGenerationRef = useRef(0);
+  const metadataMirrorRef = useRef(settings?.mirror);
+  metadataMirrorRef.current = settings?.mirror;
+  const makeMetadataGuard = (): RefreshGuard => {
+    const generation = refreshGenerationRef.current;
+    const mirror = metadataMirrorRef.current;
+    return () =>
+      generation === refreshGenerationRef.current && mirror === metadataMirrorRef.current;
+  };
   const refreshTimer = useRef<number | null>(null);
   const foundryRefreshTimer = useRef<number | null>(null);
   const sherpaRefreshTimer = useRef<number | null>(null);
@@ -351,6 +381,7 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
         runtimeSource: selectedFoundryRuntimeSource,
         activeModel: selectedFoundryAlias,
         loadedModelId: null,
+        keepLoadedSecs: 300,
         endpoint: null,
         error: message,
       });
@@ -449,7 +480,9 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
       setError(null);
       const [s, list] = await Promise.all([getLocalAsrSettings(), listLocalAsrModels()]);
       if (!isCurrent()) return;
-      const supportedModels = list.filter((model) => isLocalAsrModelSupportedOnOs(model.id, OS));
+      const supportedModels = list.filter(
+        (model) => model.runtime === 'generic' && isLocalAsrModelSupportedOnOs(model, OS),
+      );
       setSettings(s);
       setModels(supportedModels);
       void refreshEngineStatus();
@@ -460,16 +493,7 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
         void refreshSherpaStatus();
         void refreshSherpaCatalog();
         void refreshSherpaModelDir(selectedSherpaAlias);
-        void Promise.all(
-          SHERPA_ONNX_ASR_MODELS.map((m) => ensureSherpaRemoteSize(m.alias, s.mirror)),
-        );
       }
-      // 拉远端真实尺寸（每个模型一次，结果留缓存）
-      void Promise.all(
-        supportedModels.map(async (m) => {
-          await ensureRemoteSize(m.id, s.mirror);
-        }),
-      );
     } catch (e) {
       if (!isCurrent()) return;
       setError(e instanceof Error ? e.message : String(e));
@@ -477,7 +501,7 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
   };
 
   const ensureRemoteSize = async (modelId: string, mirror: string) => {
-    const isCurrent = makeRefreshGuard();
+    const isCurrent = makeMetadataGuard();
     if (!isCurrent()) return;
     setRemoteSizes((prev) => {
       if (prev[modelId] && !prev[modelId].error) return prev;
@@ -492,7 +516,9 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
       };
     });
     try {
-      const info = await fetchLocalAsrRemoteInfo(modelId, mirror);
+      const info = await remoteInfoCache.load(JSON.stringify([modelId, mirror]), () =>
+        fetchLocalAsrRemoteInfo(modelId, mirror),
+      );
       if (!isCurrent()) return;
       setRemoteSizes((prev) => ({
         ...prev,
@@ -519,20 +545,19 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
 
   // HF 模型卡片按需抓取（弹窗选中模型时），成功结果缓存不重复请求。
   const ensureHfCard = async (modelId: string, mirror: string) => {
-    const current = hfCards[modelId];
-    if (current) {
-      if (!('loading' in current)) return; // 已有成功缓存
-      if (current.loading) return; // 请求进行中
-      // 失败结果允许重试
-    }
+    const isCurrent = makeMetadataGuard();
     setHfCards((prev) => ({
       ...prev,
       [modelId]: { loading: true, error: null },
     }));
     try {
-      const card = await fetchLocalAsrHfCard(modelId, mirror);
+      const card = await modelCardCache.load(JSON.stringify([modelId, mirror]), () =>
+        fetchLocalAsrHfCard(modelId, mirror),
+      );
+      if (!isCurrent()) return;
       setHfCards((prev) => ({ ...prev, [modelId]: card }));
     } catch (e) {
+      if (!isCurrent()) return;
       setHfCards((prev) => ({
         ...prev,
         [modelId]: {
@@ -544,7 +569,7 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
   };
 
   const ensureSherpaRemoteSize = async (modelAlias: string, mirror: string) => {
-    const isCurrent = makeRefreshGuard();
+    const isCurrent = makeMetadataGuard();
     if (!isCurrent()) return;
     setSherpaRemoteSizes((prev) => {
       if (prev[modelAlias] && !prev[modelAlias].error) return prev;
@@ -559,7 +584,9 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
       };
     });
     try {
-      const info = await fetchSherpaOnnxAsrRemoteInfo(modelAlias, mirror);
+      const info = await sherpaInfoCache.load(JSON.stringify([modelAlias, mirror]), () =>
+        fetchSherpaOnnxAsrRemoteInfo(modelAlias, mirror),
+      );
       if (!isCurrent()) return;
       setSherpaRemoteSizes((prev) => ({
         ...prev,
@@ -633,29 +660,27 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 镜像变更后重拉一次远端尺寸（不同镜像 API 返回的 size 数值是一致的，
-  // 但请求路径不同——切镜像时强制刷新一次让用户看到新源能否访通）。
+  // Changing the source invalidates displayed metadata, not the local catalog.
   useEffect(() => {
-    if (!settings) return;
     setRemoteSizes({});
     setSherpaRemoteSizes({});
-    void Promise.all(models.map((m) => ensureRemoteSize(m.id, settings.mirror)));
-    if (IS_WINDOWS) {
-      void Promise.all(
-        SHERPA_ONNX_ASR_MODELS.map((m) => ensureSherpaRemoteSize(m.alias, settings.mirror)),
-      );
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setHfCards({});
   }, [settings?.mirror]);
 
-  // 选中模型变化时按需拉 HF 模型卡片（只请求当前选中项，不做全目录预加载
-  // ——打开瞬间并行发多个网络请求 + setState 是 WKWebView 重栅格化闪烁的
-  // 峰值源）。成功结果缓存，切换回已加载的模型零请求；失败条目在此重试。
+  // Opening Services is local-only. Fetch remote metadata only for the model
+  // selected in the download dialog; concurrent renders share the same request.
   useEffect(() => {
     if (!downloadDialogOpen || !selectedModelId || !settings) return;
     const entry = allSidebarEntries.find((e) => e.id === selectedModelId);
-    if (!entry?.repo) return;
-    void ensureHfCard(selectedModelId, settings.mirror);
+    if (!entry) return;
+    if (entry.engine === 'sherpa') {
+      void ensureSherpaRemoteSize(entry.id, effectiveSherpaMirror(settings.mirror));
+    } else if (entry.engine === 'qwen3' || entry.engine === 'whisper') {
+      void ensureRemoteSize(entry.id, effectiveModelMirror(entry.id, settings.mirror));
+    }
+    if (entry.repo) {
+      void ensureHfCard(entry.id, effectiveModelMirror(entry.id, settings.mirror));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [downloadDialogOpen, selectedModelId, settings?.mirror]);
 
@@ -929,6 +954,18 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
               foundryLocalRuntimeSource: runtimeSource,
             },
       );
+      await refreshFoundryStatus();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      restoreScroll?.();
+    }
+  };
+
+  const handleFoundryKeepLoadedChange = async (seconds: number, restoreScroll?: () => void) => {
+    try {
+      setError(null);
+      await setFoundryLocalAsrKeepLoadedSecs(seconds);
       await refreshFoundryStatus();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1231,7 +1268,10 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
     }));
     try {
       setError(null);
-      await downloadSherpaOnnxAsrModel(modelAlias, settings?.mirror);
+      await downloadSherpaOnnxAsrModel(
+        modelAlias,
+        effectiveSherpaMirror(settings?.mirror ?? 'huggingface'),
+      );
       await activateSherpaProvider(modelAlias);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -1287,7 +1327,10 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
       },
     }));
     try {
-      await downloadLocalAsrModel(modelId, settings?.mirror);
+      await downloadLocalAsrModel(
+        modelId,
+        effectiveModelMirror(modelId, settings?.mirror ?? 'huggingface'),
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setProgress((prev) => {
@@ -1511,7 +1554,7 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
   const selectedSherpaUsesReleaseArchive = selectedSherpaAlias === 'qwen3-asr-0.6b-int8';
   const selectedSherpaMirrorValue = selectedSherpaUsesReleaseArchive
     ? 'github-release'
-    : (settings?.mirror ?? 'huggingface');
+    : effectiveSherpaMirror(settings?.mirror ?? 'huggingface');
   const selectedSherpaCatalog = sherpaCatalog.find((model) => model.alias === selectedSherpaAlias);
   const selectedSherpaDisplayName =
     selectedSherpaCatalog?.displayName ?? t(selectedSherpaModel.labelKey);
@@ -1628,8 +1671,8 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
     const entries: SidebarModelEntry[] = [];
     // macOS：Qwen3 / Whisper 引擎
     for (const m of models) {
-      if (!isLocalAsrModelSupportedOnOs(m.id, OS)) continue;
-      const isWhisper = m.id.startsWith('whisper-');
+      if (m.runtime !== 'generic' || !isLocalAsrModelSupportedOnOs(m, OS)) continue;
+      const isWhisper = m.family === 'whisper';
       const isDownloading =
         Boolean(progress[m.id]) &&
         (progress[m.id]?.phase === 'started' || progress[m.id]?.phase === 'progress');
@@ -1662,12 +1705,19 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
                 prefs?.activeAsrProvider ?? '',
               )),
         engine: isWhisper ? 'whisper' : 'qwen3',
+        runtimeLabel: isWhisper
+          ? 'macOS · whisper.cpp'
+          : OS === 'mac'
+            ? supportsQwen3Mlx
+              ? 'macOS · MLX (Metal) / C (CPU)'
+              : 'macOS · C (CPU)'
+            : 'Linux · C (CPU)',
         downloadError:
           progress[m.id]?.phase === 'failed' ? progress[m.id]?.error || t('localAsr.failed') : null,
       });
     }
     // Windows：sherpa-onnx + foundry
-    for (const c of sherpaCatalog) {
+    for (const c of IS_WINDOWS ? sherpaCatalog : []) {
       const isDownloading =
         Boolean(sherpaDownloadProgress[c.alias]) &&
         (sherpaDownloadProgress[c.alias]?.phase === 'started' ||
@@ -1692,13 +1742,14 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
         isActive:
           sherpaStatus?.activeModel === c.alias && prefs?.activeAsrProvider === 'sherpa-onnx-local',
         engine: 'sherpa',
+        runtimeLabel: 'Windows · sherpa-onnx',
         downloadError:
           sherpaDownloadProgress[c.alias]?.phase === 'failed'
             ? sherpaDownloadProgress[c.alias]?.error || t('localAsr.failed')
             : null,
       });
     }
-    for (const c of foundryCatalog) {
+    for (const c of IS_WINDOWS ? foundryCatalog : []) {
       // foundry 下载发生在 prepare 内（runtime/model/load 阶段），cached
       // 仍是 false，靠 prepare 进度判定「下载中」保住条目。
       const isDownloading =
@@ -1719,11 +1770,13 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
           foundryStatus?.activeModel === c.alias &&
           prefs?.activeAsrProvider === 'foundry-local-whisper',
         engine: 'foundry',
+        runtimeLabel: 'Windows · Foundry Local',
       });
     }
     return entries;
   }, [
     models,
+    supportsQwen3Mlx,
     remoteSizes,
     progress,
     settings?.activeModel,
@@ -1937,11 +1990,9 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
                     fileCount={selectedEntryRemote?.fileCount ?? null}
                     mirrorLabel={
                       selectedEntry?.engine === 'qwen3' || selectedEntry?.engine === 'whisper'
-                        ? settings?.mirror === 'hf-mirror'
-                          ? 'hf-mirror'
-                          : 'huggingface'
+                        ? effectiveModelMirror(selectedEntry.id, settings?.mirror ?? 'huggingface')
                         : selectedEntry?.engine === 'sherpa'
-                          ? (settings?.mirror ?? 'huggingface')
+                          ? effectiveSherpaMirror(settings?.mirror ?? 'huggingface')
                           : undefined
                     }
                     progress={selectedEntryProgress}
@@ -2072,6 +2123,10 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
                         value: 'hf-mirror',
                         label: t('localAsr.mirrorHfMirror'),
                       },
+                      {
+                        value: 'modelscope',
+                        label: t('localAsr.mirrorModelscope'),
+                      },
                     ]}
                     style={{ fontSize: 13, height: 31, minWidth: 200 }}
                   />
@@ -2167,13 +2222,7 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
                         value={String(engineStatus?.keepLoadedSecs ?? 300)}
                         onChange={(v) => void handleKeepLoadedChange(Number(v))}
                         ariaLabel={t('localAsr.keepLoadedLabel')}
-                        options={[
-                          { value: '0', label: t('localAsr.keepImmediate') },
-                          { value: '60', label: t('localAsr.keep1min') },
-                          { value: '300', label: t('localAsr.keep5min') },
-                          { value: '1800', label: t('localAsr.keep30min') },
-                          { value: '86400', label: t('localAsr.keepForever') },
-                        ]}
+                        options={keepLoadedOptions}
                         style={{ fontSize: 13, height: 31, minWidth: 200 }}
                       />
                     </div>
@@ -2303,11 +2352,16 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
           loading={modelLoadPending}
           error={error}
           onRetryCatalog={() => {
+            remoteInfoCache.clear();
+            sherpaInfoCache.clear();
+            modelCardCache.clear();
             // Keep the dialog refresh-generation guard: close first, then query.
             catalogReloadRequestedRef.current = true;
             setDownloadDialog(false);
           }}
-          onRetryCard={(id) => void ensureHfCard(id, settings?.mirror ?? 'huggingface')}
+          onRetryCard={(id) =>
+            void ensureHfCard(id, effectiveModelMirror(id, settings?.mirror ?? 'huggingface'))
+          }
           hfCardOf={(id) => {
             const state = hfCards[id];
             if (!state) return null;
@@ -2527,6 +2581,33 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
                     }}
                   />
                 </label>
+                <label
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 4,
+                    fontSize: 11,
+                    color: 'var(--ol-ink-4)',
+                  }}
+                >
+                  {t('localAsr.keepLoadedLabel')}
+
+                  <SelectLite
+                    value={String(foundryStatus?.keepLoadedSecs ?? 300)}
+                    onChange={(v) => {
+                      const restoreScroll = preserveEmbeddedScroll(foundryControlsRef.current);
+                      void handleFoundryKeepLoadedChange(Number(v), restoreScroll);
+                    }}
+                    disabled={foundryBusy !== null}
+                    ariaLabel={t('localAsr.keepLoadedLabel')}
+                    options={keepLoadedOptions}
+                    style={{
+                      fontSize: 13,
+                      height: 31,
+                      minWidth: 200,
+                    }}
+                  />
+                </label>
               </div>
             </div>
 
@@ -2586,6 +2667,7 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
                 </span>
                 {foundryStatus?.loadedModelId ?? t('localAsr.foundryNotLoaded')}
               </div>
+              <div>{t('localAsr.keepLoadedDesc')}</div>
               {foundryStatus?.error && (
                 <div style={{ color: '#9b2c2c' }}>
                   <span>{t('localAsr.foundryError')}: </span>

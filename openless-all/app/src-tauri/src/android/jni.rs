@@ -2,29 +2,87 @@
 
 #[cfg(target_os = "android")]
 pub mod android {
-    use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
+    use std::sync::Mutex;
+
+    use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString, JValue};
     use jni::JNIEnv;
     use jni::JavaVM;
+
+    // Registered from OpenLessRuntimeService.onCreate() (replaced, not just
+    // set-once) and cleared from its onDestroy(). A GlobalRef stays valid
+    // for its registrant's *entire* lifecycle. Previously registered from
+    // OpenLessBackendWarmupActivity instead — a real Context, but one that
+    // spends nearly all its life backgrounded via moveTaskToBack() and can
+    // be reclaimed by the OS at any point during that, which eventually
+    // reproduced a milder version of the same failure mode as the two
+    // alternatives already ruled out before either of them:
+    //   - ndk_context::android_context() is populated exactly once per
+    //     process (see mobile_runtime::initialize_android_ndk_context_for_audio(),
+    //     needed only so cpal can find *a* context) and goes stale once
+    //     that first Activity is destroyed and a new one takes over in the
+    //     same process, causing Android's CheckJNI to hard-abort the whole
+    //     process on the next JNI call through it ("invalid global
+    //     reference") — confirmed via an on-device tombstone.
+    //   - tao::platform::android::prelude::main_android_context() is a
+    //     *live* lookup, but tao only keeps an Activity in that map while
+    //     it's resumed/foregrounded — empty the moment this Activity
+    //     backgrounds itself, which made every notify_capsule_state() call
+    //     fail (silently dropping dictation/waveform status updates)
+    //     during completely ordinary, crash-free operation.
+    // A foreground Service that starts/stops in lockstep with the IME being
+    // active doesn't have either problem: it's never "backgrounded" the way
+    // an Activity is, and the OS is far less eager to reclaim it.
+    static ACTIVE_CONTEXT: Mutex<Option<(JavaVM, GlobalRef)>> = Mutex::new(None);
+
+    pub fn register_active_activity(env: &mut JNIEnv, activity: &JObject) -> Result<(), String> {
+        let global = env
+            .new_global_ref(activity)
+            .map_err(|error| format!("new_global_ref for Activity: {error}"))?;
+        let vm = env
+            .get_java_vm()
+            .map_err(|error| format!("get_java_vm: {error}"))?;
+        *ACTIVE_CONTEXT.lock().unwrap() = Some((vm, global));
+        Ok(())
+    }
+
+    /// Only clears the slot if it still holds `activity` — guards against a
+    /// stray/late onDestroy() (e.g. from a superseded instance) wiping out
+    /// a newer Activity's just-registered context.
+    pub fn unregister_active_activity(env: &mut JNIEnv, activity: &JObject) {
+        let mut guard = ACTIVE_CONTEXT.lock().unwrap();
+        let same = guard
+            .as_ref()
+            .map(|(_, global)| env.is_same_object(global.as_obj(), activity).unwrap_or(true))
+            .unwrap_or(false);
+        if same {
+            *guard = None;
+        }
+    }
 
     pub fn with_android_env<R>(
         f: impl for<'local> FnOnce(&mut JNIEnv<'local>, &JObject<'local>) -> Result<R, String>,
     ) -> Result<R, String> {
-        let android_context = ndk_context::android_context();
-        let vm = unsafe {
-            JavaVM::from_raw(android_context.vm().cast())
-                .map_err(|error| format!("attach Android JVM: {error}"))?
-        };
+        let guard = ACTIVE_CONTEXT.lock().unwrap();
+        let (vm, global) = guard
+            .as_ref()
+            .ok_or_else(|| "no live Android Activity context registered".to_string())?;
         let mut env = vm
             .attach_current_thread()
             .map_err(|error| format!("attach Android thread: {error}"))?;
-        let raw_context = android_context.context() as jni::sys::jobject;
-        if raw_context.is_null() {
-            return Err("Android context not yet initialized".to_string());
-        }
-        // SAFETY: raw_context is non-null and points to a valid Android Context object
-        // provided by tao/Tauri; the reference lifetime is valid for the duration of `f`.
-        let context = unsafe { JObject::from_raw(raw_context) };
-        f(&mut env, &context)
+        let context = global.as_obj();
+        f(&mut env, context)
+    }
+
+    /// Whether an Activity Context is currently registered. Exposed to
+    /// Kotlin so ensureBackendReady() can tell "backend running but no
+    /// Activity left to notify" apart from "backend actually cold" — the
+    /// former survives a long time on its own once the backend has started
+    /// once (this Activity backgrounding/dying doesn't stop the Rust side
+    /// running), but leaves every notify_capsule_state() call permanently
+    /// failing (dictation/waveform status updates silently dropped) until
+    /// something relaunches this Activity again.
+    pub fn has_active_activity() -> bool {
+        ACTIVE_CONTEXT.lock().unwrap().is_some()
     }
 
     pub fn call_static_void(
@@ -209,22 +267,64 @@ pub mod android {
         }
     }
 
+    fn log_keystore_failure(method: &str, kind: &str, detail: &str) {
+        let safe: String = detail
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | ':' | '-' | '/') {
+                    ch
+                } else {
+                    ' '
+                }
+            })
+            .take(120)
+            .collect();
+        if safe.is_empty() {
+            log::warn!("[vault] Android Keystore method={method} status={kind}");
+        } else {
+            log::warn!("[vault] Android Keystore method={method} status={kind} detail={safe}");
+        }
+    }
+
     fn keystore_temporarily_unavailable<T>(env: &mut JNIEnv) -> Result<T, String> {
         clear_pending_exception(env);
         Err(KEYSTORE_TEMPORARILY_UNAVAILABLE.to_string())
     }
 
-    fn credential_response(response: Vec<u8>) -> Result<Vec<u8>, String> {
+    fn credential_response(method: &str, response: Vec<u8>) -> Result<Vec<u8>, String> {
         let Some((&status, payload)) = response.split_first() else {
+            log_keystore_failure(method, "empty_response", "");
             return Err(KEYSTORE_TEMPORARILY_UNAVAILABLE.to_string());
         };
         match status {
-            0 => Ok(payload.to_vec()),
-            1 => Err(KEYSTORE_KEY_MISSING.to_string()),
-            2 => Err(KEYSTORE_AUTHENTICATION_FAILED.to_string()),
-            3 => Err(KEYSTORE_TEMPORARILY_UNAVAILABLE.to_string()),
-            4 => Err(KEYSTORE_MALFORMED.to_string()),
-            _ => Err(KEYSTORE_TEMPORARILY_UNAVAILABLE.to_string()),
+            0 => {
+                if method == "deleteKey" && payload == b"legacy-key-cleanup-deferred" {
+                    log_keystore_failure(method, "legacy_cleanup_deferred", "");
+                }
+                Ok(payload.to_vec())
+            }
+            1 => {
+                let detail = String::from_utf8_lossy(payload);
+                log_keystore_failure(method, "status_key_missing", &detail);
+                Err(KEYSTORE_KEY_MISSING.to_string())
+            }
+            2 => {
+                log_keystore_failure(method, "authentication_failed", "");
+                Err(KEYSTORE_AUTHENTICATION_FAILED.to_string())
+            }
+            3 => {
+                let detail = String::from_utf8_lossy(payload);
+                log_keystore_failure(method, "status_temporarily_unavailable", &detail);
+                Err(KEYSTORE_TEMPORARILY_UNAVAILABLE.to_string())
+            }
+            4 => {
+                log_keystore_failure(method, "malformed", "");
+                Err(KEYSTORE_MALFORMED.to_string())
+            }
+            _ => {
+                log_keystore_failure(method, "status_unknown", &status.to_string());
+                Err(KEYSTORE_TEMPORARILY_UNAVAILABLE.to_string())
+            }
         }
     }
 
@@ -236,15 +336,24 @@ pub mod android {
         with_android_env(|env, context| {
             let class = match load_context_class(env, context, CREDENTIAL_VAULT_CLASS) {
                 Ok(class) => class,
-                Err(_) => return keystore_temporarily_unavailable(env),
+                Err(error) => {
+                    log_keystore_failure(method, "class_load", &error);
+                    return keystore_temporarily_unavailable(env);
+                }
             };
             let first_array = match env.byte_array_from_slice(first) {
                 Ok(array) => array,
-                Err(_) => return keystore_temporarily_unavailable(env),
+                Err(error) => {
+                    log_keystore_failure(method, "jni_array", &error.to_string());
+                    return keystore_temporarily_unavailable(env);
+                }
             };
             let second_array = match env.byte_array_from_slice(second) {
                 Ok(array) => array,
-                Err(_) => return keystore_temporarily_unavailable(env),
+                Err(error) => {
+                    log_keystore_failure(method, "jni_array", &error.to_string());
+                    return keystore_temporarily_unavailable(env);
+                }
             };
             let first_object = JObject::from(first_array);
             let second_object = JObject::from(second_array);
@@ -258,21 +367,31 @@ pub mod android {
                 ],
             ) {
                 Ok(value) => value,
-                Err(_) => return keystore_temporarily_unavailable(env),
+                Err(error) => {
+                    log_keystore_failure(method, "jni_call", &error.to_string());
+                    return keystore_temporarily_unavailable(env);
+                }
             };
             let object = match value.l() {
                 Ok(object) => object,
-                Err(_) => return keystore_temporarily_unavailable(env),
+                Err(error) => {
+                    log_keystore_failure(method, "jni_object", &error.to_string());
+                    return keystore_temporarily_unavailable(env);
+                }
             };
             if object.is_null() {
+                log_keystore_failure(method, "null_response", "");
                 return Err(KEYSTORE_TEMPORARILY_UNAVAILABLE.to_string());
             }
             let array = JByteArray::from(object);
             let response = match env.convert_byte_array(&array) {
                 Ok(response) => response,
-                Err(_) => return keystore_temporarily_unavailable(env),
+                Err(error) => {
+                    log_keystore_failure(method, "jni_bytes", &error.to_string());
+                    return keystore_temporarily_unavailable(env);
+                }
             };
-            credential_response(response)
+            credential_response(method, response)
         })
     }
 
@@ -280,25 +399,38 @@ pub mod android {
         with_android_env(|env, context| {
             let class = match load_context_class(env, context, CREDENTIAL_VAULT_CLASS) {
                 Ok(class) => class,
-                Err(_) => return keystore_temporarily_unavailable(env),
+                Err(error) => {
+                    log_keystore_failure(method, "class_load", &error);
+                    return keystore_temporarily_unavailable(env);
+                }
             };
             let value = match env.call_static_method(class, method, "()[B", &[]) {
                 Ok(value) => value,
-                Err(_) => return keystore_temporarily_unavailable(env),
+                Err(error) => {
+                    log_keystore_failure(method, "jni_call", &error.to_string());
+                    return keystore_temporarily_unavailable(env);
+                }
             };
             let object = match value.l() {
                 Ok(object) => object,
-                Err(_) => return keystore_temporarily_unavailable(env),
+                Err(error) => {
+                    log_keystore_failure(method, "jni_object", &error.to_string());
+                    return keystore_temporarily_unavailable(env);
+                }
             };
             if object.is_null() {
+                log_keystore_failure(method, "null_response", "");
                 return Err(KEYSTORE_TEMPORARILY_UNAVAILABLE.to_string());
             }
             let array = JByteArray::from(object);
             let response = match env.convert_byte_array(&array) {
                 Ok(response) => response,
-                Err(_) => return keystore_temporarily_unavailable(env),
+                Err(error) => {
+                    log_keystore_failure(method, "jni_bytes", &error.to_string());
+                    return keystore_temporarily_unavailable(env);
+                }
             };
-            credential_response(response)
+            credential_response(method, response)
         })
     }
 
@@ -315,14 +447,16 @@ pub mod android {
         plaintext: &[u8],
         aad: &[u8],
     ) -> Result<Vec<u8>, AndroidKeystoreFailure> {
-        call_credential_vault_two_arrays("seal", plaintext, aad).map_err(classify_keystore_failure)
+        call_credential_vault_two_arrays("seal", plaintext, aad)
+            .map_err(classify_keystore_failure)
     }
 
     pub(crate) fn keystore_open(
         sealed: &[u8],
         aad: &[u8],
     ) -> Result<Vec<u8>, AndroidKeystoreFailure> {
-        call_credential_vault_two_arrays("open", sealed, aad).map_err(classify_keystore_failure)
+        call_credential_vault_two_arrays("open", sealed, aad)
+            .map_err(classify_keystore_failure)
     }
 
     pub(crate) fn keystore_delete_key() -> Result<(), AndroidKeystoreFailure> {
@@ -656,6 +790,7 @@ pub mod android {
         context: &JObject<'local>,
         state: &str,
         message: Option<&str>,
+        level: f32,
     ) -> Result<(), String> {
         let state_obj = jobject_str(env, state)?;
         let message_obj = jobject_str(env, message.unwrap_or(""))?;
@@ -664,8 +799,28 @@ pub mod android {
             context,
             "com.openless.app.OpenLessOverlayBridge",
             "onCapsuleStateChanged",
-            "(Ljava/lang/String;Ljava/lang/String;)V",
-            &[JValue::Object(&state_obj), JValue::Object(&message_obj)],
+            "(Ljava/lang/String;Ljava/lang/String;F)V",
+            &[
+                JValue::Object(&state_obj),
+                JValue::Object(&message_obj),
+                JValue::Float(level),
+            ],
+        )
+    }
+
+    pub fn notify_ime_text<'local>(
+        env: &mut JNIEnv<'local>,
+        context: &JObject<'local>,
+        text: &str,
+    ) -> Result<(), String> {
+        let text_obj = jobject_str(env, text)?;
+        call_static_void_with_context_class(
+            env,
+            context,
+            "com.openless.app.OpenLessOverlayBridge",
+            "onImeTextReady",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&text_obj)],
         )
     }
 
@@ -682,6 +837,22 @@ pub mod android {
             "showToast",
             "(Ljava/lang/String;)V",
             &[JValue::Object(&message_obj)],
+        )
+    }
+
+    /// Bring the single tracked Tauri host (WarmupActivity) to the front for
+    /// the embedded mobile QA panel. Never starts bare MainActivity.
+    pub fn open_qa_host<'local>(
+        env: &mut JNIEnv<'local>,
+        context: &JObject<'local>,
+    ) -> Result<(), String> {
+        call_static_void_with_context_class(
+            env,
+            context,
+            "com.openless.app.OpenLessBackendWarmupActivity",
+            "openForQa",
+            "(Landroid/content/Context;)V",
+            &[JValue::Object(context)],
         )
     }
 
@@ -1086,6 +1257,40 @@ pub mod android {
             } else {
                 Err(format!("写入 content URI 失败：{uri}"))
             }
+        })
+    }
+
+    /// Write bytes to the user's public Downloads directory without opening
+    /// the Android document picker.
+    pub fn write_public_download(file_name: &str, bytes: &[u8]) -> Result<String, String> {
+        with_android_env(|env, context| {
+            let class = load_context_class(env, context, "com.openless.app.OpenLessContentWriter")?;
+            let file_name_obj = jobject_str(env, file_name)?;
+            let bytes_array = env
+                .byte_array_from_slice(bytes)
+                .map_err(|error| format!("create byte array for public download: {error}"))?;
+            let bytes_obj = JObject::from(bytes_array);
+            let value = env
+                .call_static_method(
+                    class,
+                    "writePublicDownload",
+                    "(Landroid/content/Context;Ljava/lang/String;[B)Ljava/lang/String;",
+                    &[
+                        JValue::Object(context),
+                        JValue::Object(&file_name_obj),
+                        JValue::Object(&bytes_obj),
+                    ],
+                )
+                .and_then(|value| value.l())
+                .map_err(|error| {
+                    format!("call OpenLessContentWriter.writePublicDownload: {error}")
+                })?;
+            if value.is_null() {
+                return Err("Android public download path is empty".to_string());
+            }
+            env.get_string(&JString::from(value))
+                .map(|path| path.to_string_lossy().into_owned())
+                .map_err(|error| format!("read Android public download path: {error}"))
         })
     }
 }

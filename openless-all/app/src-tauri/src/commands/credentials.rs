@@ -37,9 +37,7 @@ impl openless_core::credentials::CredentialMetadataStore for SystemCredentialMet
         'static,
         Result<openless_core::CredentialMetadata, openless_core::BackendError>,
     > {
-        run_credential_task(|| {
-            CredentialsVault::load_metadata().map_err(credential_persistence_error)
-        })
+        run_credential_task(|| after_vault_attempt(CredentialsVault::load_metadata()))
     }
 
     fn save_metadata(
@@ -57,8 +55,7 @@ impl openless_core::credentials::CredentialMetadataStore for SystemCredentialMet
         channel_id: String,
     ) -> futures_util::future::BoxFuture<'static, Result<bool, openless_core::BackendError>> {
         run_credential_task(move || {
-            CredentialsVault::channel_has_secrets(kind, &channel_id)
-                .map_err(credential_persistence_error)
+            after_vault_attempt(CredentialsVault::channel_has_secrets(kind, &channel_id))
         })
     }
 }
@@ -107,6 +104,82 @@ pub(crate) fn active_sherpa_asr_is_supported(provider: &str) -> bool {
 }
 
 impl openless_core::CredentialStore for SystemCredentialStore {
+    fn bind_sync_gate(
+        &self,
+        gate: std::sync::Arc<openless_core::credentials::SyncWriteGate>,
+    ) -> Result<(), openless_core::BackendError> {
+        CredentialsVault::bind_sync_gate(gate).map_err(credential_persistence_error)
+    }
+
+    fn export_sync_credentials_readonly(
+        &self,
+    ) -> futures_util::future::BoxFuture<
+        'static,
+        Result<openless_core::credentials::SyncCredentials, openless_core::BackendError>,
+    > {
+        run_credential_task(|| {
+            CredentialsVault::export_sync_credentials_readonly()
+                .map_err(credential_persistence_error)
+        })
+    }
+
+    fn export_sync_credentials(
+        &self,
+        permit: &openless_core::credentials::ExclusivePermit,
+    ) -> futures_util::future::BoxFuture<
+        'static,
+        Result<openless_core::credentials::SyncCredentials, openless_core::BackendError>,
+    > {
+        let permit = permit.clone();
+        run_credential_task(move || {
+            CredentialsVault::export_sync_credentials(&permit).map_err(credential_persistence_error)
+        })
+    }
+
+    fn replace_sync_credentials(
+        &self,
+        snapshot: openless_core::credentials::SyncCredentials,
+        permit: &openless_core::credentials::ExclusivePermit,
+    ) -> futures_util::future::BoxFuture<'static, Result<(), openless_core::BackendError>> {
+        let permit = permit.clone();
+        run_credential_task(move || {
+            CredentialsVault::replace_sync_credentials(&snapshot, &permit)
+                .map_err(credential_persistence_error)
+        })
+    }
+
+    fn read_sync_secret(
+        &self,
+        account: openless_core::credentials::SyncSecretAccount,
+    ) -> futures_util::future::BoxFuture<
+        'static,
+        Result<Option<openless_core::SecretValue>, openless_core::BackendError>,
+    > {
+        run_credential_task(move || {
+            CredentialsVault::read_sync_secret(&account).map_err(credential_persistence_error)
+        })
+    }
+
+    fn write_sync_secret(
+        &self,
+        account: openless_core::credentials::SyncSecretAccount,
+        value: openless_core::SecretValue,
+    ) -> futures_util::future::BoxFuture<'static, Result<(), openless_core::BackendError>> {
+        run_credential_task(move || {
+            CredentialsVault::write_sync_secret(&account, &value)
+                .map_err(credential_persistence_error)
+        })
+    }
+
+    fn remove_sync_secret(
+        &self,
+        account: openless_core::credentials::SyncSecretAccount,
+    ) -> futures_util::future::BoxFuture<'static, Result<(), openless_core::BackendError>> {
+        run_credential_task(move || {
+            CredentialsVault::remove_sync_secret(&account).map_err(credential_persistence_error)
+        })
+    }
+
     fn status(
         &self,
         preferences: UserPreferences,
@@ -115,7 +188,9 @@ impl openless_core::CredentialStore for SystemCredentialStore {
         Result<CredentialsStatus, openless_core::BackendError>,
     > {
         let model_store = self.model_store.clone();
-        run_credential_task(move || credentials_status(preferences, model_store.as_deref()))
+        run_credential_task(move || {
+            after_vault_backend(credentials_status(preferences, model_store.as_deref()))
+        })
     }
 
     fn read(
@@ -126,7 +201,9 @@ impl openless_core::CredentialStore for SystemCredentialStore {
         Result<Option<openless_core::SecretValue>, openless_core::BackendError>,
     > {
         run_credential_task(move || {
-            read_vault_credential(&key).map(|value| value.map(openless_core::SecretValue::new))
+            after_vault_backend(
+                read_vault_credential(&key).map(|value| value.map(openless_core::SecretValue::new)),
+            )
         })
     }
 
@@ -191,10 +268,10 @@ fn run_credential_task<T: Send + 'static>(
     Box::pin(async move {
         tauri::async_runtime::spawn_blocking(task)
             .await
-            .map_err(|error| {
+            .map_err(|_| {
                 openless_core::BackendError::new(
                     openless_core::BackendErrorCode::Internal,
-                    format!("credential worker failed: {error}"),
+                    "credential worker failed",
                 )
             })?
     })
@@ -419,10 +496,45 @@ fn invalid_credential_key(key: &openless_core::CredentialKey) -> openless_core::
 }
 
 fn credential_persistence_error(error: anyhow::Error) -> openless_core::BackendError {
-    openless_core::BackendError::new(
-        openless_core::BackendErrorCode::Persistence,
-        format!("credential vault operation failed: {error}"),
-    )
+    if let Some(error) = error.downcast_ref::<openless_core::BackendError>() {
+        return error.clone();
+    }
+    let code = if matches!(
+        error.downcast_ref::<crate::persistence::VaultCommitFailure>(),
+        Some(crate::persistence::VaultCommitFailure::Unknown)
+    ) {
+        openless_core::BackendErrorCode::OutcomeUnknown
+    } else {
+        openless_core::BackendErrorCode::Persistence
+    };
+    openless_core::BackendError::new(code, "credential vault operation failed")
+}
+
+fn require_readable_vault() -> Result<(), openless_core::BackendError> {
+    match CredentialsVault::last_read_error() {
+        Some(error) => Err(openless_core::BackendError::new(
+            openless_core::BackendErrorCode::Persistence,
+            format!("无法读取已保存的凭据：{error}"),
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Call after a real vault load/retry. Surfaces the recorded Keystore chain
+/// instead of a generic English anyhow mapping, and never short-circuits first.
+fn after_vault_attempt<T>(
+    result: Result<T, anyhow::Error>,
+) -> Result<T, openless_core::BackendError> {
+    after_vault_backend(result.map_err(credential_persistence_error))
+}
+
+fn after_vault_backend<T>(
+    result: Result<T, openless_core::BackendError>,
+) -> Result<T, openless_core::BackendError> {
+    if CredentialsVault::last_read_error().is_some() {
+        require_readable_vault()?;
+    }
+    result
 }
 
 #[tauri::command]
@@ -535,6 +647,7 @@ fn credential_configuration(
         asr_api_key: configured(&snap.asr_api_key),
         asr_endpoint: configured(&snap.asr_endpoint),
         asr_model: configured(&snap.asr_model),
+        volcengine_service: snap.volcengine_service.clone(),
         volcengine_auth_mode: snap.volcengine_auth_mode.clone(),
         volcengine_app_key: configured(&snap.volcengine_app_key),
         volcengine_access_key: configured(&snap.volcengine_access_key),
@@ -547,11 +660,11 @@ fn credential_configuration(
         tencent_cloud_secret_key: configured(&snap.tencent_cloud_secret_key),
         llm_api_key: configured(&snap.ark_api_key),
         llm_endpoint: llm_endpoint.is_some(),
-        llm_endpoint_matches_default: llm_endpoint.is_some_and(|endpoint| {
-            openless_core::provider_rules::default_llm_endpoint(llm_provider).is_some_and(
-                |default| openless_core::provider_rules::equivalent_endpoint(endpoint, default),
-            )
-        }),
+        llm_api_key_required: openless_core::provider_rules::api_key_required(
+            openless_core::ProviderKind::Llm,
+            llm_provider,
+            llm_endpoint,
+        ),
         llm_model: configured(&snap.ark_model_id),
         codex_oauth,
         omni_api_key: configured(&snap.omni_api_key),
@@ -801,6 +914,7 @@ fn account_provider_kind(account: CredentialAccount) -> CredentialProviderKind {
         CredentialAccount::VolcengineAppKey
         | CredentialAccount::VolcengineAccessKey
         | CredentialAccount::VolcengineResourceId
+        | CredentialAccount::VolcengineService
         | CredentialAccount::VolcengineAuthMode
         | CredentialAccount::VolcengineApiKey
         | CredentialAccount::AsrApiKey
@@ -832,6 +946,7 @@ fn parse_account(s: &str) -> Result<CredentialAccount, String> {
         "volcengine.app_key" => Ok(CredentialAccount::VolcengineAppKey),
         "volcengine.access_key" => Ok(CredentialAccount::VolcengineAccessKey),
         "volcengine.resource_id" => Ok(CredentialAccount::VolcengineResourceId),
+        "volcengine.service" => Ok(CredentialAccount::VolcengineService),
         "volcengine.auth_mode" => Ok(CredentialAccount::VolcengineAuthMode),
         "volcengine.api_key" => Ok(CredentialAccount::VolcengineApiKey),
         "ark.api_key" => Ok(CredentialAccount::ArkApiKey),
@@ -857,6 +972,43 @@ fn parse_account(s: &str) -> Result<CredentialAccount, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_credential_worker_holds_restore_lease_until_it_finishes() {
+        let dir = std::env::temp_dir().join(format!(
+            "openless-credential-worker-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let gate =
+            openless_core::credentials::SyncWriteGate::open(dir.join("generation.json")).unwrap();
+        let original = gate.try_exclusive().unwrap();
+        let worker_lease = original.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(run_credential_task(move || {
+            let _lease = worker_lease;
+            let _ = started_tx.send(());
+            finish_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            drop(_lease);
+            let _ = done_tx.send(());
+            Ok(())
+        }));
+        started_rx.await.unwrap();
+        drop(original);
+        task.abort();
+        let _ = task.await;
+        assert!(gate.begin_mutation().is_err());
+        assert!(gate.try_exclusive().is_err());
+        finish_tx.send(()).unwrap();
+        done_rx.await.unwrap();
+        let permit = gate.begin_mutation().unwrap();
+        permit.abort_unmodified().unwrap();
+        drop(gate);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn omni_credential_keys_preserve_the_explicit_provider_scope() {
