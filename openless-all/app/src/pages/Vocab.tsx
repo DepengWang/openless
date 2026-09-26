@@ -67,6 +67,7 @@ export function Vocab() {
   const prevCardTops = useRef(new Map<string, number>());
   const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selecting, setSelecting] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
 
   const refresh = async () => {
@@ -453,7 +454,18 @@ export function Vocab() {
             </button>
           ))}
         </div>
-        <label className="ol-vocab-select-all">
+        <Btn
+          size="sm"
+          onClick={() => {
+            setSelecting((current) => {
+              if (current) setSelectedIds(new Set());
+              return !current;
+            });
+          }}
+        >
+          {selecting ? t('vocab.doneSelecting') : t('vocab.selecting')}
+        </Btn>
+        <label className="ol-vocab-select-all" hidden={!selecting}>
           <input
             type="checkbox"
             disabled={batchBusy || visibleEntries.length === 0}
@@ -600,6 +612,7 @@ export function Vocab() {
               auto={sourceOf(entry) === 'auto'}
               removing={removingIds.has(entry.id) || batchBusy}
               selected={selectedIds.has(entry.id)}
+              selecting={selecting}
               onSelect={() => toggleSelection(entry.id)}
               cardRef={(element) => {
                 if (element) cardRefs.current.set(entry.id, element);
@@ -920,6 +933,7 @@ interface WordCardProps {
   onToggle: () => void;
   onEdit: () => void;
   selected: boolean;
+  selecting: boolean;
   onSelect: () => void;
 }
 
@@ -929,6 +943,7 @@ function WordCard({
   auto,
   removing,
   selected,
+  selecting,
   cardRef,
   onToggle,
   onEdit,
@@ -942,19 +957,16 @@ function WordCard({
       className="ol-word-card"
       data-disabled={enabled ? undefined : 'true'}
       data-selected={selected ? 'true' : undefined}
+      data-selecting={selecting ? 'true' : undefined}
       style={removing ? { pointerEvents: 'none' } : undefined}
     >
       <span className="ol-word-card-icon" aria-hidden>
         <Icon name={auto ? 'sparkle' : 'feather'} size={14} />
       </span>
-      <button
-        type="button"
-        className="ol-word-card-text"
-        onClick={onToggle}
-        title={enabled ? t('vocab.tipDisabled') : t('vocab.tipEnabled')}
-      >
+      <button type="button" className="ol-word-card-text" onClick={onToggle} title={entry.phrase}>
         {entry.phrase}
       </button>
+      {!enabled && <span className="ol-word-card-state">{t('vocab.disabledWord')}</span>}
       <span className="ol-word-card-hits">{entry.hits}</span>
       <span className="ol-word-card-actions">
         <Tooltip content={t('vocab.edit')} placement="top">

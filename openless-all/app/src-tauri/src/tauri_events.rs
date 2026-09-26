@@ -65,9 +65,9 @@ pub fn start(app: AppHandle, backend: Arc<OpenLessBackend>) {
         }
         let preferences = backend.get_preferences();
         if !preferences.active_asr_provider.is_empty() {
-            if let Err(error) = crate::commands::sync_active_asr_provider_to_vault(
-                &preferences.active_asr_provider,
-            ) {
+            if let Err(error) =
+                crate::commands::sync_active_asr_provider_to_vault(&preferences.active_asr_provider)
+            {
                 log::warn!("[startup] active ASR provider mirror failed: {error}");
             }
         }
@@ -249,6 +249,7 @@ async fn forward_legacy_event(
                 phase,
                 level,
                 elapsed_ms,
+                ..
             } = &event.kind
             {
                 // 胶囊只展示Core语音快照。已开始的其它会话拥有共享窗口，旧Less终态不得盖掉它。
@@ -1266,6 +1267,9 @@ mod tests {
                 phase: openless_core::LessComputerVoicePhase::Transcribing,
                 level: 0.0,
                 elapsed_ms: 456,
+                mode: openless_core::LessComputerVoiceMode::Submit,
+                transcript: String::new(),
+                outcome: None,
             },
         };
         let payload = transcription_notice_payload(

@@ -4,15 +4,24 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent }
 import { useTranslation } from 'react-i18next';
 import {
   ArrowUpIcon,
+  AudioLinesIcon,
   CheckIcon,
   ChevronRightIcon,
-  HistoryIcon,
+  CircleAlertIcon,
+  FileTextIcon,
+  GlobeIcon,
   LayersIcon,
   Maximize2Icon,
   MicIcon,
   MinusIcon,
-  PlusIcon,
+  PanelRightOpenIcon,
+  PencilLineIcon,
+  SearchIcon,
   ShieldCheckIcon,
+  SquareIcon,
+  SquarePenIcon,
+  TerminalIcon,
+  WrenchIcon,
   XIcon,
 } from 'lucide-react';
 import {
@@ -23,10 +32,11 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from '../components/chat/ui/message-scroller';
-import { VoiceWaveform } from '../components/chat/VoiceWaveform';
+import { LiveWaveform } from '../components/chat/LiveWaveform';
 import { AssistantMarkdown } from '../components/chat/markdown';
 import { useChatPanelLifecycle } from '../components/chat/lifecycle';
 import { GithubLoginModal } from '../components/GithubLoginModal';
+import { Tooltip } from '../components/Tooltip';
 import {
   chatPanelFocusKeyboard,
   getSettings,
@@ -34,17 +44,33 @@ import {
   lessComputerApprove,
   lessComputerSubmitText,
   lessComputerSync,
+  lessComputerTaskCancel,
+  lessComputerVoiceCancel,
+  lessComputerVoiceStart,
+  lessComputerVoiceStop,
   lessComputerWindowDismiss,
   marketplaceAuthStatus,
 } from '../lib/ipc';
 import { reconcileLessComputerReplay, reduceLessComputerVoice } from '../lib/lessComputerReplay';
+import {
+  claimDictationResult,
+  mergeDictation,
+  transcriptTail,
+  voiceHintKey,
+} from '../lib/lessComputerComposer';
+import { formatComboLabel } from '../lib/hotkey';
+import { applyThemeFromPreference } from '../lib/themeMode';
+import { useExitMount } from '../lib/useExitMount';
 import type {
   CodingAgentProviderId,
+  HotkeyMode,
   LessComputerEvent,
   LessComputerVoiceEvent,
+  LessComputerVoiceMode,
   UserPreferences,
 } from '../lib/types';
 import { groupToolActivities, toolActivityCategory } from '../lib/lessComputerToolActivity';
+import { AgentAvatar, CopyAction, LessComputerInspector, type RunTone } from './LessComputerChrome';
 import './less-computer-panel.css';
 
 type Translate = ReturnType<typeof useTranslation>['t'];
@@ -54,6 +80,20 @@ const AGENTS: { id: CodingAgentProviderId; name: string }[] = [
   { id: 'codex-cli', name: 'Codex' },
   { id: 'dsh-cli', name: 'dsh' },
 ];
+
+const CATEGORY_ICONS = {
+  search: SearchIcon,
+  read: FileTextIcon,
+  command: TerminalIcon,
+  edit: PencilLineIcon,
+  web: GlobeIcon,
+  other: WrenchIcon,
+};
+
+const INSPECTOR_KEY = 'ol.lc.inspector';
+const NARROW_QUERY = '(max-width: 899px)';
+const LOGIN_EXIT_MS = 180;
+const MAX_INPUT_HEIGHT = 168;
 
 type RunStatus = 'idle' | 'working' | 'done' | 'error' | 'cancelled';
 
@@ -96,6 +136,11 @@ interface Turn {
   costUsd: number | null;
 }
 
+interface VoiceShortcut {
+  label: string;
+  mode: HotkeyMode;
+}
+
 function emptyTurn(user: string): Turn {
   return { user, segments: [], status: 'working', errorMsg: '', costUsd: null };
 }
@@ -115,10 +160,48 @@ function updateLastTurn(turns: Turn[], fn: (t: Turn) => Turn): Turn[] {
   return [...list.slice(0, -1), fn(list[list.length - 1])];
 }
 
+function hasFinishedLastTurn(turns: Turn[]): boolean {
+  const last = turns[turns.length - 1];
+  return last !== undefined && last.status !== 'working';
+}
+
 /** 把流里还在扫光的工具行停下来（下一个事件到达仅停止工具活动指示）。 */
 function settleRunningTools(segments: Segment[]): Segment[] {
   if (!segments.some((s) => s.kind === 'tool' && s.running)) return segments;
   return segments.map((s) => (s.kind === 'tool' && s.running ? { ...s, running: false } : s));
+}
+
+function readInspectorPreference(): boolean {
+  try {
+    return window.localStorage?.getItem(INSPECTOR_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function writeInspectorPreference(open: boolean) {
+  try {
+    window.localStorage?.setItem(INSPECTOR_KEY, open ? '1' : '0');
+  } catch {
+    /* the in-memory preference still applies for this window */
+  }
+}
+
+function matchesNarrow(): boolean {
+  return typeof window.matchMedia === 'function' && window.matchMedia(NARROW_QUERY).matches;
+}
+
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
+function voiceShortcutFrom(preferences: UserPreferences): VoiceShortcut | null {
+  const binding = preferences.codingAgentVoiceHotkey;
+  if (!binding) return null;
+  return { label: formatComboLabel(binding), mode: preferences.hotkey?.mode ?? 'hold' };
 }
 
 // Keep the replay watermark across StrictMode/HMR effect remounts. A whole
@@ -131,12 +214,19 @@ export function LessComputerPanel() {
   const [voice, setVoice] = useState<LessComputerVoiceEvent | null>(null);
   const [sessionSeq, setSessionSeq] = useState(0);
   const [provider, setProvider] = useState<CodingAgentProviderId | null>(null);
+  const [voiceShortcut, setVoiceShortcut] = useState<VoiceShortcut | null>(null);
   const [signedIn, setSignedIn] = useState<boolean | null>(null);
   const [loginOpen, setLoginOpen] = useState(false);
   const [windowError, setWindowError] = useState(false);
+  const [inspectorPreference, setInspectorPreference] = useState(readInspectorPreference);
+  const [narrow, setNarrow] = useState(matchesNarrow);
+  const [inspectorOverlay, setInspectorOverlay] = useState(false);
   const turnEpoch = useRef(0);
   const approvalRequests = useRef(new Map<string, symbol>());
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const closedRef = useRef(false);
   const { enterEpoch, closing } = useChatPanelLifecycle();
+  const login = useExitMount(loginOpen, LOGIN_EXIT_MS);
 
   // Read actual configuration and account status; browser previews stay unavailable.
   useEffect(() => {
@@ -144,12 +234,21 @@ export function LessComputerPanel() {
     let cancelled = false;
     let revision = 0;
     let unlisten: (() => void) | undefined;
+    const applyPreferences = (preferences: UserPreferences) => {
+      setProvider(preferences.codingAgentProvider);
+      setVoiceShortcut(voiceShortcutFrom(preferences));
+      if (preferences.themeMode) applyThemeFromPreference(preferences.themeMode);
+    };
     const refresh = async () => {
       const current = ++revision;
       const results = await Promise.allSettled([getSettings(), marketplaceAuthStatus()]);
       if (cancelled || current !== revision) return;
       const [settings, account] = results;
-      setProvider(settings.status === 'fulfilled' ? settings.value.codingAgentProvider : null);
+      if (settings.status === 'fulfilled') applyPreferences(settings.value);
+      else {
+        setProvider(null);
+        setVoiceShortcut(null);
+      }
       setSignedIn(account.status === 'fulfilled' ? account.value.signedIn : null);
     };
     void (async () => {
@@ -157,7 +256,7 @@ export function LessComputerPanel() {
         const { listen } = await import('@tauri-apps/api/event');
         const handle = await listen<UserPreferences>('prefs:changed', (event) => {
           revision += 1;
-          setProvider(event.payload.codingAgentProvider);
+          applyPreferences(event.payload);
         });
         if (cancelled) {
           handle();
@@ -176,6 +275,40 @@ export function LessComputerPanel() {
       window.removeEventListener('focus', refresh);
     };
   }, [loginOpen]);
+
+  // Narrow windows show the inspector as an overlay that starts closed.
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia(NARROW_QUERY);
+    const onChange = () => {
+      setNarrow(media.matches);
+      setInspectorOverlay(false);
+    };
+    media.addEventListener('change', onChange);
+    return () => media.removeEventListener('change', onChange);
+  }, []);
+
+  // The WebView is reused across show/hide. Replay only the entrance motion so
+  // drafts, scroll position and inspector state survive reopening. Text and
+  // voice turns also call the native show path while the panel is visible;
+  // those must not flash the window, so only a preceding close replays it.
+  useEffect(() => {
+    if (closing) closedRef.current = true;
+  }, [closing]);
+  useEffect(() => {
+    if (enterEpoch === 0 || !closedRef.current) return;
+    closedRef.current = false;
+    if (prefersReducedMotion()) return;
+    const shell = shellRef.current;
+    if (!shell || typeof shell.animate !== 'function') return;
+    shell.animate(
+      [
+        { opacity: 0, transform: 'translateY(6px) scale(0.985)' },
+        { opacity: 1, transform: 'none' },
+      ],
+      { duration: 240, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' },
+    );
+  }, [enterEpoch]);
 
   // ── 后端事件订阅（mount 一次）────────────────────────────────────────
   //
@@ -329,21 +462,28 @@ export function LessComputerPanel() {
         break;
       case 'error':
         setTurns((prev) =>
-          updateLastTurn(prev, (tn) => ({
-            ...tn,
-            segments: settleRunningTools(tn.segments),
-            errorMsg: ev.message,
-            status: 'error',
-          })),
+          // A capture that fails before any turn starts must not relabel the
+          // previous finished answer; it gets its own error row instead.
+          hasFinishedLastTurn(prev)
+            ? [...prev, { ...emptyTurn(''), status: 'error', errorMsg: ev.message }]
+            : updateLastTurn(prev, (tn) => ({
+                ...tn,
+                segments: settleRunningTools(tn.segments),
+                errorMsg: ev.message,
+                status: 'error',
+              })),
         );
         break;
       case 'cancelled':
         setTurns((prev) =>
-          updateLastTurn(prev, (tn) => ({
-            ...tn,
-            segments: settleRunningTools(tn.segments),
-            status: 'cancelled',
-          })),
+          // Abandoning a recording cancels only the capture, not a finished turn.
+          hasFinishedLastTurn(prev)
+            ? prev
+            : updateLastTurn(prev, (tn) => ({
+                ...tn,
+                segments: settleRunningTools(tn.segments),
+                status: 'cancelled',
+              })),
         );
         break;
     }
@@ -399,6 +539,7 @@ export function LessComputerPanel() {
     }
   };
 
+  const activeVoiceSession = voice && voice.phase !== 'idle' ? voice.sessionId : null;
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return;
@@ -406,159 +547,178 @@ export function LessComputerPanel() {
       if (loginOpen) {
         event.stopPropagation();
         setLoginOpen(false);
+      } else if (activeVoiceSession && isTauri) {
+        // Esc during a recording only abandons that recording, never the window or task.
+        event.stopPropagation();
+        void lessComputerVoiceCancel(activeVoiceSession).catch(() => undefined);
       } else void windowAction('hide');
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [loginOpen]);
+  }, [loginOpen, activeVoiceSession]);
 
   const working = turns.some((turn) => turn.status === 'working');
   const latestTurn = turns[turns.length - 1];
-  const status = runStatusLabel(latestTurn, t);
+  const status = runStatus(latestTurn, t);
+  const agentName = AGENTS.find((agent) => agent.id === provider)?.name ?? null;
+  const voiceHint = voiceShortcut
+    ? t(`lessComputer.voice.${voiceHintKey(voiceShortcut.mode)}`, { key: voiceShortcut.label })
+    : null;
+  const inspectorOpen = narrow ? inspectorOverlay : inspectorPreference;
+  const toggleInspector = () => {
+    if (narrow) {
+      setInspectorOverlay((open) => !open);
+      return;
+    }
+    const next = !inspectorPreference;
+    setInspectorPreference(next);
+    writeInspectorPreference(next);
+  };
+  const showPillStatus =
+    status.tone === 'working' || status.tone === 'waiting' || status.tone === 'error';
+  const openInspectorLabel = t('lessComputer.desktop.showInspector');
 
   return (
     <>
       <div
-        className={`lc-desktop${closing ? ' is-closing' : ''}`}
-        key={`${sessionSeq}-${enterEpoch}`}
+        ref={shellRef}
+        className={`lc-desktop${inspectorOpen ? ' is-inspector-open' : ''}${closing ? ' is-closing' : ''}`}
       >
-        <header className="lc-topbar" data-tauri-drag-region>
-          <div className="lc-window-controls">
-            <button
-              className="lc-window-close"
-              type="button"
-              disabled={!isTauri}
-              aria-label={t('lessComputer.closeTooltip')}
-              title={t('lessComputer.closeTooltip')}
-              onClick={() => void windowAction('hide')}
-            >
-              <XIcon />
-            </button>
-            <button
-              className="lc-window-minimize"
-              type="button"
-              disabled={!isTauri}
-              aria-label={t('lessComputer.desktop.minimize')}
-              title={t('lessComputer.desktop.minimize')}
-              onClick={() => void windowAction('minimize')}
-            >
-              <MinusIcon />
-            </button>
-            <button
-              className="lc-window-maximize"
-              type="button"
-              disabled={!isTauri}
-              aria-label={t('lessComputer.desktop.maximize')}
-              title={t('lessComputer.desktop.maximize')}
-              onClick={() => void windowAction('maximize')}
-            >
-              <Maximize2Icon />
-            </button>
-          </div>
-          <div className="lc-session-title" data-tauri-drag-region>
-            <span className="lc-session-dot" />
-            <span data-tauri-drag-region>{t('lessComputer.desktop.currentSession')}</span>
-          </div>
-        </header>
         <aside className="lc-sidebar" aria-label={t('lessComputer.desktop.agents')}>
+          <div className="lc-sidebar-head" data-tauri-drag-region>
+            <div className="lc-window-controls">
+              <button
+                className="lc-window-close"
+                type="button"
+                disabled={!isTauri}
+                aria-label={t('lessComputer.closeTooltip')}
+                onClick={() => void windowAction('hide')}
+              >
+                <XIcon />
+              </button>
+              <button
+                className="lc-window-minimize"
+                type="button"
+                disabled={!isTauri}
+                aria-label={t('lessComputer.desktop.minimize')}
+                onClick={() => void windowAction('minimize')}
+              >
+                <MinusIcon />
+              </button>
+              <button
+                className="lc-window-maximize"
+                type="button"
+                disabled={!isTauri}
+                aria-label={t('lessComputer.desktop.maximize')}
+                onClick={() => void windowAction('maximize')}
+              >
+                <Maximize2Icon />
+              </button>
+            </div>
+            <Tooltip content={t('lessComputer.desktop.sessionUnavailable')} placement="bottom">
+              <button
+                className="lc-icon-button"
+                type="button"
+                aria-disabled="true"
+                aria-label={t('lessComputer.desktop.sessionUnavailable')}
+              >
+                <SquarePenIcon />
+              </button>
+            </Tooltip>
+          </div>
           <div className="lc-sidebar-scroll">
             <div className="lc-section-label">{t('lessComputer.desktop.agents')}</div>
-            <div className="lc-agent-list">
-              {AGENTS.map((agent) => (
-                <div
-                  key={agent.id}
-                  className={`lc-agent${provider === agent.id ? ' is-configured' : ''}`}
-                  title={agent.name}
-                >
-                  <div className="lc-agent-name">
-                    <strong>{agent.name}</strong>
-                    <span>
-                      {provider === agent.id
-                        ? t('lessComputer.desktop.configured')
-                        : t('lessComputer.desktop.agentSettings')}
-                    </span>
-                  </div>
-                  <div className="lc-agent-actions">
-                    <button
-                      type="button"
-                      disabled
-                      aria-label={`${agent.name} · ${t('lessComputer.desktop.historyUnavailable')}`}
-                      title={t('lessComputer.desktop.historyUnavailable')}
-                    >
-                      <HistoryIcon />
-                    </button>
-                    <button
-                      type="button"
-                      disabled
-                      aria-label={`${agent.name} · ${t('lessComputer.desktop.sessionUnavailable')}`}
-                      title={t('lessComputer.desktop.sessionUnavailable')}
-                    >
-                      <PlusIcon />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <p className="lc-sidebar-note">{t('lessComputer.desktop.agentHint')}</p>
-            <div className="lc-section-label lc-task-label">
-              {t('lessComputer.desktop.workspace')}
-            </div>
-            <button className="lc-placeholder" type="button" disabled>
-              <LayersIcon />
-              <span>
-                {t('lessComputer.desktop.multitask')}
-                <small>{t('lessComputer.desktop.unavailable')}</small>
-              </span>
-              <PlusIcon />
-            </button>
-            <p className="lc-sidebar-note">{t('lessComputer.desktop.historyHint')}</p>
+            <ul className="lc-agent-list">
+              {AGENTS.map((agent) => {
+                const current = provider === agent.id;
+                return (
+                  <li
+                    key={agent.id}
+                    className={`lc-agent${current ? ' is-current' : ''}`}
+                    aria-current={current ? 'true' : undefined}
+                  >
+                    <AgentAvatar agentId={agent.id} active={current} />
+                    <div className="lc-agent-text">
+                      <strong>{agent.name}</strong>
+                      <span>
+                        {current
+                          ? sessionPreview(turns, status.label, t)
+                          : t('lessComputer.desktop.agentSettings')}
+                      </span>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
           </div>
-          <button
-            className="lc-github"
-            type="button"
-            disabled={!isTauri || signedIn === true}
-            onClick={() => setLoginOpen(true)}
-          >
-            <GithubMark />
-            <span>
-              <strong>GitHub</strong>
-              <small>
-                {signedIn === true
-                  ? t('lessComputer.desktop.signedIn')
-                  : t('lessComputer.desktop.signIn')}
-              </small>
-            </span>
-            {signedIn === true ? <CheckIcon /> : <ChevronRightIcon />}
-          </button>
+          <div className="lc-sidebar-foot">
+            <button
+              className="lc-github"
+              type="button"
+              disabled={!isTauri || signedIn === true}
+              onClick={() => setLoginOpen(true)}
+            >
+              <span className="lc-github-mark">
+                <GithubMark />
+              </span>
+              <span className="lc-github-text">
+                <strong>GitHub</strong>
+                <small>
+                  {signedIn === true
+                    ? t('lessComputer.desktop.signedIn')
+                    : t('lessComputer.desktop.signIn')}
+                </small>
+              </span>
+              {signedIn === true ? <CheckIcon /> : <ChevronRightIcon />}
+            </button>
+          </div>
         </aside>
 
         <main className="lc-conversation" aria-label={t('lessComputer.desktop.currentSession')}>
+          <header className="lc-chat-top" data-tauri-drag-region>
+            <div className="lc-title-pill" data-tauri-drag-region>
+              <AgentAvatar agentId={provider} size="sm" active={provider != null} />
+              <strong data-tauri-drag-region>{agentName ?? t('lessComputer.title')}</strong>
+              <span
+                className={`lc-pill-status is-${status.tone}${showPillStatus ? ' is-visible' : ''}`}
+                role="status"
+              >
+                <span aria-hidden="true" />
+                {status.label}
+              </span>
+            </div>
+            <div className="lc-chat-top-actions">
+              {!inspectorOpen && (
+                <Tooltip content={openInspectorLabel} placement="bottom">
+                  <button
+                    className="lc-icon-button"
+                    type="button"
+                    aria-label={openInspectorLabel}
+                    onClick={toggleInspector}
+                  >
+                    <PanelRightOpenIcon />
+                  </button>
+                </Tooltip>
+              )}
+            </div>
+          </header>
           {windowError && (
             <p className="lc-notice" role="alert">
               {t('lessComputer.desktop.windowError')}
             </p>
           )}
-          <div className="lc-conversation-heading">
-            <h1>{t('lessComputer.title')}</h1>
-            <span className={`lc-run-status is-${latestTurn?.status ?? 'idle'}`} role="status">
-              <span />
-              {status}
-            </span>
-          </div>
           <div className="lc-message-area">
             <MessageScrollerProvider
+              key={sessionSeq}
               autoScroll
               defaultScrollPosition="last-anchor"
               scrollPreviousItemPeek={18}
             >
               {turns.length === 0 ? (
                 <div className="lc-empty">
+                  <AgentAvatar agentId={provider} size="lg" active={provider != null} />
                   <h2>{t('lessComputer.subtitle')}</h2>
                   <p>{t('lessComputer.desktop.emptyHint')}</p>
-                  <span className="lc-empty-label">
-                    <MicIcon />
-                    {t('lessComputer.desktop.voiceHint')}
-                  </span>
                 </div>
               ) : (
                 <MessageScroller>
@@ -587,11 +747,42 @@ export function LessComputerPanel() {
               )}
             </MessageScrollerProvider>
           </div>
-          <Composer working={working} voice={voice} t={t} />
+          <Composer
+            working={working}
+            voice={voice}
+            agentName={agentName}
+            voiceHint={voiceHint}
+            focusAllowed={!login.mounted && !closing}
+            t={t}
+          />
         </main>
+
+        <LessComputerInspector
+          open={inspectorOpen}
+          onClose={toggleInspector}
+          t={t}
+          summary={{
+            agentId: provider,
+            agentName,
+            statusLabel: status.label,
+            tone: status.tone,
+            toolCount:
+              latestTurn?.segments.filter((segment) => segment.kind === 'tool').length ?? 0,
+            pendingApprovals:
+              latestTurn?.status === 'working'
+                ? latestTurn.segments.filter(
+                    (segment) => segment.kind === 'approval' && !segment.decision,
+                  ).length
+                : 0,
+            costUsd: latestTurn?.costUsd ?? null,
+            voiceHint,
+          }}
+        />
       </div>
-      {loginOpen && isTauri && (
+      {login.mounted && isTauri && (
         <GithubLoginModal
+          closing={login.closing}
+          overlayClassName="lc-dialog-overlay"
           onClose={() => setLoginOpen(false)}
           onSuccess={() => {
             setSignedIn(true);
@@ -603,23 +794,51 @@ export function LessComputerPanel() {
   );
 }
 
-function runStatusLabel(turn: Turn | undefined, t: Translate): string {
-  if (!turn) return t('lessComputer.desktop.idle');
+function runStatus(turn: Turn | undefined, t: Translate): { label: string; tone: RunTone } {
+  if (!turn) return { label: t('lessComputer.desktop.idle'), tone: 'idle' };
   if (
     turn.status === 'working' &&
     turn.segments.some((segment) => segment.kind === 'approval' && !segment.decision)
   )
-    return t('lessComputer.desktop.waitingApproval');
+    return { label: t('lessComputer.desktop.waitingApproval'), tone: 'waiting' };
   if (turn.status === 'working') {
     const active = turn.segments.find((segment) => segment.kind === 'tool' && segment.running);
-    return active?.kind === 'tool'
-      ? t(`lessComputer.activity.${toolActivityCategory(active.name)}Running`)
-      : t('lessComputer.working');
+    return {
+      label:
+        active?.kind === 'tool'
+          ? t(`lessComputer.activity.${toolActivityCategory(active.name)}Running`)
+          : t('lessComputer.working'),
+      tone: 'working',
+    };
   }
-  if (turn.status === 'done') return t('lessComputer.done');
-  if (turn.status === 'cancelled') return t('common.cancelled');
-  if (turn.status === 'error') return t('lessComputer.error');
-  return t('lessComputer.desktop.idle');
+  if (turn.status === 'done') return { label: t('lessComputer.done'), tone: 'done' };
+  if (turn.status === 'cancelled') return { label: t('common.cancelled'), tone: 'cancelled' };
+  if (turn.status === 'error') return { label: t('lessComputer.error'), tone: 'error' };
+  return { label: t('lessComputer.desktop.idle'), tone: 'idle' };
+}
+
+function plainPreview(markdown: string): string {
+  return markdown
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/[`*_>#~[\]()|]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Sidebar preview of the one real session: live status while working, else its latest words. */
+function sessionPreview(turns: Turn[], statusLabel: string, t: Translate): string {
+  const turn = turns[turns.length - 1];
+  if (!turn) return t('lessComputer.desktop.idle');
+  if (turn.status === 'working') return statusLabel;
+  for (let i = turn.segments.length - 1; i >= 0; i -= 1) {
+    const segment = turn.segments[i];
+    if (segment.kind === 'text') {
+      const preview = plainPreview(segment.content);
+      if (preview) return preview;
+    }
+  }
+  if (turn.status === 'error') return turn.errorMsg || statusLabel;
+  return turn.user.trim() || statusLabel;
 }
 
 function voiceTime(elapsedMs: number): string {
@@ -627,34 +846,92 @@ function voiceTime(elapsedMs: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return typeof error === 'string' ? error : String(error);
+}
+
 function Composer({
   working,
   voice,
   t,
+  agentName = null,
+  voiceHint = null,
+  focusAllowed = true,
 }: {
   working: boolean;
   voice: LessComputerVoiceEvent | null;
   t: Translate;
+  agentName?: string | null;
+  voiceHint?: string | null;
+  focusAllowed?: boolean;
 }) {
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
+  const [voicePending, setVoicePending] = useState(false);
+  const [stoppingTask, setStoppingTask] = useState(false);
   const submittingRef = useRef(false);
   const composingRef = useRef(false);
-  const speaking = voice !== null && voice.phase !== 'idle';
-  const busy = working || speaking || submitting;
+  const voiceRequestRef = useRef(false);
+  const focusPendingRef = useRef(false);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const phase = voice?.phase ?? 'idle';
+  const speaking = voice !== null && phase !== 'idle';
+  const dictating = speaking && voice?.mode === 'dictate';
+  const busy = working || speaking || submitting || voicePending;
+  const hasText = text.trim().length > 0;
   const voiceLabel =
-    voice?.phase === 'recording'
-      ? t('overview.inAppDictation.recording')
-      : voice?.phase === 'starting'
-        ? t('common.loading')
-        : t('overview.inAppDictation.processing');
+    phase === 'recording'
+      ? t('lessComputer.voice.listening')
+      : phase === 'starting'
+        ? t('lessComputer.voice.starting')
+        : t('lessComputer.voice.transcribing');
+
+  // A finished dictation lands in the draft exactly once, even when replayed.
+  useEffect(() => {
+    if (!voice || voice.phase !== 'idle' || voice.mode !== 'dictate' || !voice.outcome) return;
+    if (!claimDictationResult(voice.sessionId)) return;
+    const transcript = voice.transcript?.trim() ?? '';
+    if (voice.outcome === 'committed' && transcript) {
+      setText((current) => mergeDictation(current, transcript));
+      setVoiceNotice(null);
+      focusPendingRef.current = true;
+    } else if (voice.outcome === 'empty') setVoiceNotice(t('lessComputer.voice.empty'));
+    else if (voice.outcome === 'failed') setVoiceNotice(t('lessComputer.voice.failed'));
+  }, [voice]);
+
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    input.style.height = 'auto';
+    input.style.height = `${Math.min(input.scrollHeight, MAX_INPUT_HEIGHT)}px`;
+    if (!focusPendingRef.current) return;
+    focusPendingRef.current = false;
+    // A dialog or closing window owns focus. Consume this request rather than
+    // unexpectedly replaying it when that surface is dismissed later.
+    if (!focusAllowed) return;
+    if (isTauri) void chatPanelFocusKeyboard().catch(() => undefined);
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(input.value.length, input.value.length);
+  }, [text, focusAllowed]);
+
   const send = async () => {
     const trimmed = text.trim();
-    if (!isTauri || !trimmed || busy || submittingRef.current || composingRef.current) return;
+    if (
+      !isTauri ||
+      !trimmed ||
+      busy ||
+      submittingRef.current ||
+      voiceRequestRef.current ||
+      composingRef.current
+    )
+      return;
     submittingRef.current = true;
     setSubmitting(true);
     setFailed(false);
+    setVoiceNotice(null);
     try {
       await lessComputerSubmitText(trimmed);
       // Keep a draft typed while the IPC was pending. The actual user event owns the chat.
@@ -666,83 +943,204 @@ function Composer({
       setSubmitting(false);
     }
   };
+  const startVoice = async (mode: LessComputerVoiceMode) => {
+    if (!isTauri || busy || voiceRequestRef.current || submittingRef.current) return;
+    voiceRequestRef.current = true;
+    setVoicePending(true);
+    setVoiceNotice(null);
+    setFailed(false);
+    try {
+      await lessComputerVoiceStart(mode);
+    } catch (error) {
+      setVoiceNotice(t('lessComputer.voice.startFailed', { message: errorText(error) }));
+    } finally {
+      voiceRequestRef.current = false;
+      setVoicePending(false);
+    }
+  };
+  const stopVoice = () => {
+    if (!isTauri || !voice || !speaking || phase === 'transcribing') return;
+    void lessComputerVoiceStop(voice.sessionId).catch(() =>
+      setVoiceNotice(t('lessComputer.voice.failed')),
+    );
+  };
+  const cancelVoice = () => {
+    if (!isTauri || !voice || !speaking) return;
+    void lessComputerVoiceCancel(voice.sessionId).catch(() => undefined);
+  };
+  const stopTask = async () => {
+    if (!isTauri || !working || stoppingTask) return;
+    setStoppingTask(true);
+    setVoiceNotice(null);
+    try {
+      await lessComputerTaskCancel();
+    } catch {
+      setVoiceNotice(t('lessComputer.voice.taskCancelFailed'));
+    } finally {
+      setStoppingTask(false);
+    }
+  };
   const onKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== 'Enter' || event.shiftKey) return;
     event.preventDefault();
     if (composingRef.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
     void send();
   };
+  const liveTranscript = voice?.transcript ? transcriptTail(voice.transcript) : '';
+  const placeholder = agentName
+    ? t('lessComputer.desktop.messagePlaceholder', { agent: agentName })
+    : t('lessComputer.inputPlaceholder');
+  const primary = working ? 'stop' : hasText ? 'send' : 'voice';
+  const primaryLabel =
+    primary === 'stop'
+      ? t('lessComputer.voice.stopTask')
+      : primary === 'send'
+        ? t('lessComputer.send')
+        : t('lessComputer.voice.voiceMode');
+  const confirmLabel = dictating
+    ? t('lessComputer.voice.confirmDictation')
+    : t('lessComputer.voice.stopAndSend');
+  const caption = failed ? (
+    <span role="alert">{t('lessComputer.desktop.sendError')}</span>
+  ) : voiceNotice ? (
+    <span role="alert">{voiceNotice}</span>
+  ) : !isTauri ? (
+    t('lessComputer.desktop.browserUnavailable')
+  ) : speaking ? (
+    dictating ? (
+      t('lessComputer.voice.dictateCaption')
+    ) : (
+      t('lessComputer.voice.submitCaption')
+    )
+  ) : working ? (
+    t('lessComputer.voice.stopHint')
+  ) : (
+    [t('lessComputer.desktop.inputHint'), voiceHint].filter(Boolean).join(' · ')
+  );
   return (
     <div className="lc-composer-wrap">
       <form
-        className={`lc-composer${speaking ? ' is-voice' : ''}`}
+        className={`lc-composer${speaking ? ' is-voice' : ''}${phase === 'recording' ? ' is-recording' : ''}`}
         onSubmit={(event) => {
           event.preventDefault();
           void send();
         }}
       >
-        <div className="lc-input-stage">
-          <textarea
-            className="lc-text-input"
-            rows={2}
-            value={text}
-            disabled={!isTauri || speaking}
-            placeholder={t('lessComputer.inputPlaceholder')}
-            aria-label={t('lessComputer.inputPlaceholder')}
-            onChange={(event) => setText(event.currentTarget.value)}
-            onKeyDown={onKeyDown}
-            onCompositionStart={() => {
-              composingRef.current = true;
-            }}
-            onCompositionEnd={() => {
-              composingRef.current = false;
-            }}
-            onFocus={() => {
-              if (isTauri) void chatPanelFocusKeyboard().catch(() => undefined);
-            }}
-            onPointerDown={() => {
-              if (isTauri) void chatPanelFocusKeyboard().catch(() => undefined);
-            }}
-          />
-          <div className="lc-voice-stage" aria-hidden={!speaking}>
-            {speaking && voice && (
-              <>
-                <VoiceWaveform
-                  level={voice.phase === 'recording' ? voice.level : 0}
-                  processing={voice.phase !== 'recording'}
+        <textarea
+          ref={inputRef}
+          className="lc-text-input"
+          rows={1}
+          value={text}
+          disabled={!isTauri || speaking}
+          placeholder={placeholder}
+          aria-label={placeholder}
+          onChange={(event) => {
+            setText(event.currentTarget.value);
+            if (voiceNotice) setVoiceNotice(null);
+          }}
+          onKeyDown={onKeyDown}
+          onCompositionStart={() => {
+            composingRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            composingRef.current = false;
+          }}
+          onFocus={() => {
+            if (isTauri && focusAllowed) void chatPanelFocusKeyboard().catch(() => undefined);
+          }}
+          onPointerDown={() => {
+            if (isTauri && focusAllowed) void chatPanelFocusKeyboard().catch(() => undefined);
+          }}
+        />
+        <div className="lc-composer-actions">
+          <Tooltip content={t('lessComputer.voice.dictate')} placement="top">
+            <button
+              className="lc-round lc-mic"
+              type="button"
+              disabled={!isTauri || busy || voicePending}
+              aria-label={t('lessComputer.voice.dictate')}
+              onClick={() => void startVoice('dictate')}
+            >
+              <MicIcon />
+            </button>
+          </Tooltip>
+          <Tooltip content={primaryLabel} placement="top">
+            <button
+              className={`lc-round lc-primary lc-${primary}`}
+              type={primary === 'send' ? 'submit' : 'button'}
+              disabled={
+                !isTauri ||
+                (primary === 'stop'
+                  ? stoppingTask
+                  : primary === 'send'
+                    ? busy
+                    : busy || voicePending)
+              }
+              aria-label={primaryLabel}
+              onClick={
+                primary === 'stop'
+                  ? () => void stopTask()
+                  : primary === 'voice'
+                    ? () => void startVoice('submit')
+                    : undefined
+              }
+            >
+              <span className="lc-icon-swap" key={primary}>
+                {primary === 'stop' ? (
+                  <SquareIcon />
+                ) : primary === 'send' ? (
+                  <ArrowUpIcon />
+                ) : (
+                  <AudioLinesIcon />
+                )}
+              </span>
+            </button>
+          </Tooltip>
+        </div>
+        <div className="lc-voice-stage" aria-hidden={!speaking}>
+          {speaking && voice && (
+            <>
+              <Tooltip content={t('lessComputer.voice.cancel')} placement="top">
+                <button
+                  className="lc-round lc-ghost"
+                  type="button"
+                  aria-label={t('lessComputer.voice.cancel')}
+                  onClick={cancelVoice}
+                >
+                  <XIcon />
+                </button>
+              </Tooltip>
+              <div className="lc-voice-live">
+                <LiveWaveform
+                  level={phase === 'recording' ? voice.level : 0}
+                  processing={phase !== 'recording'}
                   label={voiceLabel}
                 />
+                <p className={`lc-voice-transcript${liveTranscript ? '' : ' is-placeholder'}`}>
+                  {liveTranscript || voiceLabel}
+                </p>
+              </div>
+              <span className="lc-voice-clock">
+                {phase === 'recording' && <span className="lc-recording-dot" aria-hidden="true" />}
                 <time>{voiceTime(voice.elapsedMs)}</time>
-              </>
-            )}
-          </div>
-        </div>
-        <div className="lc-composer-footer">
-          <span>
-            <MicIcon />
-            {t('lessComputer.desktop.voiceHint')}
-          </span>
-          <button
-            className="lc-send"
-            type="submit"
-            disabled={!isTauri || busy || !text.trim()}
-            aria-label={t('lessComputer.send')}
-            title={t('lessComputer.send')}
-          >
-            <ArrowUpIcon />
-          </button>
+              </span>
+              <Tooltip content={confirmLabel} placement="top">
+                <button
+                  className="lc-round lc-primary"
+                  type="button"
+                  disabled={phase === 'transcribing'}
+                  aria-label={confirmLabel}
+                  onClick={stopVoice}
+                >
+                  {dictating ? <CheckIcon /> : <ArrowUpIcon />}
+                </button>
+              </Tooltip>
+            </>
+          )}
         </div>
       </form>
-      <div className="lc-composer-caption">
-        {failed ? (
-          <span role="alert">{t('lessComputer.desktop.sendError')}</span>
-        ) : !isTauri ? (
-          t('lessComputer.desktop.browserUnavailable')
-        ) : working ? (
-          t('lessComputer.desktop.cancelHint')
-        ) : (
-          t('lessComputer.desktop.inputHint')
-        )}
+      <div className="lc-composer-caption" aria-live="polite">
+        {caption}
       </div>
     </div>
   );
@@ -771,25 +1169,27 @@ function TurnView({
     <>
       {hasUser && (
         <MessageScrollerItem messageId={`t${index}-user`} scrollAnchor>
-          <div className="lc-user-message">
-            <span>{t('lessComputer.you')}</span>
-            <p>{turn.user}</p>
+          <div className="lc-user-row">
+            <p className="lc-bubble lc-bubble-user">{turn.user}</p>
           </div>
         </MessageScrollerItem>
       )}
       <MessageScrollerItem messageId={`t${index}-assistant`} scrollAnchor={!hasUser}>
         <div className="lc-assistant-message">
-          <div className="lc-assistant-label">Less Computer</div>
           {turn.segments.map((segment, i) => {
-            if (segment.kind === 'text')
+            if (segment.kind === 'text') {
+              const streaming = turn.status === 'working' && i === turn.segments.length - 1;
               return (
-                <div className="lc-answer" key={`s${i}`}>
-                  <AssistantMarkdown
-                    markdown={segment.content}
-                    streaming={turn.status === 'working' && i === turn.segments.length - 1}
-                  />
+                <div className="lc-bubble-row" key={`s${i}`}>
+                  <div className="lc-bubble lc-bubble-assistant lc-answer">
+                    <AssistantMarkdown markdown={segment.content} streaming={streaming} />
+                  </div>
+                  {!streaming && segment.content.trim() && (
+                    <CopyAction text={segment.content} t={t} />
+                  )}
                 </div>
               );
+            }
             if (segment.kind === 'tool') {
               if (turn.segments[i - 1]?.kind === 'tool') return null;
               const tools: ToolSegment[] = [];
@@ -831,18 +1231,23 @@ function TurnView({
             );
           })}
           {waiting && (
-            <div className="lc-thinking" role="status">
-              <span className="lc-active-dot" />
-              {t('lessComputer.working')}
+            <div className="lc-typing" role="status" aria-label={t('lessComputer.working')}>
+              <span />
+              <span />
+              <span />
             </div>
           )}
           {turn.status === 'error' && (
-            <p className="lc-run-error" role="alert">
-              {turn.errorMsg || t('lessComputer.error')}
+            <p className="lc-bubble lc-run-error" role="alert">
+              <CircleAlertIcon />
+              <span>{turn.errorMsg || t('lessComputer.error')}</span>
             </p>
           )}
           {turn.status === 'cancelled' && (
-            <span className="lc-turn-footnote">{t('common.cancelled')}</span>
+            <span className="lc-turn-footnote">
+              <MinusIcon />
+              {t('common.cancelled')}
+            </span>
           )}
           {turn.status === 'done' && (
             <div className="lc-turn-footnote">
@@ -870,68 +1275,93 @@ function ToolProcess({
   interrupted: boolean;
   t: Translate;
 }) {
+  const [open, setOpen] = useState(false);
   const groups = groupToolActivities(tools, working, interrupted);
   const active = groups.find((group) => group.state === 'active');
+  const category =
+    active?.category ??
+    (groups.every((group) => group.category === groups[0]?.category)
+      ? groups[0]?.category
+      : undefined);
+  const Icon = category ? CATEGORY_ICONS[category] : LayersIcon;
   return (
-    <details className="lc-tool-process">
-      <summary>
-        <ChevronRightIcon className="lc-process-chevron" />
-        <span className={`lc-process-label${active ? ' is-running' : ''}`}>
-          {active
-            ? t(`lessComputer.activity.${active.category}Running`)
-            : t('lessComputer.activity.process')}
+    <div className={`lc-tool-card${open ? ' is-open' : ''}${active ? ' is-active' : ''}`}>
+      <button
+        type="button"
+        className="lc-tool-summary"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="lc-tool-icon" aria-hidden="true">
+          <Icon />
         </span>
-        <span className="lc-process-count">
-          {t('lessComputer.activity.count', { count: tools.length })}
-        </span>
-        {!active && (
-          <span className="lc-process-result">
-            {interrupted ? t('lessComputer.activity.stopped') : t('lessComputer.activity.finished')}
+        <span className="lc-tool-heading">
+          <span className={`lc-process-label${active ? ' is-running' : ''}`}>
+            {active
+              ? t(`lessComputer.activity.${active.category}Running`)
+              : t('lessComputer.activity.process')}
           </span>
-        )}
-      </summary>
-      <ol className="lc-process-steps">
-        {groups.map((group, index) => (
-          <li key={index} className={`lc-process-step is-${group.state}`}>
-            <span className="lc-process-marker" aria-hidden="true">
-              {group.state === 'active' ? (
-                <span />
-              ) : group.state === 'stopped' ? (
-                <MinusIcon />
-              ) : (
-                <CheckIcon />
-              )}
+          <span className="lc-process-meta">
+            <span className="lc-process-count">
+              {t('lessComputer.activity.count', { count: tools.length })}
             </span>
-            <div className="lc-process-step-content">
-              <div className="lc-process-phase-row">
-                <span
-                  className={`lc-process-phase${group.state === 'active' ? ' is-running' : ''}`}
-                >
-                  {t(
-                    `lessComputer.activity.${group.category}${group.state === 'active' ? 'Running' : ''}`,
+            {!active && (
+              <span className="lc-process-result">
+                {interrupted
+                  ? t('lessComputer.activity.stopped')
+                  : t('lessComputer.activity.finished')}
+              </span>
+            )}
+          </span>
+        </span>
+        <ChevronRightIcon className="lc-process-chevron" />
+      </button>
+      <div className="lc-tool-body" aria-hidden={!open}>
+        <div className="lc-tool-body-inner">
+          <ol className="lc-process-steps">
+            {groups.map((group, index) => (
+              <li key={index} className={`lc-process-step is-${group.state}`}>
+                <span className="lc-process-marker" aria-hidden="true">
+                  {group.state === 'active' ? (
+                    <span />
+                  ) : group.state === 'stopped' ? (
+                    <MinusIcon />
+                  ) : (
+                    <CheckIcon />
                   )}
                 </span>
-                {group.state !== 'active' && (
-                  <span className="lc-process-result">
-                    {t(
-                      `lessComputer.activity.${group.state === 'stopped' ? 'stopped' : 'finished'}`,
+                <div className="lc-process-step-content">
+                  <div className="lc-process-phase-row">
+                    <span
+                      className={`lc-process-phase${group.state === 'active' ? ' is-running' : ''}`}
+                    >
+                      {t(
+                        `lessComputer.activity.${group.category}${group.state === 'active' ? 'Running' : ''}`,
+                      )}
+                    </span>
+                    {group.state !== 'active' && (
+                      <span className="lc-process-result">
+                        {t(
+                          `lessComputer.activity.${group.state === 'stopped' ? 'stopped' : 'finished'}`,
+                        )}
+                      </span>
                     )}
-                  </span>
-                )}
-              </div>
-              <ul className="lc-process-tools">
-                {group.names.map((tool, toolIndex) => (
-                  <li key={toolIndex}>
-                    <span>{tool.name}</span>
-                    {tool.count > 1 && <span className="lc-tool-count">×{tool.count}</span>}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </li>
-        ))}
-      </ol>
-    </details>
+                  </div>
+                  <ul className="lc-process-tools">
+                    {group.names.map((tool, toolIndex) => (
+                      <li key={toolIndex}>
+                        <span>{tool.name}</span>
+                        {tool.count > 1 && <span className="lc-tool-count">×{tool.count}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -947,50 +1377,62 @@ function ApprovalCard({
   t: Translate;
 }) {
   return (
-    <section className="lc-approval">
-      <div className="lc-approval-title">
-        <ShieldCheckIcon />
-        <strong>{t('lessComputer.approvalTitle')}</strong>
-      </div>
-      <pre>{card.command}</pre>
-      {card.reason && <p>{card.reason}</p>}
-      <p className="lc-approval-warning">{t('lessComputer.approvalRerunWarning')}</p>
-      {card.decision ? (
-        <span className="lc-approval-result">
-          <CheckIcon />
-          {t(`lessComputer.desktop.${card.decision}Submitted`)}
+    <section
+      className={`lc-approval${card.decision ? ' is-decided' : ''}${card.pending ? ' is-pending' : ''}`}
+    >
+      <div className="lc-approval-head">
+        <span className="lc-approval-icon" aria-hidden="true">
+          <ShieldCheckIcon />
         </span>
-      ) : (
-        <>
-          <div className="lc-approval-actions">
-            <button
-              type="button"
-              disabled={!isTauri || !actionable || card.pending}
-              onClick={() => onDecide(card.token, false)}
-            >
-              {t('lessComputer.deny')}
-            </button>
-            <button
-              className="lc-primary-button"
-              type="button"
-              disabled={!isTauri || !actionable || card.pending}
-              onClick={() => onDecide(card.token, true)}
-            >
-              {card.pending
-                ? t('lessComputer.desktop.submittingApproval')
-                : t('lessComputer.approve')}
-            </button>
-          </div>
-          {card.failed && (
-            <p className="lc-run-error" role="alert">
-              {t('lessComputer.desktop.approvalError')}
-            </p>
+        <div className="lc-approval-heading">
+          <strong>{t('lessComputer.approvalTitle')}</strong>
+          {card.decision && <code className="lc-approval-command">{card.command}</code>}
+        </div>
+        {card.decision && (
+          <span className={`lc-approval-result is-${card.decision}`}>
+            <CheckIcon />
+            {t(`lessComputer.desktop.${card.decision}Submitted`)}
+          </span>
+        )}
+      </div>
+      <div className="lc-approval-detail" aria-hidden={card.decision ? true : undefined}>
+        <div className="lc-approval-detail-inner">
+          <pre>{card.command}</pre>
+          {card.reason && <p>{card.reason}</p>}
+          <p className="lc-approval-warning">{t('lessComputer.approvalRerunWarning')}</p>
+          {!card.decision && (
+            <>
+              <div className="lc-approval-actions">
+                <button
+                  type="button"
+                  disabled={!isTauri || !actionable || card.pending}
+                  onClick={() => onDecide(card.token, false)}
+                >
+                  {t('lessComputer.deny')}
+                </button>
+                <button
+                  className="lc-primary-button"
+                  type="button"
+                  disabled={!isTauri || !actionable || card.pending}
+                  onClick={() => onDecide(card.token, true)}
+                >
+                  {card.pending
+                    ? t('lessComputer.desktop.submittingApproval')
+                    : t('lessComputer.approve')}
+                </button>
+              </div>
+              {card.failed && (
+                <p className="lc-run-error" role="alert">
+                  {t('lessComputer.desktop.approvalError')}
+                </p>
+              )}
+              {!actionable && (
+                <p className="lc-turn-footnote">{t('lessComputer.desktop.approvalExpired')}</p>
+              )}
+            </>
           )}
-          {!actionable && (
-            <p className="lc-turn-footnote">{t('lessComputer.desktop.approvalExpired')}</p>
-          )}
-        </>
-      )}
+        </div>
+      </div>
     </section>
   );
 }

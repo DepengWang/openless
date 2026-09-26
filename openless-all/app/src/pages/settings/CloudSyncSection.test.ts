@@ -164,6 +164,7 @@ const dependencies: Record<string, any> = {
   Modal: 'modal',
   Btn: 'button',
   Card: 'card',
+  Toggle: 'toggle',
   isTauri: true,
   marketplaceAuthStatus: async () => ({ signedIn: true }),
   cloudSyncE2eeStatus: async () => deferredStatus ?? { ...server },
@@ -276,7 +277,7 @@ try {
   assert.equal(find(consent, (node) => node.type === 'button').props.disabled, true);
 
   const protocolHooks = new Hooks();
-  const protocolProps = { busy: false, onConfirm() {}, onBack() {} };
+  const protocolProps = { busy: false, onConfirm() {}, onCancel() {} };
   let protocolTree = protocolHooks.render(() => components.ProtocolWarning(protocolProps));
   const confirmProtocol = () =>
     find(protocolTree, (node) => node.props.children === 'cloudSyncE2ee.protocolConfirm');
@@ -296,11 +297,10 @@ try {
   render();
   await settle();
   let tree = render();
-  assert.equal(find(tree, (node) => node.props.role === 'switch').props.checked, false);
+  const syncSwitch = (view: unknown) => find(view, (node) => node.type === 'toggle');
+  assert.equal(syncSwitch(tree).props.on, false);
   assert.deepEqual(calls, [], 'mount must not enable, upload or consent');
-  find(tree, (node) => node.props.role === 'switch').props.onChange({
-    currentTarget: { checked: true },
-  });
+  syncSwitch(tree).props.onToggle(true);
   tree = render();
   find(tree, (node) => node.type === components.ConsentForm).props.onConfirm();
   await settle();
@@ -310,9 +310,12 @@ try {
     [],
     'scope consent alone must not prepare or upload before the privacy warning',
   );
-  find(tree, (node) => node.type === components.ProtocolWarning).props.onBack();
+  find(tree, (node) => node.type === components.ProtocolWarning).props.onCancel();
   tree = render();
-  assert.deepEqual(calls, [], 'returning from the warning must not perform native sync work');
+  assert.deepEqual(calls, [], 'canceling the warning must not perform native sync work');
+  assert(!nodes(tree).some((node) => node.type === components.ProtocolWarning));
+  syncSwitch(tree).props.onToggle(true);
+  tree = render();
   find(tree, (node) => node.type === components.ConsentForm).props.onConfirm();
   tree = render();
   find(tree, (node) => node.type === components.ProtocolWarning).props.onConfirm();
@@ -387,7 +390,7 @@ try {
   await settle();
   deferredStatus = null;
   tree = render();
-  assert.equal(find(tree, (node) => node.props.role === 'switch').props.checked, true);
+  assert.equal(syncSwitch(tree).props.on, true);
   events.get('cloud-sync-e2ee:conflict')!({
     payload: {
       sequence: (BigInt(newer.sequence) + 1n).toString(),
@@ -441,9 +444,7 @@ try {
   await settle();
   tree = fresh();
   assert.deepEqual(calls, []);
-  find(tree, (node) => node.props.role === 'switch').props.onChange({
-    currentTarget: { checked: true },
-  });
+  find(tree, (node) => node.type === 'toggle').props.onToggle(true);
   tree = fresh();
   find(tree, (node) => node.type === components.ConsentForm).props.onConfirm();
   await settle();

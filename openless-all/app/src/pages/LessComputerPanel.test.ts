@@ -12,6 +12,9 @@ const replayModule = await import(
 const activityModule = await import(
   new URL('file://' + resolve(app, 'src/lib/lessComputerToolActivity.ts'))
 );
+const composerModule = await import(
+  new URL('file://' + resolve(app, 'src/lib/lessComputerComposer.ts'))
+);
 const source = readFileSync(resolve(app, 'src/pages/LessComputerPanel.tsx'), 'utf8');
 const parsed = ts.createSourceFile(
   'LessComputerPanel.tsx',
@@ -121,8 +124,17 @@ class Hooks {
 function context(native, replay) {
   const events = new Map();
   const keys = new Set();
-  const calls = { approve: [], submit: [], windows: [] };
-  let approvalResult, submitResult;
+  const calls = {
+    approve: [],
+    submit: [],
+    windows: [],
+    voiceStart: [],
+    voiceStop: [],
+    voiceCancel: [],
+    taskCancel: 0,
+    focus: 0,
+  };
+  let approvalResult, submitResult, voiceStartResult;
   globalThis.window = {
     location: { search: '?window=less-computer&demo=1' },
     addEventListener: (name, fn) => {
@@ -139,6 +151,9 @@ function context(native, replay) {
     useEffect: (fn, deps) => active.effect(fn, deps),
     useTranslation: () => ({ t: (key) => key }),
     useChatPanelLifecycle: () => ({ enterEpoch: 0, closing: false }),
+    useExitMount: (open) => ({ mounted: open, closing: false }),
+    applyThemeFromPreference: () => {},
+    formatComboLabel: (binding) => binding.primary,
     isTauri: native,
     getSettings: async () => ({ codingAgentProvider: 'codex-cli' }),
     marketplaceAuthStatus: async () => ({ signedIn: false }),
@@ -155,9 +170,25 @@ function context(native, replay) {
     lessComputerWindowDismiss: async () => {
       calls.windows.push('hide');
     },
-    chatPanelFocusKeyboard: async () => {},
+    lessComputerVoiceStart: async (mode) => {
+      calls.voiceStart.push(mode);
+      return voiceStartResult?.promise;
+    },
+    lessComputerVoiceStop: async (sessionId) => {
+      calls.voiceStop.push(sessionId);
+    },
+    lessComputerVoiceCancel: async (sessionId) => {
+      calls.voiceCancel.push(sessionId);
+    },
+    lessComputerTaskCancel: async () => {
+      calls.taskCancel += 1;
+    },
+    chatPanelFocusKeyboard: async () => {
+      calls.focus += 1;
+    },
     ...replayModule,
     ...activityModule,
+    ...composerModule,
   });
   const api = factory(
     ...names.map((n) => imports[n]),
@@ -194,6 +225,9 @@ function context(native, replay) {
     submission: (d) => {
       submitResult = d;
     },
+    voiceStartResult: (d) => {
+      voiceStartResult = d;
+    },
     turns: (tree) =>
       nodes(tree)
         .filter((node) => node.type === api.TurnView)
@@ -228,6 +262,13 @@ await test('browser has no demo state and cannot submit, approve, open OAuth or 
   find(composer, (n) => n.type === 'form').props.onSubmit({ preventDefault() {} });
   await tick();
   assert.deepEqual(c.calls.submit, []);
+  for (const button of nodes(composer).filter(
+    (n) => n.type === 'button' && n.props.className?.startsWith('lc-round'),
+  )) {
+    assert.equal(button.props.disabled, true, 'browser previews cannot open the microphone');
+    await button.props.onClick?.();
+  }
+  assert.deepEqual(c.calls.voiceStart, []);
   find(tree, (n) => n.type === 'button' && n.props.className === 'lc-github').props.onClick();
   tree = c.render();
   assert(!nodes(tree).some((n) => n.type === 'GithubLoginModal'));
@@ -394,7 +435,7 @@ await test('voice projection preserves session ownership and exposes only actual
   const props = find(c.render(), (n) => n.type === c.api.Composer).props;
   const hooks = new Hooks();
   const tree = hooks.render(() => c.api.Composer(props));
-  const waveform = find(tree, (n) => n.type === 'VoiceWaveform');
+  const waveform = find(tree, (n) => n.type === 'LiveWaveform');
   assert.equal(waveform.props.level, 0.7);
   assert.equal(waveform.props.processing, false);
   assert.equal(find(tree, (n) => n.type === 'time').props.children, '1:05');
@@ -506,9 +547,22 @@ await test('tool activity is collapsed, grouped and loses shimmer on every termi
     { kind: 'tool', name: 'Bash', running: false },
     { kind: 'tool', name: 'Bash', running: true },
   ];
-  const active = c.api.ToolProcess({ tools, working: true, interrupted: false, t: (k) => k });
-  assert.equal(active.type, 'details');
-  assert.equal(active.props.open, undefined, 'native disclosure starts closed');
+  const hooks = new Hooks();
+  const renderActive = () =>
+    hooks.render(() =>
+      c.api.ToolProcess({ tools, working: true, interrupted: false, t: (k) => k }),
+    );
+  let active = renderActive();
+  const summary = () => find(active, (n) => n.props.className === 'lc-tool-summary');
+  assert.equal(summary().props['aria-expanded'], false, 'tool activity starts collapsed');
+  assert.equal(
+    find(active, (n) => n.props.className === 'lc-tool-body').props['aria-hidden'],
+    true,
+  );
+  summary().props.onClick();
+  active = renderActive();
+  assert.equal(summary().props['aria-expanded'], true);
+  assert(active.props.className.includes('is-open'), 'expansion animates via the open class');
   assert.equal(
     nodes(active).filter((n) => n.props.className?.startsWith('lc-process-step is-')).length,
     2,
@@ -519,7 +573,9 @@ await test('tool activity is collapsed, grouped and loses shimmer on every termi
   assert(nodes(active).some((n) => n.props.children === 'Read'));
   assert(nodes(active).some((n) => n.props.children === 'Bash'));
   for (const interrupted of [false, true]) {
-    const ended = c.api.ToolProcess({ tools, working: false, interrupted, t: (k) => k });
+    const ended = new Hooks().render(() =>
+      c.api.ToolProcess({ tools, working: false, interrupted, t: (k) => k }),
+    );
     assert(!nodes(ended).some((n) => n.props.className?.includes('is-running')));
     assert.equal(
       nodes(ended).some((n) => n.props.className === 'lc-process-step is-stopped'),
@@ -554,15 +610,304 @@ await test('approval stays directly visible between separate folded tool blocks'
   assert.equal(nodes(tree).filter((n) => n.type === c.api.ToolProcess).length, 2);
   assert.equal(nodes(tree).filter((n) => n.type === c.api.ApprovalCard).length, 1);
 });
-await test('window controls are first, agents are text only and activity is not duplicated', async () => {
-  const c = context(false);
+await test('window controls lead the sidebar and the inspector only summarizes the turn', async () => {
+  const c = context(true);
+  c.render();
+  await tick();
+  c.emit({ kind: 'user', text: 'task', fresh: true, seq: 1 });
+  c.emit({ kind: 'tool', name: 'Read', seq: 2 });
+  c.emit({ kind: 'tool', name: 'Bash', seq: 3 });
+  c.emit({ kind: 'approval', token: 'one', command: 'rm -rf build', reason: 'x', seq: 4 });
   const tree = c.render();
-  const shell = find(tree, (n) => n.props.className === 'lc-desktop');
-  const first = shell.props.children.find(Boolean);
-  assert.equal(first.type, 'header');
-  assert.equal(first.props.children[0].props.className, 'lc-window-controls');
+  const shell = find(tree, (n) => n.props.className?.startsWith('lc-desktop'));
+  const sidebar = shell.props.children.find(Boolean);
+  assert.equal(sidebar.type, 'aside');
+  const head = sidebar.props.children.find(Boolean);
+  assert.equal(head.props.className, 'lc-sidebar-head');
+  assert.equal(head.props.children[0].props.className, 'lc-window-controls');
   assert(!nodes(tree).some((n) => n.type === 'AgentBuddy'));
   assert(!nodes(tree).some((n) => n.props.className === 'lc-activity'));
+  const inspector = find(tree, (n) => n.type === 'LessComputerInspector');
+  assert.deepEqual(
+    {
+      tone: inspector.props.summary.tone,
+      toolCount: inspector.props.summary.toolCount,
+      pendingApprovals: inspector.props.summary.pendingApprovals,
+    },
+    { tone: 'waiting', toolCount: 2, pendingApprovals: 1 },
+  );
+  const serialized = JSON.stringify(inspector.props.summary);
+  assert(!serialized.includes('Read') && !serialized.includes('rm -rf'), 'no second activity feed');
+  const current = find(tree, (n) => n.type === 'li' && n.props['aria-current'] === 'true');
+  assert(nodes(current).some((n) => n.props.children === 'Codex'));
+  c.hooks.unmount();
+});
+await test('finished dictation lands in the draft exactly once; silence shows a notice', async () => {
+  const c = context(true);
+  const committed = {
+    kind: 'voice_state',
+    sessionId: `dictation-${Date.now()}`,
+    phase: 'idle',
+    level: 0,
+    elapsedMs: 900,
+    mode: 'dictate',
+    transcript: 'open settings',
+    outcome: 'committed',
+    seq: 9,
+  };
+  const h = new Hooks();
+  const render = (voice) => h.render(() => c.api.Composer({ working: false, voice, t: (k) => k }));
+  let tree = render(null);
+  find(tree, (n) => n.type === 'textarea').props.onChange({ currentTarget: { value: 'please' } });
+  render(committed);
+  tree = render(committed);
+  assert.equal(find(tree, (n) => n.type === 'textarea').props.value, 'please open settings');
+  tree = render({ ...committed });
+  assert.equal(
+    find(tree, (n) => n.type === 'textarea').props.value,
+    'please open settings',
+    'a replayed idle snapshot is not inserted twice',
+  );
+  const remount = new Hooks();
+  tree = remount.render(() => c.api.Composer({ working: false, voice: committed, t: (k) => k }));
+  tree = remount.render(() => c.api.Composer({ working: false, voice: committed, t: (k) => k }));
+  assert.equal(find(tree, (n) => n.type === 'textarea').props.value, '');
+  const silent = {
+    ...committed,
+    sessionId: `${committed.sessionId}-silent`,
+    transcript: '',
+    outcome: 'empty',
+  };
+  const quiet = new Hooks();
+  quiet.render(() => c.api.Composer({ working: false, voice: silent, t: (k) => k }));
+  tree = quiet.render(() => c.api.Composer({ working: false, voice: silent, t: (k) => k }));
+  assert(
+    nodes(tree).some(
+      (n) => n.props.role === 'alert' && n.props.children === 'lessComputer.voice.empty',
+    ),
+  );
+  assert.equal(find(tree, (n) => n.type === 'textarea').props.value, '');
+});
+await test('composer voice controls call their own commands and report start failures inline', async () => {
+  const c = context(true);
+  const h = new Hooks();
+  const props = { working: false, voice: null, t: (k) => k };
+  const render = (overrides = {}) => h.render(() => c.api.Composer({ ...props, ...overrides }));
+  let tree = render();
+  const byClass = (cls) =>
+    find(tree, (n) => n.type === 'button' && n.props.className?.split(' ').includes(cls));
+  byClass('lc-mic').props.onClick();
+  await tick();
+  tree = render();
+  byClass('lc-voice').props.onClick();
+  await tick();
+  assert.deepEqual(c.calls.voiceStart, ['dictate', 'submit']);
+  const failure = deferred();
+  c.voiceStartResult(failure);
+  tree = render();
+  byClass('lc-mic').props.onClick();
+  tree = render();
+  assert.equal(byClass('lc-mic').props.disabled, true, 'one start request at a time');
+  byClass('lc-mic').props.onClick();
+  assert.equal(c.calls.voiceStart.length, 3, 'a second click while starting is ignored');
+  failure.reject(new Error('mic denied'));
+  await tick();
+  tree = render();
+  assert(
+    nodes(tree).some(
+      (n) => n.props.role === 'alert' && n.props.children === 'lessComputer.voice.startFailed',
+    ),
+  );
+  c.voiceStartResult(undefined);
+
+  tree = render({ working: true });
+  await byClass('lc-stop').props.onClick();
+  assert.equal(c.calls.taskCancel, 1);
+
+  const recording = {
+    kind: 'voice_state',
+    sessionId: 'live',
+    phase: 'recording',
+    level: 0.4,
+    elapsedMs: 1200,
+    mode: 'dictate',
+    transcript: 'hello wor',
+  };
+  tree = render({ voice: recording });
+  assert(
+    nodes(tree).some((n) => n.props.children === 'hello wor'),
+    'live transcript is visible',
+  );
+  const stage = find(tree, (n) => n.props.className === 'lc-voice-stage');
+  const [cancel, confirm] = nodes(stage).filter((n) => n.type === 'button');
+  cancel.props.onClick();
+  confirm.props.onClick();
+  assert.deepEqual(c.calls.voiceCancel, ['live']);
+  assert.deepEqual(c.calls.voiceStop, ['live'], 'confirm stops only the displayed recording');
+  tree = render({ voice: { ...recording, phase: 'transcribing' } });
+  const [, finishing] = nodes(find(tree, (n) => n.props.className === 'lc-voice-stage')).filter(
+    (n) => n.type === 'button',
+  );
+  assert.equal(finishing.props.disabled, true, 'a finishing capture cannot be stopped twice');
+  tree = render({ voice: { ...recording, sessionId: 'next-recording' } });
+  confirm.props.onClick();
+  const nextConfirm = nodes(find(tree, (n) => n.props.className === 'lc-voice-stage')).filter(
+    (n) => n.type === 'button',
+  )[1];
+  nextConfirm.props.onClick();
+  assert.deepEqual(
+    c.calls.voiceStop,
+    ['live', 'live', 'next-recording'],
+    'a delayed control keeps its original session ID instead of targeting the next capture',
+  );
+});
+await test('voice startup and text submission exclude each other before React rerenders', async () => {
+  const c = context(true);
+  const h = new Hooks();
+  const render = () => h.render(() => c.api.Composer({ working: false, voice: null, t: (k) => k }));
+  let tree = render();
+  find(tree, (n) => n.type === 'textarea').props.onChange({
+    currentTarget: { value: 'keep this draft' },
+  });
+  tree = render();
+  const mic = find(tree, (n) => n.props.className === 'lc-round lc-mic');
+  const input = find(tree, (n) => n.type === 'textarea');
+  const form = find(tree, (n) => n.type === 'form');
+  const pending = deferred();
+  c.voiceStartResult(pending);
+  mic.props.onClick();
+  input.props.onKeyDown({
+    key: 'Enter',
+    shiftKey: false,
+    keyCode: 13,
+    nativeEvent: { isComposing: false },
+    preventDefault() {},
+  });
+  form.props.onSubmit({ preventDefault() {} });
+  await tick();
+  assert.deepEqual(c.calls.submit, [], 'same-render send cannot race an accepted microphone start');
+  tree = render();
+  assert.equal(
+    find(tree, (n) => n.type === 'button' && n.props.type === 'submit').props.disabled,
+    true,
+  );
+  assert.equal(find(tree, (n) => n.type === 'textarea').props.value, 'keep this draft');
+  pending.reject(new Error('fixture microphone failed'));
+  await tick();
+  tree = render();
+  assert.equal(find(tree, (n) => n.type === 'textarea').props.value, 'keep this draft');
+
+  const sending = deferred();
+  c.submission(sending);
+  const currentMic = find(tree, (n) => n.props.className === 'lc-round lc-mic');
+  find(tree, (n) => n.type === 'form').props.onSubmit({ preventDefault() {} });
+  currentMic.props.onClick();
+  assert.deepEqual(
+    c.calls.voiceStart,
+    ['dictate'],
+    'pending text send also blocks same-render microphone start',
+  );
+  sending.resolve();
+  await tick();
+  h.unmount();
+});
+await test('dictation updates a blocked composer without stealing DOM or native focus', async () => {
+  const c = context(true);
+  const h = new Hooks();
+  let domFocus = 0;
+  const render = (voice, focusAllowed) =>
+    h.render(() => c.api.Composer({ working: false, voice, focusAllowed, t: (k) => k }));
+  let tree = render(null, false);
+  const input = find(tree, (n) => n.type === 'textarea');
+  input.props.ref.current = {
+    style: {},
+    scrollHeight: 36,
+    value: 'fixture dictation',
+    focus() {
+      domFocus += 1;
+    },
+    setSelectionRange() {},
+  };
+  input.props.onFocus();
+  input.props.onPointerDown();
+  assert.equal(c.calls.focus, 0, 'blocked input handlers cannot request native focus either');
+  const terminal = {
+    kind: 'voice_state',
+    sessionId: `focus-blocked-${Date.now()}`,
+    phase: 'idle',
+    mode: 'dictate',
+    outcome: 'committed',
+    transcript: 'fixture dictation',
+    level: 0,
+    elapsedMs: 500,
+  };
+  render(terminal, false);
+  tree = render(terminal, false);
+  assert.equal(find(tree, (n) => n.type === 'textarea').props.value, 'fixture dictation');
+  assert.equal(domFocus, 0);
+  assert.equal(c.calls.focus, 0);
+  render(terminal, true);
+  assert.equal(domFocus, 0, 'closing a dialog does not replay an old focus request');
+  assert.equal(c.calls.focus, 0);
+  const next = { ...terminal, sessionId: `${terminal.sessionId}-next`, transcript: 'next' };
+  render(next, true);
+  render(next, true);
+  assert.equal(domFocus, 1, 'a subsequent foreground dictation still focuses the input');
+  assert.equal(c.calls.focus, 1);
+  h.unmount();
+});
+await test('an open login dialog disables composer focus', async () => {
+  const c = context(true);
+  let tree = c.render();
+  assert.equal(find(tree, (n) => n.type === c.api.Composer).props.focusAllowed, true);
+  find(tree, (n) => n.props.className === 'lc-github').props.onClick();
+  tree = c.render();
+  assert.equal(find(tree, (n) => n.type === c.api.Composer).props.focusAllowed, false);
+  c.hooks.unmount();
+});
+await test('abandoned captures never relabel a finished turn; capture errors get their own row', async () => {
+  const c = context(true);
+  c.render();
+  await tick();
+  c.emit({ kind: 'user', text: 'task', fresh: true, seq: 1 });
+  c.emit({ kind: 'completed', text: 'answer', costUsd: null, seq: 2 });
+  c.emit({ kind: 'cancelled', seq: 3 });
+  let turns = c.turns(c.render());
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].turn.status, 'done');
+  c.emit({ kind: 'error', message: 'Less Computer voice input failed. Please try again.', seq: 4 });
+  turns = c.turns(c.render());
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0].turn.status, 'done');
+  assert.equal(turns[1].turn.status, 'error');
+  assert.equal(turns[1].turn.user, '');
+  c.hooks.unmount();
+});
+await test('Escape during a recording cancels only that recording', async () => {
+  const c = context(true);
+  c.render();
+  await tick();
+  c.emit({
+    kind: 'voice_state',
+    sessionId: 'rec',
+    phase: 'recording',
+    level: 0.2,
+    elapsedMs: 300,
+    mode: 'submit',
+    seq: 1,
+  });
+  c.render();
+  for (const key of c.keys)
+    key({
+      key: 'Escape',
+      isComposing: false,
+      keyCode: 27,
+      preventDefault() {},
+      stopPropagation() {},
+    });
+  await tick();
+  assert.deepEqual(c.calls.voiceCancel, ['rec']);
+  assert.deepEqual(c.calls.windows, []);
   c.hooks.unmount();
 });
 console.log(`${passed} actual-component behavior tests passed`);

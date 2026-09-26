@@ -132,6 +132,36 @@ pub struct LessComputerVoiceSession {
     request: crate::domains::LessComputerRunRequest,
     partials: Arc<VoiceTranscriptSink>,
     archive_successful_recording: bool,
+    mode: crate::events::LessComputerVoiceMode,
+    feedback: Arc<LessVoiceFeedback>,
+}
+
+/// Start options for a Core-owned Less Computer voice capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LessComputerVoiceOptions {
+    pub mode: crate::events::LessComputerVoiceMode,
+    /// Hotkey captures surface start failures in the conversation stream. A
+    /// panel request receives the error from its command and shows it inline.
+    pub publish_start_error: bool,
+}
+
+impl Default for LessComputerVoiceOptions {
+    fn default() -> Self {
+        Self {
+            mode: crate::events::LessComputerVoiceMode::Submit,
+            publish_start_error: true,
+        }
+    }
+}
+
+/// How a finished Less Computer capture was delivered.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LessComputerVoiceFinish {
+    /// The transcript became an Agent turn (hotkey / voice-mode semantics).
+    Submitted(crate::domains::LessComputerRunResult),
+    /// Dictation only: the transcript was published for the host composer.
+    /// An empty transcript means nothing was recognized.
+    Dictated { transcript: String },
 }
 
 pub struct VoiceTranscriptionSession {
@@ -611,6 +641,9 @@ struct VoiceTranscriptSink {
     publisher: crate::events::BackendEventPublisher,
     session_id: SessionId,
     transcript: Mutex<crate::types::TranscriptAccumulator>,
+    /// Less Computer mirrors the accumulated transcript into its voice
+    /// projection; other voice surfaces only publish `TranscriptDelta`.
+    feedback: Option<Arc<LessVoiceFeedback>>,
 }
 
 struct VoiceCaptureControl {
@@ -625,23 +658,72 @@ struct VoiceCaptureControl {
 struct LessVoiceFeedback {
     publisher: BackendEventPublisher,
     session_id: SessionId,
-    state: Mutex<(crate::events::LessComputerVoicePhase, u64)>,
+    mode: crate::events::LessComputerVoiceMode,
+    state: Mutex<LessVoiceFeedbackState>,
+}
+
+struct LessVoiceFeedbackState {
+    phase: crate::events::LessComputerVoicePhase,
+    elapsed_ms: u64,
+    level: f32,
+    transcript: String,
+    outcome: Option<crate::events::LessComputerVoiceOutcome>,
+}
+
+impl LessVoiceFeedbackState {
+    fn new(phase: crate::events::LessComputerVoicePhase) -> Self {
+        Self {
+            phase,
+            elapsed_ms: 0,
+            level: 0.0,
+            transcript: String::new(),
+            outcome: None,
+        }
+    }
 }
 
 impl LessVoiceFeedback {
+    fn new(
+        publisher: BackendEventPublisher,
+        session_id: SessionId,
+        mode: crate::events::LessComputerVoiceMode,
+        phase: crate::events::LessComputerVoicePhase,
+    ) -> Self {
+        Self {
+            publisher,
+            session_id,
+            mode,
+            state: Mutex::new(LessVoiceFeedbackState::new(phase)),
+        }
+    }
+
     fn phase(&self, phase: crate::events::LessComputerVoicePhase) {
         let mut state = self.state.lock().expect("voice feedback lock poisoned");
-        if state.0 == crate::events::LessComputerVoicePhase::Idle {
+        if state.phase == crate::events::LessComputerVoicePhase::Idle {
             return;
         }
-        state.0 = phase;
-        self.emit(phase, 0.0, state.1);
+        state.phase = phase;
+        state.level = 0.0;
+        // Only a delivered transcript survives into the terminal snapshot;
+        // cancelled or failed captures must not leave partial text behind.
+        if phase == crate::events::LessComputerVoicePhase::Idle
+            && !matches!(
+                state.outcome,
+                Some(
+                    crate::events::LessComputerVoiceOutcome::Committed
+                        | crate::events::LessComputerVoiceOutcome::Submitted
+                )
+            )
+        {
+            state.transcript.clear();
+        }
+        self.emit(&state);
     }
 
     fn level(&self, elapsed_ms: u64, level: f32) {
         let mut state = self.state.lock().expect("voice feedback lock poisoned");
         if !matches!(
-            state.0,
+            state.phase,
             crate::events::LessComputerVoicePhase::Starting
                 | crate::events::LessComputerVoicePhase::Recording
         ) {
@@ -649,21 +731,49 @@ impl LessVoiceFeedback {
         }
         // AudioRecorder reports levels only after consuming a non-empty PCM
         // frame. A native start receipt alone cannot make capture look ready.
-        state.0 = crate::events::LessComputerVoicePhase::Recording;
-        state.1 = elapsed_ms;
-        self.emit(state.0, level.clamp(0.0, 1.0), elapsed_ms);
+        state.phase = crate::events::LessComputerVoicePhase::Recording;
+        state.elapsed_ms = elapsed_ms;
+        state.level = level.clamp(0.0, 1.0);
+        self.emit(&state);
     }
 
-    fn emit(&self, phase: crate::events::LessComputerVoicePhase, level: f32, elapsed_ms: u64) {
+    /// Mirror the accumulated live transcript while the capture is still open.
+    fn transcript(&self, text: &str) {
+        let mut state = self.state.lock().expect("voice feedback lock poisoned");
+        if state.phase == crate::events::LessComputerVoicePhase::Idle || state.transcript == text {
+            return;
+        }
+        state.transcript = text.to_string();
+        self.emit(&state);
+    }
+
+    /// Record how the capture ends. The terminal `idle` snapshot emitted when
+    /// the feedback guard drops carries it; the first recorded outcome wins.
+    fn settle(&self, outcome: crate::events::LessComputerVoiceOutcome, transcript: Option<String>) {
+        let mut state = self.state.lock().expect("voice feedback lock poisoned");
+        if state.phase == crate::events::LessComputerVoicePhase::Idle || state.outcome.is_some() {
+            return;
+        }
+        state.outcome = Some(outcome);
+        if let Some(transcript) = transcript {
+            state.transcript = transcript;
+        }
+    }
+
+    fn emit(&self, state: &LessVoiceFeedbackState) {
+        let idle = state.phase == crate::events::LessComputerVoicePhase::Idle;
         self.publisher.publish(
             Some(self.session_id),
             BackendEventKind::LessComputerEvent(crate::events::LessComputerEvent {
                 seq: None,
                 kind: crate::events::LessComputerEventKind::VoiceState {
                     session_id: self.session_id,
-                    phase,
-                    level,
-                    elapsed_ms,
+                    phase: state.phase,
+                    level: state.level,
+                    elapsed_ms: state.elapsed_ms,
+                    mode: self.mode,
+                    transcript: state.transcript.clone(),
+                    outcome: if idle { state.outcome } else { None },
                 },
             }),
         );
@@ -853,15 +963,17 @@ struct VoiceControlGuard {
 
 impl Drop for VoiceControlGuard {
     fn drop(&mut self) {
-        self.control
-            .feedback
-            .lock()
-            .expect("voice feedback lock poisoned")
-            .take();
+        // Release the hold first: observers of the terminal idle snapshot may
+        // immediately start another capture or text turn.
         self.control
             .resources
             .lock()
             .expect("voice resource lock poisoned")
+            .take();
+        self.control
+            .feedback
+            .lock()
+            .expect("voice feedback lock poisoned")
             .take();
         let mut controls = self.controls.lock().expect("voice control lock poisoned");
         if controls
@@ -880,10 +992,15 @@ impl TextStreamSink for VoiceTranscriptSink {
             offset: chunk.offset,
             is_final: false,
         };
-        self.transcript
+        let mut transcript = self
+            .transcript
             .lock()
-            .expect("voice transcript lock poisoned")
-            .apply(&delta)?;
+            .expect("voice transcript lock poisoned");
+        transcript.apply(&delta)?;
+        if let Some(feedback) = &self.feedback {
+            feedback.transcript(transcript.text());
+        }
+        drop(transcript);
         self.publisher.publish(
             Some(self.session_id),
             BackendEventKind::TranscriptDelta(delta),
@@ -958,6 +1075,8 @@ impl LessComputerVoiceSession {
         {
             return Box::pin(async { Ok(()) });
         }
+        self.feedback
+            .settle(crate::events::LessComputerVoiceOutcome::Cancelled, None);
         let control = Arc::clone(&self.control);
         let controls = Arc::clone(&self.controls);
         let less_computer = Arc::clone(&self.less_computer);
@@ -978,9 +1097,17 @@ impl LessComputerVoiceSession {
         )
     }
 
+    pub fn mode(&self) -> crate::events::LessComputerVoiceMode {
+        self.mode
+    }
+
+    /// Stop capture and deliver the transcript according to the session mode:
+    /// `Submit` starts an Agent turn, `Dictate` only publishes the text.
     pub fn finish(
         self,
-    ) -> futures_util::future::BoxFuture<'static, Result<LessComputerRunResult, BackendError>> {
+    ) -> futures_util::future::BoxFuture<'static, Result<LessComputerVoiceFinish, BackendError>>
+    {
+        use crate::events::{LessComputerVoiceMode, LessComputerVoiceOutcome};
         if self
             .control
             .closed
@@ -1003,6 +1130,8 @@ impl LessComputerVoiceSession {
         let request = self.request;
         let partials = Arc::clone(&self.partials);
         let session_id = self.session_id;
+        let mode = self.mode;
+        let feedback = Arc::clone(&self.feedback);
         let resources = control
             .resources
             .lock()
@@ -1029,6 +1158,7 @@ impl LessComputerVoiceSession {
                     controls,
                 };
                 if less_computer.capture_cancelled(session_id) {
+                    feedback.settle(LessComputerVoiceOutcome::Cancelled, None);
                     if let Some(recording) = recording {
                         let _ = recording.stop().await;
                     }
@@ -1042,21 +1172,32 @@ impl LessComputerVoiceSession {
                 if let Some(recording) = recording {
                     if let Err(error) = recording.stop().await {
                         let _ = transcription.cancel().await;
-                        return Err(
-                            fail_less_voice_capture(&less_computer, session_id, error).await
-                        );
+                        return Err(fail_less_voice_finish(
+                            &less_computer,
+                            session_id,
+                            &feedback,
+                            mode,
+                            error,
+                        )
+                        .await);
                     }
                 }
                 let transcript = match transcription.finish().await {
                     Ok(output) => output.text,
                     Err(error) => {
                         let _ = transcription.cancel().await;
-                        return Err(
-                            fail_less_voice_capture(&less_computer, session_id, error).await
-                        );
+                        return Err(fail_less_voice_finish(
+                            &less_computer,
+                            session_id,
+                            &feedback,
+                            mode,
+                            error,
+                        )
+                        .await);
                     }
                 };
                 if less_computer.capture_cancelled(session_id) {
+                    feedback.settle(LessComputerVoiceOutcome::Cancelled, None);
                     let _ = transcription.cancel().await;
                     let _ = less_computer.abort_capture(session_id);
                     return Err(BackendError::new(
@@ -1066,9 +1207,21 @@ impl LessComputerVoiceSession {
                 }
                 let transcript = transcript.trim().to_string();
                 if transcript.is_empty() {
-                    return Err(fail_less_voice_capture(
+                    if mode == LessComputerVoiceMode::Dictate {
+                        // Silence is not an error for dictation; the composer shows a hint.
+                        feedback.settle(LessComputerVoiceOutcome::Empty, Some(String::new()));
+                        let _ = less_computer.abort_capture(session_id);
+                        drop(resources);
+                        drop(_guard);
+                        return Ok(LessComputerVoiceFinish::Dictated {
+                            transcript: String::new(),
+                        });
+                    }
+                    return Err(fail_less_voice_finish(
                         &less_computer,
                         session_id,
+                        &feedback,
+                        mode,
                         BackendError::new(
                             BackendErrorCode::Provider,
                             "transcription provider returned an empty transcript",
@@ -1089,9 +1242,32 @@ impl LessComputerVoiceSession {
                     }
                 }
                 if less_computer.capture_cancelled(session_id) {
+                    feedback.settle(LessComputerVoiceOutcome::Cancelled, None);
                     return Err(VoiceCaptureLifecycle::cancelled_error());
                 }
-                partials.publish_final(transcript.clone())?;
+                if let Err(error) = partials.publish_final(transcript.clone()) {
+                    feedback.settle(LessComputerVoiceOutcome::Failed, None);
+                    if mode == LessComputerVoiceMode::Dictate {
+                        let _ = less_computer.abort_capture(session_id);
+                    }
+                    return Err(error);
+                }
+                if mode == LessComputerVoiceMode::Dictate {
+                    // Release the capture before the terminal snapshot so a text
+                    // submit triggered by the composer never observes it as busy.
+                    let _ = less_computer.abort_capture(session_id);
+                    drop(resources);
+                    feedback.settle(
+                        LessComputerVoiceOutcome::Committed,
+                        Some(transcript.clone()),
+                    );
+                    drop(_guard);
+                    return Ok(LessComputerVoiceFinish::Dictated { transcript });
+                }
+                feedback.settle(
+                    LessComputerVoiceOutcome::Submitted,
+                    Some(transcript.clone()),
+                );
                 drop(_guard);
                 // Keep the hold through capture -> run promotion. If cancellation
                 // won immediately before submit, acquire() must reject this old id
@@ -1100,7 +1276,7 @@ impl LessComputerVoiceSession {
                 let mut request = request;
                 request.transcript = transcript;
                 match less_computer.submit(request).await {
-                    Ok(result) => Ok(result),
+                    Ok(result) => Ok(LessComputerVoiceFinish::Submitted(result)),
                     Err(error) => {
                         let _ = less_computer.abort_capture(session_id);
                         Err(error)
@@ -1109,6 +1285,48 @@ impl LessComputerVoiceSession {
             }),
         )
     }
+}
+
+/// Terminal failure while finishing a capture. Agent-bound captures keep the
+/// existing conversation error; dictation never became a turn, so it only
+/// releases the capture and reports through its idle snapshot.
+async fn fail_less_voice_finish(
+    less_computer: &Arc<dyn crate::domains::LessComputerApi>,
+    session_id: SessionId,
+    feedback: &LessVoiceFeedback,
+    mode: crate::events::LessComputerVoiceMode,
+    error: BackendError,
+) -> BackendError {
+    use crate::events::LessComputerVoiceOutcome;
+    if mode == crate::events::LessComputerVoiceMode::Dictate {
+        let cancelled = error.code == BackendErrorCode::Cancelled
+            || less_computer.capture_cancelled(session_id);
+        feedback.settle(
+            if cancelled {
+                LessComputerVoiceOutcome::Cancelled
+            } else {
+                LessComputerVoiceOutcome::Failed
+            },
+            None,
+        );
+        let _ = less_computer.abort_capture(session_id);
+        return if cancelled {
+            VoiceCaptureLifecycle::cancelled_error()
+        } else {
+            BackendError::new(error.code, crate::less_computer::VOICE_CAPTURE_FAILED)
+                .retryable(error.retryable)
+        };
+    }
+    let public = fail_less_voice_capture(less_computer, session_id, error).await;
+    feedback.settle(
+        if public.code == BackendErrorCode::Cancelled {
+            LessComputerVoiceOutcome::Cancelled
+        } else {
+            LessComputerVoiceOutcome::Failed
+        },
+        None,
+    );
+    public
 }
 
 impl VoiceTranscriptionSession {
@@ -2600,6 +2818,22 @@ impl OpenLessBackend {
         session_id: SessionId,
         recording_control: Arc<dyn crate::ports::RecordingControlSink>,
     ) -> Result<LessComputerVoiceSession, BackendError> {
+        self.start_less_computer_voice_with(
+            session_id,
+            recording_control,
+            LessComputerVoiceOptions::default(),
+        )
+        .await
+    }
+
+    /// Same as [`Self::start_less_computer_voice`], with an explicit delivery
+    /// mode and start-error surface (panel requests report errors inline).
+    pub async fn start_less_computer_voice_with(
+        &self,
+        session_id: SessionId,
+        recording_control: Arc<dyn crate::ports::RecordingControlSink>,
+        options: LessComputerVoiceOptions,
+    ) -> Result<LessComputerVoiceSession, BackendError> {
         let _runtime = self.runtime_start_work.acquire()?;
         let preferences = self.get_preferences();
         if !preferences.coding_agent_enabled {
@@ -2617,11 +2851,12 @@ impl OpenLessBackend {
         }
         self.deps.services.less_computer.begin_capture(session_id)?;
         let resources = self.voice_sessions.hold_resources(session_id)?;
-        let feedback = Arc::new(LessVoiceFeedback {
-            publisher: self.event_publisher(),
+        let feedback = Arc::new(LessVoiceFeedback::new(
+            self.event_publisher(),
             session_id,
-            state: Mutex::new((crate::events::LessComputerVoicePhase::Starting, 0)),
-        });
+            options.mode,
+            crate::events::LessComputerVoicePhase::Starting,
+        ));
         feedback.phase(crate::events::LessComputerVoicePhase::Starting);
         let feedback_guard = LessVoiceFeedbackGuard(Arc::clone(&feedback));
         let result = async {
@@ -2691,6 +2926,7 @@ impl OpenLessBackend {
                 publisher: self.event_publisher(),
                 session_id,
                 transcript: Mutex::new(crate::types::TranscriptAccumulator::default()),
+                feedback: Some(Arc::clone(&feedback)),
             });
             let started_at = std::time::Instant::now();
             let recording_progress = Arc::new(LessComputerRecordingProgress {
@@ -2807,11 +3043,13 @@ impl OpenLessBackend {
                 request,
                 partials,
                 archive_successful_recording: context.recording.archive_successful_recording,
+                mode: options.mode,
+                feedback: Arc::clone(&feedback),
             })
         }
         .await;
         if let Err(error) = &result {
-            if error.code != BackendErrorCode::Cancelled {
+            if options.publish_start_error && error.code != BackendErrorCode::Cancelled {
                 self.event_publisher().publish(
                     Some(session_id),
                     BackendEventKind::LessComputerEvent(crate::events::LessComputerEvent {
@@ -2872,6 +3110,7 @@ impl OpenLessBackend {
             publisher: self.event_publisher(),
             session_id,
             transcript: Mutex::new(crate::types::TranscriptAccumulator::default()),
+            feedback: None,
         });
         let capture = own_voice_start(
             &self.deps.task_spawner,
@@ -7436,7 +7675,9 @@ mod tests {
             BackendErrorCode::InvalidArgument
         );
         session.feed_pcm(&[1, 0, 2, 0]).unwrap();
-        let result = session.finish().await.unwrap();
+        let LessComputerVoiceFinish::Submitted(result) = session.finish().await.unwrap() else {
+            panic!("hotkey-mode capture must submit an Agent turn");
+        };
 
         assert_eq!(result.session_id, session_id);
         assert_eq!(*transcription.pcm.lock().unwrap(), vec![1, 0, 2, 0]);
@@ -7457,6 +7698,340 @@ mod tests {
             .unwrap();
         cancelled.cancel().await.unwrap();
         assert_eq!(transcription.starts.load(Ordering::Acquire), 1);
+    }
+
+    struct DictationTranscription {
+        text: String,
+        partials: Mutex<Option<Arc<dyn TextStreamSink>>>,
+        fail_start: std::sync::atomic::AtomicBool,
+    }
+
+    impl crate::ports::AudioConsumer for DictationTranscription {
+        fn consume_pcm_chunk(&self, _pcm: &[u8]) {}
+    }
+
+    impl crate::ports::TranscriptionSession for DictationTranscription {
+        fn finish(&self) -> BoxFuture<'static, Result<crate::TranscriptOutput, BackendError>> {
+            let text = self.text.clone();
+            boxed(async move {
+                Ok(crate::TranscriptOutput {
+                    text,
+                    duration_ms: 100,
+                })
+            })
+        }
+
+        fn cancel(&self) -> BoxFuture<'static, Result<(), BackendError>> {
+            boxed(async { Ok(()) })
+        }
+    }
+
+    struct DictationOnlyEngine(Arc<DictationTranscription>);
+
+    impl DictationEngine for DictationOnlyEngine {
+        fn start(
+            &self,
+            _session_id: SessionId,
+            _context: Arc<DictationContext>,
+            _progress: Arc<dyn EngineProgressSink>,
+        ) -> BoxFuture<'static, Result<(), BackendError>> {
+            boxed(async { Ok(()) })
+        }
+
+        fn start_transcription(
+            &self,
+            _session_id: SessionId,
+            _context: Arc<DictationContext>,
+            partials: Arc<dyn TextStreamSink>,
+        ) -> BoxFuture<'static, Result<Arc<dyn TranscriptionSession>, BackendError>> {
+            *self.0.partials.lock().unwrap() = Some(partials);
+            let session: Arc<dyn TranscriptionSession> = self.0.clone();
+            boxed(async move { Ok(session) })
+        }
+
+        fn start_voice_capture(
+            &self,
+            _session_id: SessionId,
+            _context: Arc<DictationContext>,
+            _partials: Arc<dyn TextStreamSink>,
+            _progress: Arc<dyn crate::ports::RecordingProgressSink>,
+            _cancel: crate::CancellationToken,
+        ) -> BoxFuture<'static, Result<crate::ports::VoiceCapture, BackendError>> {
+            let error = if self.0.fail_start.load(Ordering::Acquire) {
+                BackendError::new(
+                    BackendErrorCode::PermissionDenied,
+                    "microphone permission denied",
+                )
+            } else {
+                BackendError::new(BackendErrorCode::Unsupported, "use the transcription path")
+            };
+            boxed(async move { Err(error) })
+        }
+
+        fn finish(
+            &self,
+            _session_id: SessionId,
+            _progress: Arc<dyn EngineProgressSink>,
+        ) -> BoxFuture<'static, Result<EngineResult, EngineFailure>> {
+            boxed(async { unreachable!("dictation-only engine does not run dictation") })
+        }
+
+        fn cancel(&self, _session_id: SessionId) -> BoxFuture<'static, Result<(), BackendError>> {
+            boxed(async { Ok(()) })
+        }
+    }
+
+    fn dictation_backend(
+        name: &str,
+        text: &str,
+    ) -> (
+        TestDataDir,
+        OpenLessBackend,
+        Arc<DictationTranscription>,
+        Arc<LessComputerCaptureRuntime>,
+    ) {
+        let data_dir = TestDataDir::new(name);
+        let transcription = Arc::new(DictationTranscription {
+            text: text.into(),
+            partials: Mutex::new(None),
+            fail_start: std::sync::atomic::AtomicBool::new(false),
+        });
+        let runtime = Arc::new(LessComputerCaptureRuntime::default());
+        let dependencies = BackendDependencies {
+            host_actions: Arc::new(crate::testing::RecordingHostActions::default()),
+            dictation_engine: Arc::new(DictationOnlyEngine(Arc::clone(&transcription))),
+            ..BackendDependencies::unsupported()
+        };
+        dependencies.services.less_computer.bind_runner(Arc::new(
+            crate::coding_agent::CodingAgentRunner::new(runtime.clone()),
+        ));
+        let backend = OpenLessBackend::new(
+            BackendConfig {
+                data_dir: data_dir.path().to_path_buf(),
+                ..BackendConfig::default()
+            },
+            dependencies,
+        )
+        .unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.coding_agent_enabled = true;
+        backend.set_preferences(preferences).unwrap();
+        (data_dir, backend, transcription, runtime)
+    }
+
+    const DICTATE: LessComputerVoiceOptions = LessComputerVoiceOptions {
+        mode: crate::events::LessComputerVoiceMode::Dictate,
+        publish_start_error: false,
+    };
+
+    fn less_computer_event_kinds(
+        events: &mut crate::events::EventSubscription,
+    ) -> Vec<crate::events::LessComputerEventKind> {
+        std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|event| match event.kind {
+                BackendEventKind::LessComputerEvent(event) => Some(event.kind),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn last_voice_state(
+        kinds: &[crate::events::LessComputerEventKind],
+    ) -> &crate::events::LessComputerEventKind {
+        kinds
+            .iter()
+            .rev()
+            .find(|kind| {
+                matches!(
+                    kind,
+                    crate::events::LessComputerEventKind::VoiceState { .. }
+                )
+            })
+            .expect("voice state was published")
+    }
+
+    #[tokio::test]
+    async fn less_computer_dictation_streams_partials_and_commits_without_submitting() {
+        use crate::events::{
+            LessComputerEventKind, LessComputerVoiceMode, LessComputerVoiceOutcome,
+            LessComputerVoicePhase,
+        };
+        let (_data_dir, backend, transcription, runtime) =
+            dictation_backend("less-computer-dictation", "  打开设置  ");
+        let mut events = backend.subscribe();
+        let session_id = SessionId::new();
+        let session = backend
+            .start_less_computer_voice_with(
+                session_id,
+                Arc::new(FakeRecordingControl::default()),
+                DICTATE,
+            )
+            .await
+            .unwrap();
+        assert_eq!(session.mode(), LessComputerVoiceMode::Dictate);
+        let partials = transcription.partials.lock().unwrap().clone().unwrap();
+        partials
+            .publish(crate::ports::TextStreamChunk {
+                text: "打开".into(),
+                offset: 0,
+            })
+            .unwrap();
+        session.feed_pcm(&[1, 0]).unwrap();
+
+        assert_eq!(
+            session.finish().await.unwrap(),
+            LessComputerVoiceFinish::Dictated {
+                transcript: "打开设置".into()
+            }
+        );
+        assert!(runtime.request.lock().unwrap().is_none());
+        assert_eq!(backend.less_computer_active_session(), None);
+
+        let kinds = less_computer_event_kinds(&mut events);
+        assert!(kinds.iter().any(|kind| matches!(
+            kind,
+            LessComputerEventKind::VoiceState {
+                phase: LessComputerVoicePhase::Starting,
+                mode: LessComputerVoiceMode::Dictate,
+                transcript,
+                outcome: None,
+                ..
+            } if transcript == "打开"
+        )));
+        assert!(!kinds.iter().any(|kind| matches!(
+            kind,
+            LessComputerEventKind::User { .. }
+                | LessComputerEventKind::Started
+                | LessComputerEventKind::Error { .. }
+        )));
+        let committed = LessComputerEventKind::VoiceState {
+            session_id,
+            phase: LessComputerVoicePhase::Idle,
+            level: 0.0,
+            elapsed_ms: 0,
+            mode: LessComputerVoiceMode::Dictate,
+            transcript: "打开设置".into(),
+            outcome: Some(LessComputerVoiceOutcome::Committed),
+        };
+        assert_eq!(last_voice_state(&kinds), &committed);
+        assert_eq!(
+            backend
+                .event_publisher()
+                .latest_less_computer_voice_state()
+                .unwrap()
+                .kind,
+            committed
+        );
+
+        // The composer can send the edited text immediately after dictation.
+        backend
+            .submit_less_computer("打开设置并截图".into())
+            .await
+            .unwrap();
+        assert!(runtime.request.lock().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn less_computer_dictation_reports_silence_and_cancel_without_chat_errors() {
+        use crate::events::{LessComputerEventKind, LessComputerVoiceOutcome};
+        let (_data_dir, backend, transcription, runtime) =
+            dictation_backend("less-computer-dictation-empty", "   ");
+        let mut events = backend.subscribe();
+        let silent = backend
+            .start_less_computer_voice_with(
+                SessionId::new(),
+                Arc::new(FakeRecordingControl::default()),
+                DICTATE,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            silent.finish().await.unwrap(),
+            LessComputerVoiceFinish::Dictated {
+                transcript: String::new()
+            }
+        );
+        let kinds = less_computer_event_kinds(&mut events);
+        assert!(!kinds
+            .iter()
+            .any(|kind| matches!(kind, LessComputerEventKind::Error { .. })));
+        assert!(matches!(
+            last_voice_state(&kinds),
+            LessComputerEventKind::VoiceState {
+                outcome: Some(LessComputerVoiceOutcome::Empty),
+                ..
+            }
+        ));
+        assert_eq!(backend.less_computer_active_session(), None);
+
+        let abandoned = backend
+            .start_less_computer_voice_with(
+                SessionId::new(),
+                Arc::new(FakeRecordingControl::default()),
+                DICTATE,
+            )
+            .await
+            .unwrap();
+        transcription
+            .partials
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap()
+            .publish(crate::ports::TextStreamChunk {
+                text: "draft".into(),
+                offset: 0,
+            })
+            .unwrap();
+        abandoned.cancel().await.unwrap();
+        let kinds = less_computer_event_kinds(&mut events);
+        assert!(matches!(
+            last_voice_state(&kinds),
+            LessComputerEventKind::VoiceState {
+                outcome: Some(LessComputerVoiceOutcome::Cancelled),
+                transcript,
+                ..
+            } if transcript.is_empty()
+        ));
+        assert!(runtime.request.lock().unwrap().is_none());
+        assert_eq!(backend.less_computer_active_session(), None);
+    }
+
+    #[tokio::test]
+    async fn less_computer_panel_start_errors_are_returned_not_published() {
+        let (_data_dir, backend, transcription, _runtime) =
+            dictation_backend("less-computer-dictation-start-error", "unused");
+        transcription.fail_start.store(true, Ordering::Release);
+        let has_chat_error = |kinds: Vec<crate::events::LessComputerEventKind>| {
+            kinds
+                .iter()
+                .any(|kind| matches!(kind, crate::events::LessComputerEventKind::Error { .. }))
+        };
+
+        let mut events = backend.subscribe();
+        let error = match backend
+            .start_less_computer_voice_with(
+                SessionId::new(),
+                Arc::new(FakeRecordingControl::default()),
+                DICTATE,
+            )
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("the engine refused to start"),
+        };
+        assert_eq!(error.code, BackendErrorCode::PermissionDenied);
+        assert!(!has_chat_error(less_computer_event_kinds(&mut events)));
+        assert_eq!(backend.less_computer_active_session(), None);
+
+        assert!(backend
+            .start_less_computer_voice(SessionId::new(), Arc::new(FakeRecordingControl::default()))
+            .await
+            .is_err());
+        assert!(
+            has_chat_error(less_computer_event_kinds(&mut events)),
+            "hotkey captures keep reporting start failures in the conversation"
+        );
     }
 
     #[tokio::test]
@@ -7623,6 +8198,7 @@ mod tests {
                 publisher: backend.event_publisher(),
                 session_id: SessionId::new(),
                 transcript: Mutex::new(crate::types::TranscriptAccumulator::default()),
+                feedback: None,
             }),
             lifecycle: Arc::new(VoiceCaptureLifecycle::default()),
             task_spawner: Arc::new(TokioTaskSpawner),
@@ -7740,11 +8316,12 @@ mod tests {
         let started_at = std::time::Instant::now();
         let progress = LessComputerRecordingProgress {
             session_id: stop_session,
-            feedback: Arc::new(LessVoiceFeedback {
-                publisher: backend.event_publisher(),
-                session_id: stop_session,
-                state: Mutex::new((crate::events::LessComputerVoicePhase::Recording, 0)),
-            }),
+            feedback: Arc::new(LessVoiceFeedback::new(
+                backend.event_publisher(),
+                stop_session,
+                crate::events::LessComputerVoiceMode::Submit,
+                crate::events::LessComputerVoicePhase::Recording,
+            )),
             less_computer: Arc::clone(&backend.services().less_computer),
             control: Arc::clone(&control) as Arc<dyn crate::ports::RecordingControlSink>,
             task_spawner: Arc::new(TokioTaskSpawner),
@@ -7787,11 +8364,12 @@ mod tests {
             .unwrap();
         let fault_progress = LessComputerRecordingProgress {
             session_id: fault_session,
-            feedback: Arc::new(LessVoiceFeedback {
-                publisher: backend.event_publisher(),
-                session_id: fault_session,
-                state: Mutex::new((crate::events::LessComputerVoicePhase::Recording, 0)),
-            }),
+            feedback: Arc::new(LessVoiceFeedback::new(
+                backend.event_publisher(),
+                fault_session,
+                crate::events::LessComputerVoiceMode::Submit,
+                crate::events::LessComputerVoicePhase::Recording,
+            )),
             less_computer: Arc::clone(&backend.services().less_computer),
             control: Arc::clone(&control) as Arc<dyn crate::ports::RecordingControlSink>,
             task_spawner: Arc::new(TokioTaskSpawner),

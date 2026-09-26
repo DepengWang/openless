@@ -1711,6 +1711,51 @@ impl Coordinator {
             .map_err(|error| error.to_string())
     }
 
+    /// Composer microphone / voice-mode button. Start errors are returned to the
+    /// panel instead of being posted into the conversation stream.
+    pub(crate) async fn start_less_computer_voice_from_panel(
+        &self,
+        mode: openless_core::LessComputerVoiceMode,
+    ) -> Result<(), String> {
+        start_less_computer_capture(
+            &self.inner,
+            openless_core::LessComputerVoiceOptions {
+                mode,
+                publish_start_error: false,
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| error.message)
+    }
+
+    pub(crate) fn stop_less_computer_voice_from_panel(
+        &self,
+        session_id: openless_core::SessionId,
+    ) -> Result<(), String> {
+        request_less_computer_voice_stop(&self.inner, session_id)
+            .map(|_| ())
+            .map_err(|error| error.message)
+    }
+
+    pub(crate) async fn cancel_less_computer_voice_from_panel(
+        &self,
+        session_id: openless_core::SessionId,
+    ) -> Result<(), String> {
+        cancel_less_computer_voice_request(&self.inner, session_id)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.message)
+    }
+
+    /// Stop button while an Agent turn runs; the window stays open.
+    pub(crate) async fn cancel_less_computer_task(&self) -> Result<(), String> {
+        cancel_active_less_computer(&self.inner)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.message)
+    }
+
     pub(crate) async fn cancel_active_voice(&self) {
         dictation::cancel_active_session(&self.inner).await;
     }

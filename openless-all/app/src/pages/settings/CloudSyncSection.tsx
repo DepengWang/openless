@@ -4,6 +4,7 @@ import { Icon } from '../../components/Icon';
 import { GithubLoginModal } from '../../components/GithubLoginModal';
 import { Modal } from '../../components/ui/Modal';
 import { Btn, Card } from '../_atoms';
+import { Toggle } from './shared';
 import { useHotkeySettings } from '../../state/HotkeySettingsContext';
 import { marketplaceAuthStatus } from '../../lib/ipc';
 import { isTauri } from '../../lib/ipc/shared';
@@ -70,6 +71,51 @@ const categoryKeys = [
 function categoryKey(kind: string): string {
   return categoryKeys.some((key) => key === kind) ? kind : 'other';
 }
+type SetupFocus = 'enable' | 'password' | 'unlock' | 'closed' | 'done' | 'preparing' | 'state';
+const REFRESH_ERRORS = new Set([
+  'localData',
+  'unknown',
+  'network',
+  'tooLarge',
+  'rolledBack',
+  'changed',
+  'accountChanged',
+  'invalidData',
+  'rateLimited',
+  'unavailable',
+]);
+function setupFocus(
+  status: EncryptedSyncStatus,
+  signedIn: boolean,
+  preparing: boolean,
+  reached: 'password' | 'unlock' | null,
+): SetupFocus {
+  if (preparing) return 'preparing';
+  if (!signedIn || status.syncState === 'sign_in_required' || status.authState === 'expired')
+    return 'enable';
+  if (
+    status.syncState === 'ready' ||
+    status.syncState === 'pending' ||
+    status.syncState === 'syncing' ||
+    status.syncState === 'conflict' ||
+    status.syncState === 'failed' ||
+    status.syncState === 'outcome_unknown' ||
+    status.syncState === 'recovery_required' ||
+    status.recoveryRequired
+  )
+    return 'state';
+  const noSnapshot = status.hasCloudSnapshot !== true;
+  const locked = status.keyState !== 'unlocked';
+  if (!status.enabled) {
+    if (reached === 'password' || (noSnapshot && status.consentVersion)) return 'password';
+    if (reached === 'unlock' || (status.hasCloudSnapshot === true && locked)) return 'unlock';
+    if (status.hasCloudSnapshot === true && !locked) return 'closed';
+    return 'enable';
+  }
+  if (locked || reached === 'unlock') return 'unlock';
+  if (noSnapshot) return 'password';
+  return 'done';
+}
 function localError(reason: string): unknown {
   return { details: { reason } };
 }
@@ -89,6 +135,8 @@ export function CloudSyncSection() {
   const [notice, setNotice] = useState<Notice>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [showLogin, setShowLogin] = useState(false);
+  const [preparingStep, setPreparingStep] = useState(false);
+  const [setupReached, setSetupReached] = useState<'password' | 'unlock' | null>(null);
   const current = useRef<EncryptedSyncStatus | null>(null);
   const watermark = useRef('0');
   const alive = useRef(false);
@@ -292,8 +340,10 @@ export function CloudSyncSection() {
         prepared.status.remoteRevision === null
       )
         throw localError('invalid_response');
+      setSetupReached('password');
       setDialog({ kind: 'create', observedRevision: prepared.status.remoteRevision });
     } else if (prepared.nextStep === 'unlock') {
+      setSetupReached('unlock');
       setDialog({ kind: 'unlock', intent });
     } else if (prepared.nextStep === 'restore_review') {
       await previewRestore(intent === 'enable', valid);
@@ -304,6 +354,8 @@ export function CloudSyncSection() {
         const next = await cloudSyncE2eeSetEnabled(true);
         if (!valid()) return;
         acceptStatus(next);
+        if (next.enabled && next.keyState === 'unlocked' && next.hasCloudSnapshot === true)
+          setSetupReached(null);
       }
       if (valid()) {
         setDialog(null);
@@ -426,6 +478,26 @@ export function CloudSyncSection() {
   const available = status !== null;
   const lastSync = status?.lastSuccessfulSyncAt ? new Date(status.lastSuccessfulSyncAt) : null;
   const lastError = status?.lastError ? encryptedSyncErrorKey(status.lastError) : null;
+  const noticeError = notice?.error ? notice.key.replace(/^errors\./, '') : null;
+  const visibleError = noticeError ?? (!notice ? lastError : null);
+  const focus = status
+    ? setupFocus(status, signedIn, preparingStep, setupReached)
+    : signedIn
+      ? 'enable'
+      : 'enable';
+  const focusTitle =
+    focus === 'state' && status
+      ? `cloudSyncE2ee.states.${status.recoveryRequired ? 'recovery_required' : status.syncState}`
+      : `cloudSyncE2ee.step${focus[0].toUpperCase()}${focus.slice(1)}Title`;
+  const focusDetail =
+    focus === 'state'
+      ? 'cloudSyncE2ee.stepFollowDetail'
+      : `cloudSyncE2ee.step${focus[0].toUpperCase()}${focus.slice(1)}Detail`;
+  const canSync =
+    !working &&
+    !status?.recoveryRequired &&
+    (Boolean(status?.pendingOperationId) ||
+      (Boolean(status?.enabled) && unlocked && status?.syncState !== 'conflict'));
   const dialogTitle =
     dialog?.kind === 'create'
       ? 'createTitle'
@@ -468,18 +540,15 @@ export function CloudSyncSection() {
             <Icon name="refresh" size={16} />
           </button>
         </header>
-        <label className="ol-cloud-sync-account" style={{ justifyContent: 'space-between' }}>
-          <strong>{t('cloudSyncE2ee.enable')}</strong>
-          <input
-            type="checkbox"
-            role="switch"
-            checked={status?.enabled ?? false}
+        <div className="ol-cloud-sync-account" style={{ justifyContent: 'space-between' }}>
+          <strong id="cloud-sync-e2ee-enable">{t('cloudSyncE2ee.enable')}</strong>
+          <Toggle
+            on={status?.enabled ?? false}
+            label={t('cloudSyncE2ee.enable')}
             disabled={!available || !signedIn || working || loading || status?.recoveryRequired}
-            onChange={(event) =>
-              event.currentTarget.checked ? begin('enable') : setDialog({ kind: 'disable' })
-            }
+            onToggle={(next) => (next ? begin('enable') : setDialog({ kind: 'disable' }))}
           />
-        </label>
+        </div>
         {loading && <p role="status">{t('cloudSyncE2ee.loading')}</p>}
         {!loading && !signedIn && (
           <Btn
@@ -509,17 +578,44 @@ export function CloudSyncSection() {
         )}
         {status && (
           <div className="ol-cloud-sync-backup" role="status" aria-live="polite">
-            <strong>{t(`cloudSyncE2ee.states.${status.syncState}`)}</strong>
-            <p>{t(unlocked ? 'cloudSyncE2ee.keyUnlocked' : 'cloudSyncE2ee.keyLocked')}</p>
-            <p>
-              {t(
-                status.hasCloudSnapshot === true
-                  ? 'cloudSyncE2ee.hasSnapshot'
-                  : status.hasCloudSnapshot === false
-                    ? 'cloudSyncE2ee.noSnapshot'
-                    : 'cloudSyncE2ee.snapshotUnknown',
+            <strong>{t(focusTitle)}</strong>
+            <p>{t(focusDetail)}</p>
+            <div className="ol-cloud-sync-status-line">
+              <span>{t(unlocked ? 'cloudSyncE2ee.keyUnlocked' : 'cloudSyncE2ee.keyLocked')}</span>
+              {!unlocked && signedIn && (
+                <Btn
+                  size="sm"
+                  variant="blue"
+                  disabled={working || loading}
+                  onClick={() => begin(status.hasCloudSnapshot ? 'unlock' : 'enable')}
+                >
+                  {t(
+                    status.hasCloudSnapshot ? 'cloudSyncE2ee.unlock' : 'cloudSyncE2ee.setPassword',
+                  )}
+                </Btn>
               )}
-            </p>
+            </div>
+            <div className="ol-cloud-sync-status-line">
+              <span>
+                {t(
+                  status.hasCloudSnapshot === true
+                    ? 'cloudSyncE2ee.hasSnapshot'
+                    : status.hasCloudSnapshot === false
+                      ? 'cloudSyncE2ee.noSnapshot'
+                      : 'cloudSyncE2ee.snapshotUnknown',
+                )}
+              </span>
+              {status.hasCloudSnapshot === false && signedIn && unlocked && (
+                <Btn
+                  size="sm"
+                  variant="blue"
+                  disabled={working || loading}
+                  onClick={() => begin('enable')}
+                >
+                  {t('cloudSyncE2ee.setPassword')}
+                </Btn>
+              )}
+            </div>
             {lastSync && Number.isFinite(lastSync.getTime()) && (
               <small>
                 {t('cloudSyncE2ee.lastSync', {
@@ -537,13 +633,8 @@ export function CloudSyncSection() {
               </Btn>
             )}
             <Btn
-              variant="primary"
-              disabled={
-                working ||
-                status?.recoveryRequired ||
-                (!status?.pendingOperationId &&
-                  (!status?.enabled || !unlocked || status?.syncState === 'conflict'))
-              }
+              variant={canSync ? 'blue' : 'soft'}
+              disabled={!canSync}
               onClick={() => simple(cloudSyncE2eeSyncNow)}
             >
               {t(
@@ -598,19 +689,38 @@ export function CloudSyncSection() {
             {taskControls}
           </div>
         )}
-        {notice ? (
-          <p
-            role={notice.error ? 'alert' : 'status'}
-            className={notice.error ? 'ol-cloud-sync-error' : undefined}
-          >
-            {t(`cloudSyncE2ee.${notice.key}`)}
-          </p>
-        ) : (
-          lastError && (
+        {notice && !notice.error ? <p role="status">{t(`cloudSyncE2ee.${notice.key}`)}</p> : null}
+        {visibleError && (
+          <div className="ol-cloud-sync-status-line">
             <p role="alert" className="ol-cloud-sync-error">
-              {t(`cloudSyncE2ee.errors.${lastError}`)}
+              {t(`cloudSyncE2ee.errors.${visibleError}`)}
             </p>
-          )
+            {REFRESH_ERRORS.has(visibleError) && (
+              <Btn
+                size="sm"
+                variant="blue"
+                disabled={loading || working}
+                onClick={() => void load()}
+              >
+                {t('cloudSyncE2ee.refresh')}
+              </Btn>
+            )}
+            {(visibleError === 'unlock' ||
+              visibleError === 'invalidPassword' ||
+              visibleError === 'secureStorage') &&
+              signedIn && (
+                <Btn
+                  size="sm"
+                  variant="blue"
+                  disabled={working}
+                  onClick={() => begin(status?.hasCloudSnapshot ? 'unlock' : 'enable')}
+                >
+                  {t(
+                    status?.hasCloudSnapshot ? 'cloudSyncE2ee.unlock' : 'cloudSyncE2ee.setPassword',
+                  )}
+                </Btn>
+              )}
+          </div>
         )}
         {status?.lastError?.retryAfterSeconds != null &&
           Number.isSafeInteger(status.lastError.retryAfterSeconds) &&
@@ -636,6 +746,7 @@ export function CloudSyncSection() {
           key={dialog.kind}
           title={t(`cloudSyncE2ee.${dialogTitle}`)}
           busy={working}
+          showClose={dialog.kind !== 'protocol'}
           onClose={closeDialog}
         >
           {notice?.error && (
@@ -655,15 +766,21 @@ export function CloudSyncSection() {
           {dialog.kind === 'protocol' && (
             <ProtocolWarning
               busy={working}
-              onBack={() => {
+              onCancel={() => {
                 setNotice(null);
-                setDialog({ kind: 'consent', intent: dialog.intent });
+                setDialog(null);
               }}
-              onConfirm={() =>
-                void perform(async (valid) =>
-                  routePreparation(await prepareEncryptedSync(), dialog.intent, valid),
-                )
-              }
+              onConfirm={() => {
+                const intent = dialog.intent;
+                setNotice(null);
+                setPreparingStep(true);
+                setDialog(null);
+                void perform(async (valid) => {
+                  await routePreparation(await prepareEncryptedSync(), intent, valid);
+                }).finally(() => {
+                  if (alive.current) setPreparingStep(false);
+                });
+              }}
             />
           )}
           {(dialog.kind === 'create' || dialog.kind === 'unlock' || dialog.kind === 'password') && (
@@ -713,7 +830,7 @@ export function CloudSyncSection() {
               }
             />
           )}
-          {working && (
+          {working && status?.taskId && dialog.kind !== 'protocol' && (
             <div className="ol-cloud-sync-actions">
               <span role="status">{t('cloudSyncE2ee.working')}</span>
               {taskControls}
@@ -761,17 +878,17 @@ function ConsentForm({ busy, onConfirm }: { busy: boolean; onConfirm: () => void
 function ProtocolWarning({
   busy,
   onConfirm,
-  onBack,
+  onCancel,
 }: {
   busy: boolean;
   onConfirm: () => void;
-  onBack: () => void;
+  onCancel: () => void;
 }) {
   const { t } = useTranslation();
   const [acknowledged, setAcknowledged] = useState(false);
   return (
     <div style={{ display: 'grid', gap: 18 }}>
-      <p style={{ margin: 0, color: 'var(--ol-ink-3)', lineHeight: 1.65 }}>
+      <p style={{ margin: 0, color: 'var(--ol-ink-2)', lineHeight: 1.65 }}>
         {t('cloudSyncE2ee.protocolIntro')}
       </p>
       <div
@@ -789,7 +906,7 @@ function ProtocolWarning({
             <h4 style={{ fontSize: 14, margin: '0 0 6px', color: 'var(--ol-ink)' }}>
               {t(`cloudSyncE2ee.protocol${section}Title`)}
             </h4>
-            <p style={{ margin: 0, lineHeight: 1.7, color: 'var(--ol-ink-3)' }}>
+            <p style={{ margin: 0, lineHeight: 1.7, color: 'var(--ol-ink-2)' }}>
               {t(`cloudSyncE2ee.protocol${section}`)}
             </p>
           </section>
@@ -805,10 +922,10 @@ function ProtocolWarning({
         {t('cloudSyncE2ee.protocolCheck')}
       </label>
       <div className="ol-cloud-sync-actions" style={{ justifyContent: 'flex-end' }}>
-        <Btn disabled={busy} onClick={onBack}>
-          {t('cloudSyncE2ee.protocolBack')}
+        <Btn disabled={busy} onClick={onCancel}>
+          {t('common.cancel')}
         </Btn>
-        <Btn variant="primary" disabled={!acknowledged || busy} onClick={onConfirm}>
+        <Btn variant="blue" disabled={!acknowledged || busy} onClick={onConfirm}>
           {t('cloudSyncE2ee.protocolConfirm')}
         </Btn>
       </div>
@@ -1157,11 +1274,13 @@ function DeleteConfirmation({
 function SyncDialog({
   title,
   busy,
+  showClose = true,
   onClose,
   children,
 }: {
   title: string;
   busy: boolean;
+  showClose?: boolean;
   onClose: () => void;
   children: ReactNode;
 }) {
@@ -1233,22 +1352,19 @@ function SyncDialog({
           <h3 id={titleId} style={{ margin: 0, fontSize: 17 }}>
             {title}
           </h3>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onClose}
-            aria-label={t('common.close')}
-            className="ol-tool-close"
-          >
-            <Icon name="close" size={17} />
-          </button>
+          {showClose && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onClose}
+              aria-label={t('common.close')}
+              className="ol-tool-close"
+            >
+              <Icon name="close" size={17} />
+            </button>
+          )}
         </header>
         {children}
-        <div>
-          <Btn disabled={busy} onClick={onClose}>
-            {t('common.close')}
-          </Btn>
-        </div>
       </div>
     </Modal>
   );

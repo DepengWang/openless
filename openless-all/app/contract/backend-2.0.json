@@ -107,7 +107,11 @@
   },
   "lessComputerVoice": {
     "phases": ["starting", "recording", "transcribing", "idle"],
-    "sample": {"seq": 3, "kind": "voice_state", "sessionId": "00000000-0000-4000-8000-000000000000", "phase": "recording", "level": 0.5, "elapsedMs": 120}
+    "modes": ["submit", "dictate"],
+    "outcomes": ["submitted", "committed", "empty", "failed", "cancelled"],
+    "sample": {"seq": 3, "kind": "voice_state", "sessionId": "00000000-0000-4000-8000-000000000000", "phase": "recording", "level": 0.5, "elapsedMs": 120, "mode": "dictate", "transcript": "打开"},
+    "idleSample": {"seq": 4, "kind": "voice_state", "sessionId": "00000000-0000-4000-8000-000000000000", "phase": "idle", "level": 0.0, "elapsedMs": 120, "mode": "dictate", "transcript": "打开设置", "outcome": "committed"},
+    "legacySample": {"seq": 2, "kind": "voice_state", "sessionId": "00000000-0000-4000-8000-000000000000", "phase": "starting", "level": 0.0, "elapsedMs": 0}
   },
   "androidJni": {
     "fields": ["contractVersion", "ok", "payload", "error"],

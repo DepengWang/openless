@@ -18,7 +18,7 @@ import { Translation } from '../pages/Translation';
 import { SelectionAsk } from '../pages/SelectionAsk';
 import { QuickNote } from '../pages/QuickNote';
 import { Corrections } from '../pages/Corrections';
-import { APP_VERSION_LABEL, IS_BETA_BUILD } from '../lib/appVersion';
+import { IS_BETA_BUILD } from '../lib/appVersion';
 import {
   HOTKEY_MODE_MIGRATION_ACK_KEY,
   HOTKEY_MODE_MIGRATION_DEFERRED_KEY,
@@ -357,8 +357,6 @@ function FloatingShellBody({
                   {t('shell.betaTag')}
                 </span>
               )}
-
-              <span>{t('shell.footer.version', { version: APP_VERSION_LABEL })}</span>
             </div>
 
             {/* nav — 扁平项 + 可展开分组（用户拍板结构）。扁平项：概览/历史/词汇。
