@@ -39,7 +39,7 @@ class OpenLessBackendWarmupActivity : MainActivity() {
 
     init {
         sendToBackground = Runnable {
-            if (settingsRequested || isFinishing || isDestroyed) return@Runnable
+            if (settingsRequested || qaRequested || isFinishing || isDestroyed) return@Runnable
             // On-device logs showed a genuinely black settings page whose window
             // itself was drawn and focused fine, but whose WebView had never
             // rendered a single frame — no renderer process ever spawned, no
@@ -100,6 +100,10 @@ class OpenLessBackendWarmupActivity : MainActivity() {
     }
 
     private var settingsRequested = false
+    // QA swipe opens this same Tauri host (never bare MainActivity). Unlike
+    // settings, back should only hide the host — not finishAndRemoveTask —
+    // so the process-lifetime WebView stays intact for the next gesture.
+    private var qaRequested = false
     private var webViewRef: android.webkit.WebView? = null
 
     // See onCreate()'s settingsRequested branch and onWebViewCreate() below.
@@ -376,13 +380,15 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         // reading only this Intent's own extras, depends on onNewIntent()
         // winning that race, which is not guaranteed.
         settingsRequested = launchedFromLauncher || intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false) || settingsOpenPending
+        qaRequested = intent.getBooleanExtra(EXTRA_SHOW_QA, false) || qaOpenPending
         android.util.Log.i(
             "OpenLessBackendWarmupActivity",
-            "onCreate settingsRequested=$settingsRequested launchedFromLauncher=$launchedFromLauncher " +
+            "onCreate settingsRequested=$settingsRequested qaRequested=$qaRequested launchedFromLauncher=$launchedFromLauncher " +
                 "hasExtra=${intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false)} settingsOpenPending=$settingsOpenPending " +
-                "activityHash=${System.identityHashCode(this)}",
+                "qaOpenPending=$qaOpenPending activityHash=${System.identityHashCode(this)}",
         )
         settingsOpenPending = false
+        qaOpenPending = false
         // Only when visibly opened for settings: a permission dialog here
         // during the invisible warmup path would get dragged to the
         // background along with this Activity by sendToBackground() 180ms
@@ -392,8 +398,10 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         // notification stays silently blocked and "Manage notifications"
         // shows as a fixed, non-interactive "don't allow" in Settings,
         // since there is nothing granted to manage.
-        if (settingsRequested) {
-            requestNotificationPermissionIfNeeded()
+        if (settingsRequested || qaRequested) {
+            if (settingsRequested) {
+                requestNotificationPermissionIfNeeded()
+            }
             // No reattach requested here (see requestSettingsReattach()):
             // a fresh onCreate() means a fresh WebView on a fresh Window
             // Surface, the exact pairing that's already proven to render
@@ -402,7 +410,8 @@ class OpenLessBackendWarmupActivity : MainActivity() {
             settingsOpenRequestId += 1
             android.util.Log.i(
                 "OpenLessBackendWarmupActivity",
-                "settings open via cold onCreate requestId=$settingsOpenRequestId — no reattach needed",
+                "foreground open via cold onCreate settings=$settingsRequested qa=$qaRequested " +
+                    "requestId=$settingsOpenRequestId — no reattach needed",
             )
             // Safety net: nativeEnsureMainWebviewWindow() above can report
             // success while the actual WebView creation still silently
@@ -451,6 +460,9 @@ class OpenLessBackendWarmupActivity : MainActivity() {
             finishAndRemoveTask()
             return
         }
+        if (qaRequested) {
+            qaRequested = false
+        }
         // This Activity is the single, process-lifetime Tauri/Rust host and must
         // never actually finish() while the process is alive: finishing destroys
         // the window Surface (unlike moveTaskToBack, which only hides it), and
@@ -466,22 +478,34 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         setIntent(intent)
         val launchedFromLauncher = intent.action == Intent.ACTION_MAIN &&
             intent.hasCategory(Intent.CATEGORY_LAUNCHER)
-        if (launchedFromLauncher || intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false) || settingsOpenPending) {
-            settingsRequested = true
-            settingsOpenPending = false
+        val showSettings = launchedFromLauncher || intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false) || settingsOpenPending
+        val showQa = intent.getBooleanExtra(EXTRA_SHOW_QA, false) || qaOpenPending
+        if (showSettings || showQa) {
+            if (showSettings) {
+                settingsRequested = true
+                settingsOpenPending = false
+            }
+            if (showQa) {
+                qaRequested = true
+                qaOpenPending = false
+            }
             android.util.Log.i(
                 "OpenLessBackendWarmupActivity",
-                "onNewIntent settingsRequested=true launchedFromLauncher=$launchedFromLauncher " +
-                    "hasExtra=${intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false)}",
+                "onNewIntent settingsRequested=$settingsRequested qaRequested=$qaRequested " +
+                    "launchedFromLauncher=$launchedFromLauncher " +
+                    "hasSettingsExtra=${intent.getBooleanExtra(EXTRA_SHOW_SETTINGS, false)} " +
+                    "hasQaExtra=${intent.getBooleanExtra(EXTRA_SHOW_QA, false)}",
             )
             warmupHandler.removeCallbacks(sendToBackground)
-            // Covers openSettingsIfRunning() bringing an already-alive
-            // instance forward, and the launcher icon being tapped again
-            // while this Activity is already alive (singleTask redelivers
-            // via onNewIntent instead of a fresh onCreate) — either way,
-            // onCreate()'s own call to this never runs again for those
+            // Covers openSettingsIfRunning()/openForQaIfRunning() bringing an
+            // already-alive instance forward, and the launcher icon being
+            // tapped again while this Activity is already alive (singleTask
+            // redelivers via onNewIntent instead of a fresh onCreate) — either
+            // way, onCreate()'s own call to this never runs again for those
             // cases, so this is the only other place a visible moment happens.
-            requestNotificationPermissionIfNeeded()
+            if (showSettings) {
+                requestNotificationPermissionIfNeeded()
+            }
             // The common case in practice: this singleTask instance's
             // WebView has likely been sitting on a torn-down Window
             // Surface since whenever sendToBackground() last backgrounded
@@ -581,6 +605,7 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         private var activeInstance: java.lang.ref.WeakReference<OpenLessBackendWarmupActivity>? = null
 
         private const val EXTRA_SHOW_SETTINGS = "com.openless.app.extra.SHOW_SETTINGS"
+        private const val EXTRA_SHOW_QA = "com.openless.app.extra.SHOW_QA"
         // Same literal wry's WryActivity.kt uses for its own private
         // ACTIVITY_ID_KEY (top-level `private val`, file-scoped in Kotlin —
         // not visible here even though it's the same package, hence the
@@ -616,6 +641,8 @@ class OpenLessBackendWarmupActivity : MainActivity() {
         // and vanish instead of staying open.
         @Volatile
         private var settingsOpenPending = false
+        @Volatile
+        private var qaOpenPending = false
 
         /** The single Tauri host is usable only when its WebView still exists. */
         fun isRunning(): Boolean {
@@ -678,6 +705,42 @@ class OpenLessBackendWarmupActivity : MainActivity() {
                 // patch: android_setup()/InnerWebView::new() both logged
                 // activity_id=0 for every fresh rebuild). A real random id per
                 // launch makes each instance's Wry-side records genuinely its own.
+                putExtra(WRY_ACTIVITY_ID_KEY, kotlin.random.Random.nextInt())
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
+            })
+        }
+
+        /** Bring the existing Tauri host forward for the embedded mobile QA panel. */
+        fun openForQaIfRunning(context: Context): Boolean {
+            val activity = activeInstance?.get() ?: return false
+            if (activity.isFinishing || activity.isDestroyed || activity.webViewRef == null) return false
+            android.util.Log.i("OpenLessBackendWarmupActivity", "openForQaIfRunning: reusing live instance")
+            qaOpenPending = true
+            activity.qaRequested = true
+            activity.warmupHandler.removeCallbacks(activity.sendToBackground)
+            context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {
+                putExtra(EXTRA_SHOW_QA, true)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
+            })
+            return true
+        }
+
+        /**
+         * Open the embedded QA UI on the single tracked Tauri host. Never
+         * starts bare MainActivity — that produced a second blank white host
+         * stacked in front of the real QA panel.
+         */
+        @JvmStatic
+        fun openForQa(context: Context) {
+            qaOpenPending = true
+            if (openForQaIfRunning(context)) return
+            android.util.Log.i("OpenLessBackendWarmupActivity", "openForQa: no live instance, starting fresh")
+            context.startActivity(Intent(context, OpenLessBackendWarmupActivity::class.java).apply {
+                putExtra(EXTRA_SHOW_QA, true)
                 putExtra(WRY_ACTIVITY_ID_KEY, kotlin.random.Random.nextInt())
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)

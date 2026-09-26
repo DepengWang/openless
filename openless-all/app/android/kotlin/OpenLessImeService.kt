@@ -161,6 +161,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // that never show a key preview (voice, clipboard, edit); callers use
     // the safe-call operator so that's a no-op rather than a crash.
     private var keyPreviewOverlay: KeyPreviewOverlay? = null
+    // Last height_dp:raise_dp baked into the cached input view — compared in
+    // onStartInputView so leaving keyboard settings and refocusing rebuilds
+    // when the footprint prefs changed.
+    private var appliedKeyboardFootprintKey: String? = null
     // LETTERS layer's swipe-up-bearing keys (buildEnglishCharKey()'s
     // wrapper -> its symbol — row1's digits, row2's @#$%&-+(), row3's
     // :;'.,!?), so a swipe-armed drag can retarget across a row the same
@@ -505,12 +509,46 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         super.onDestroy()
     }
 
-    // Every panel is a fixed 300dp height by design; keep Android's own
-    // fullscreen-extract heuristic from ever engaging regardless of host
-    // app/orientation quirks (the actual measured-height bug turned out to
-    // be unrelated — see SwipeModeContainer.onMeasure — but this is still
-    // the standard, harmless precaution most custom keyboards apply).
+    // Panel content height comes from keyboard settings (stretch); optional
+    // raise adds empty space below so the whole keyboard sits higher without
+    // stretching keys. Keep Android's fullscreen-extract heuristic off.
     override fun onEvaluateFullscreenMode(): Boolean = false
+
+    /** Key-panel height in px (prefs `keyboard_height_dp`, default 300). */
+    internal fun keyboardPanelHeightPx(): Int = panelHeightPx(this)
+
+    internal fun keyboardPanelHeightDp(): Int = panelHeightDp(this)
+
+    /** Empty space below the key panel that lifts keys (prefs `keyboard_raise_dp`). */
+    internal fun keyboardRaiseHeightPx(): Int = raiseHeightPx(this)
+
+    /**
+     * Appends a bottom spacer so the key panel sits higher on screen.
+     * Always wraps (raise may be 0) so later pref changes can grow the
+     * spacer without rebuilding the whole IME view tree.
+     */
+    private fun applyKeyboardRaise(content: View): View {
+        val panelPx = keyboardPanelHeightPx()
+        val raisePx = keyboardRaiseHeightPx()
+        return RaisedKeyboardHost(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                panelPx + raisePx,
+            )
+            addView(
+                content,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, panelPx),
+            )
+            addView(
+                View(this@OpenLessImeService).apply {
+                    setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
+                    visibility = if (raisePx > 0) View.VISIBLE else View.GONE
+                },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, raisePx),
+            )
+        }
+    }
 
     override fun onCreateInputView(): View {
         refreshLanguage()
@@ -523,14 +561,28 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // this ordering fixes. The original edit-result flow only ever
         // triggered from Voice mode, so this ordering issue never showed up
         // before the clipboard flow started reusing the same panel.
-        if (editingDictationResult) return buildEditPanel()
-        if (inputMode == InputMode.ENGLISH) return wrapWithKeyPreviewOverlay(buildKeyboardView())
-        if (inputMode == InputMode.STROKE) return wrapWithKeyPreviewOverlay(if (strokeController.strokeNumberMode) strokeController.buildStrokeNumberView() else strokeController.buildStrokeView())
-        if (inputMode == InputMode.CLIPBOARD) return if (clipboardHistoryMode) buildClipboardHistoryView() else buildClipboardView()
+        val content = when {
+            editingDictationResult -> buildEditPanel()
+            inputMode == InputMode.ENGLISH -> wrapWithKeyPreviewOverlay(buildKeyboardView())
+            inputMode == InputMode.STROKE -> wrapWithKeyPreviewOverlay(
+                if (strokeController.strokeNumberMode) strokeController.buildStrokeNumberView()
+                else strokeController.buildStrokeView(),
+            )
+            inputMode == InputMode.CLIPBOARD ->
+                if (clipboardHistoryMode) buildClipboardHistoryView() else buildClipboardView()
+            else -> buildVoiceInputView()
+        }
+        val view = applyKeyboardRaise(content)
+        appliedKeyboardFootprintKey = keyboardFootprintKey()
+        return view
+    }
+
+    /** Voice panel + floating dictation-result overlay (former onCreateInputView body). */
+    private fun buildVoiceInputView(): View {
         val panel = SwipeModeContainer(this) { direction -> swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
-            minimumHeight = dp(300)
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, keyboardPanelHeightPx())
+            minimumHeight = keyboardPanelHeightPx()
             setPadding(dp(16), dp(8), dp(16), dp(4))
             setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
             clipChildren = false
@@ -799,7 +851,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // them can never nudge the mic (or anything else) out of its
         // original centered position, regardless of visibility state.
         val overlayHost = FrameLayout(this).apply {
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, keyboardPanelHeightPx())
         }
         overlayHost.addView(panel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         overlayHost.addView(buildDictationResultOverlay(), FrameLayout.LayoutParams(
@@ -944,7 +996,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val newView = onCreateInputView()
         setInputView(newView)
         val offset = resources.displayMetrics.widthPixels.toFloat() * slideDirection
-        val container = newView as? ViewGroup ?: return
+        // RaisedKeyboardHost wraps [panel, raiseSpacer] — slide the panel's
+        // own children (skip header at 0), not the raise spacer.
+        val container = when (newView) {
+            is RaisedKeyboardHost -> newView.getChildAt(0) as? ViewGroup
+            is ViewGroup -> newView
+            else -> null
+        } ?: return
         for (index in 1 until container.childCount) {
             val child = container.getChildAt(index)
             child.translationX = offset
@@ -972,8 +1030,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // risking a taller/"fullscreen"-looking measurement.
         val root = SwipeModeContainer(this) { direction -> swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
-            minimumHeight = dp(300)
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, keyboardPanelHeightPx())
+            minimumHeight = keyboardPanelHeightPx()
             setPadding(dp(16), dp(8), dp(16), dp(10))
             setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
             clipChildren = false
@@ -1239,13 +1297,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * panel renders above the whole keyboard — unclipped by the panel's own
      * clipChildren/candidate-row/mode-toggle bounds — without taking part in
      * its layout at all. The wrapper takes on the panel's own layoutParams
-     * (every panel already sets its own fixed MATCH_PARENT x dp(300)) so
+     * (every panel already sets its own fixed MATCH_PARENT x keyboardPanelHeightPx()) so
      * this changes nothing about the panel's measured size; the panel then
      * fills the wrapper exactly as it used to fill the IME window directly.
      */
     private fun wrapWithKeyPreviewOverlay(content: View): View {
         val host = FrameLayout(this).apply {
-            layoutParams = content.layoutParams ?: ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
+            layoutParams = content.layoutParams ?: ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, keyboardPanelHeightPx())
             clipChildren = false
             clipToPadding = false
         }
@@ -1259,8 +1317,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private fun buildKeyboardView(): View {
         val root = SwipeModeContainer(this) { direction -> swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
-            minimumHeight = dp(300)
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, keyboardPanelHeightPx())
+            minimumHeight = keyboardPanelHeightPx()
             setPadding(dp(8), dp(8), dp(8), dp(8))
             setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
         }
@@ -1679,8 +1737,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private fun buildClipboardView(): View {
         val root = SwipeModeContainer(this) { direction -> swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
-            minimumHeight = dp(300)
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, keyboardPanelHeightPx())
+            minimumHeight = keyboardPanelHeightPx()
             setPadding(dp(8), dp(8), dp(8), dp(8))
             setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
         }
@@ -1909,8 +1967,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             verticalDismissAllowed = { (historyScroll?.scrollY ?: 0) == 0 },
         ) { direction -> swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300))
-            minimumHeight = dp(300)
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, keyboardPanelHeightPx())
+            minimumHeight = keyboardPanelHeightPx()
             setPadding(dp(16), dp(8), dp(16), dp(8))
             setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
             clipChildren = false
@@ -3074,12 +3132,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     /** Candidate tap is the ONLY way a pinyin candidate reaches the field — see toggleLatinInputMode()'s doc comment on why Space deliberately never does this. */
     private fun selectPinyinCandidate(char: String) {
         currentInputConnection?.commitText(char, 1)
-        // Both recorded before clear() — the encoding is still intact and
-        // is half of what each one keys off (plan 8.4 / two-step combo
-        // learning, see LitePinyinController.observeCommitForLearning()).
-        litePinyinController.recordSelection(char)
+        // observeCommitForLearning needs the encoding still intact; commitSelection
+        // then records frequency under the real sourceKey and consumes that key
+        // (full buffer or first syllable) before refreshing the candidate row.
         litePinyinController.observeCommitForLearning(char)
-        litePinyinController.clear()
+        litePinyinController.commitSelection(char) { renderPinyinCandidates(it) }
         litePinyinController.recordCommittedText(char)
         performKeyHaptic()
         refreshPinyinAssociations()
@@ -3214,6 +3271,22 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             setState("idle", "点击开始说话")
         }
     }
+
+    override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
+        super.onStartInputView(info, restarting)
+        // InputMethodService caches onCreateInputView()'s result across hide/
+        // show. Keyboard settings write height/raise prefs while that cached
+        // view is still the old footprint — rebuild when they diverge so the
+        // next focus actually shows what the settings preview promised.
+        val key = keyboardFootprintKey()
+        if (appliedKeyboardFootprintKey != key) {
+            appliedKeyboardFootprintKey = key
+            refreshInputView()
+        }
+    }
+
+    private fun keyboardFootprintKey(): String =
+        "${keyboardPanelHeightDp()}:${raiseHeightDp(this)}"
 
     override fun onFinishInput() {
         if (recording) {
@@ -4250,6 +4323,35 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     /**
+     * Outer IME host for stretch+raise: key panel on top + empty lift strip
+     * below. Forces EXACT total height the same way [SwipeModeContainer]
+     * forces the key-panel height (setInputView discards LayoutParams).
+     * Re-reads prefs on every measure so a settings change applies on the
+     * next layout even before a full view rebuild.
+     */
+    private class RaisedKeyboardHost(
+        context: android.content.Context,
+    ) : LinearLayout(context) {
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val panel = panelHeightPx(context)
+            val raise = raiseHeightPx(context)
+            if (childCount >= 1) {
+                getChildAt(0).layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, panel)
+            }
+            if (childCount >= 2) {
+                val spacer = getChildAt(1)
+                spacer.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, raise)
+                spacer.visibility = if (raise > 0) View.VISIBLE else View.GONE
+            }
+            val exactHeightSpec = android.view.View.MeasureSpec.makeMeasureSpec(
+                panel + raise,
+                android.view.View.MeasureSpec.EXACTLY,
+            )
+            super.onMeasure(widthMeasureSpec, exactHeightSpec)
+        }
+    }
+
+    /**
      * Horizontal swipe-to-switch-mode, applied to every panel's root
      * container: a left/right drag anywhere that isn't already claimed by a
      * vertical gesture (like SwipeRail) steps the input mode toward
@@ -4313,14 +4415,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // discarding the fixed-height LayoutParams every panel builder sets
         // on its root — confirmed via a live device: the attached root's
         // own layoutParams.height read back as WRAP_CONTENT (-2), not the
-        // 300dp we set. Under a generous (near-fullscreen) WRAP_CONTENT/
-        // AT_MOST measure spec from the system, any 0dp/weight=1 flexible
-        // child (the spacer used by several panels) happily expands to fill
-        // that huge bound instead of a real 300dp. Forcing an EXACTLY
-        // 300dp height spec here — regardless of what the parent asks for —
-        // makes every panel's height genuinely fixed instead of accidental.
+        // configured height we set. Under a generous (near-fullscreen)
+        // WRAP_CONTENT/AT_MOST measure spec from the system, any 0dp/weight=1
+        // flexible child (the spacer used by several panels) happily expands
+        // to fill that huge bound instead of the real configured height.
+        // Forcing an EXACTLY height spec here — regardless of what the parent
+        // asks for — makes every panel's height genuinely fixed instead of
+        // accidental.
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            val fixedHeight = (300 * resources.displayMetrics.density).toInt()
+            val fixedHeight = panelHeightPx(context)
             val exactHeightSpec = android.view.View.MeasureSpec.makeMeasureSpec(fixedHeight, android.view.View.MeasureSpec.EXACTLY)
             super.onMeasure(widthMeasureSpec, exactHeightSpec)
         }
@@ -5574,6 +5677,35 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     companion object {
+        const val PREF_KEYBOARD_HEIGHT_DP = "keyboard_height_dp"
+        const val DEFAULT_KEYBOARD_HEIGHT_DP = 300
+        const val MIN_KEYBOARD_HEIGHT_DP = 220
+        const val MAX_KEYBOARD_HEIGHT_DP = 420
+        const val PREF_KEYBOARD_RAISE_DP = "keyboard_raise_dp"
+        const val DEFAULT_KEYBOARD_RAISE_DP = 0
+        const val MIN_KEYBOARD_RAISE_DP = 0
+        const val MAX_KEYBOARD_RAISE_DP = 120
+
+        fun panelHeightDp(context: android.content.Context): Int {
+            return context.getSharedPreferences("openless_ime_ui", android.content.Context.MODE_PRIVATE)
+                .getInt(PREF_KEYBOARD_HEIGHT_DP, DEFAULT_KEYBOARD_HEIGHT_DP)
+                .coerceIn(MIN_KEYBOARD_HEIGHT_DP, MAX_KEYBOARD_HEIGHT_DP)
+        }
+
+        fun panelHeightPx(context: android.content.Context): Int {
+            return (panelHeightDp(context) * context.resources.displayMetrics.density).toInt()
+        }
+
+        fun raiseHeightDp(context: android.content.Context): Int {
+            return context.getSharedPreferences("openless_ime_ui", android.content.Context.MODE_PRIVATE)
+                .getInt(PREF_KEYBOARD_RAISE_DP, DEFAULT_KEYBOARD_RAISE_DP)
+                .coerceIn(MIN_KEYBOARD_RAISE_DP, MAX_KEYBOARD_RAISE_DP)
+        }
+
+        fun raiseHeightPx(context: android.content.Context): Int {
+            return (raiseHeightDp(context) * context.resources.displayMetrics.density).toInt()
+        }
+
         private const val SILENCE_LEVEL_THRESHOLD = 0.02f
         private const val SILENCE_CHECK_DELAY_MS = 3000L
         private const val BACKEND_HEARTBEAT_INTERVAL_MS = 6000L

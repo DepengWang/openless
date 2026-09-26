@@ -18,6 +18,22 @@ class OpenLessApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         OpenLessAppContext.initialize(this)
+        // #region agent log
+        // Baseline JNI Context so overlay/dictation notifies work even when
+        // neither RuntimeService (IME) nor OverlayService has started yet.
+        runCatching {
+            OpenLessNative.nativeRegisterActivityContext(this)
+            Log.i(
+                "OpenLessDbg58c22b",
+                """{"sessionId":"58c22b","hypothesisId":"A","location":"OpenLessApplication.onCreate","message":"registered application context baseline","data":{"hasCtx":${OpenLessNative.nativeHasRegisteredActivityContext()}},"timestamp":${System.currentTimeMillis()}}""",
+            )
+        }.onFailure { error ->
+            Log.w(
+                "OpenLessDbg58c22b",
+                """{"sessionId":"58c22b","hypothesisId":"A","location":"OpenLessApplication.onCreate","message":"application register failed","data":{"error":"${error.message}"},"timestamp":${System.currentTimeMillis()}}""",
+            )
+        }
+        // #endregion
         if (isMainProcess()) {
             OpenLessShizukuBridge.initialize()
         }
@@ -38,7 +54,17 @@ class OpenLessApplication : Application() {
                 }
 
                 override fun onActivityStarted(activity: Activity) {
-                    if (activity.javaClass.name.endsWith("MainActivity")) {
+                    // Must use `is MainActivity` — launcher opens
+                    // OpenLessBackendWarmupActivity (subclass), whose class name
+                    // does NOT end with "MainActivity", so endsWith() never fired
+                    // overlay show/hide or permission prompts.
+                    if (activity is MainActivity) {
+                        // #region agent log
+                        Log.i(
+                            "OpenLessDbg58c22b",
+                            """{"sessionId":"58c22b","hypothesisId":"F","location":"OpenLessApplication.onActivityStarted","message":"main-family started","data":{"cls":"${activity.javaClass.simpleName}","hasCtx":${runCatching { OpenLessNative.nativeHasRegisteredActivityContext() }.getOrDefault(false)}},"timestamp":${System.currentTimeMillis()}}""",
+                        )
+                        // #endregion
                         maybeRequestBatteryOptimizationExemption(activity)
                         maybeRequestNotificationPermission(activity)
                         maybeHideOverlayOnForeground()
@@ -67,7 +93,13 @@ class OpenLessApplication : Application() {
                 }
 
                 override fun onActivityStopped(activity: Activity) {
-                    if (activity.javaClass.name.endsWith("MainActivity")) {
+                    if (activity is MainActivity) {
+                        // #region agent log
+                        Log.i(
+                            "OpenLessDbg58c22b",
+                            """{"sessionId":"58c22b","hypothesisId":"F","location":"OpenLessApplication.onActivityStopped","message":"main-family stopped — maybe show overlay","data":{"cls":"${activity.javaClass.simpleName}","trigger":"${configuredOverlayTriggerMode()}"},"timestamp":${System.currentTimeMillis()}}""",
+                        )
+                        // #endregion
                         maybeShowOverlayOnBackground()
                     }
                 }
@@ -91,8 +123,20 @@ class OpenLessApplication : Application() {
             return
         }
         if (!canDrawOverlays()) {
+            // #region agent log
+            Log.w(
+                "OpenLessDbg58c22b",
+                """{"sessionId":"58c22b","hypothesisId":"B","location":"OpenLessApplication.maybeShowOverlayOnBackground","message":"skip show — canDrawOverlays false","timestamp":${System.currentTimeMillis()}}""",
+            )
+            // #endregion
             return
         }
+        // #region agent log
+        Log.i(
+            "OpenLessDbg58c22b",
+            """{"sessionId":"58c22b","hypothesisId":"B","location":"OpenLessApplication.maybeShowOverlayOnBackground","message":"sending ACTION_SHOW","data":{"trigger":"$configured"},"timestamp":${System.currentTimeMillis()}}""",
+        )
+        // #endregion
         sendOverlayAction(OpenLessOverlayService.ACTION_SHOW)
     }
 

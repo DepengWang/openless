@@ -40,8 +40,24 @@ internal class LitePinyinController(context: Context) {
 
     fun preloadAsync() = repository.preloadAsync()
 
-    /** Call with the encoding still intact — i.e. before clear() — since the recorded key is (encoding, text) together (plan 8.4). */
-    fun recordSelection(text: String) = repository.recordSelection(encoding.toString(), text)
+    /**
+     * Record frequency under the candidate's real sourceKey, then drop only
+     * that source encoding from the buffer (full clear when the pick matched
+     * the whole buffer; first-syllable consume when it matched the leading
+     * syllable — including multi-character phrases keyed on that syllable).
+     */
+    fun commitSelection(text: String, onCandidates: (List<String>) -> Unit) {
+        val currentEncoding = encoding.toString()
+        val sourceKey = repository.resolveSourceKey(currentEncoding, text)
+        repository.recordSelection(sourceKey, text)
+        if (sourceKey.length >= currentEncoding.length) {
+            clear()
+            onCandidates(emptyList())
+            return
+        }
+        encoding.delete(0, sourceKey.length)
+        query(onCandidates)
+    }
 
     /**
      * Call with the encoding still intact — i.e. before clear() — for every
@@ -80,6 +96,16 @@ internal class LitePinyinController(context: Context) {
     fun backspace(onCandidates: (List<String>) -> Unit): Boolean {
         if (encoding.isEmpty()) return false
         encoding.deleteCharAt(encoding.length - 1)
+        query(onCandidates)
+        return true
+    }
+
+    /** Consume only the first valid syllable, then query the remaining buffer. */
+    fun consumeFirstSyllable(onCandidates: (List<String>) -> Unit): Boolean {
+        if (encoding.isEmpty()) return false
+        val firstSyllable = repository.segmentEncoding(encoding.toString()).firstOrNull()
+        val consumeLength = firstSyllable?.length ?: encoding.length
+        encoding.delete(0, consumeLength)
         query(onCandidates)
         return true
     }

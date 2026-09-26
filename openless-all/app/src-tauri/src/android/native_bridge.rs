@@ -313,6 +313,16 @@ pub fn notify_capsule_state(payload: &CapsulePayload) {
     {
         let state = capsule_state_name(payload.state);
         let message = payload.message.as_deref();
+        // #region agent log
+        let has_ctx = crate::android::jni::android::has_active_activity();
+        log::warn!(
+            "[OpenLessDbg58c22b] {{\"sessionId\":\"58c22b\",\"hypothesisId\":\"A\",\"location\":\"native_bridge::notify_capsule_state\",\"message\":\"notify attempt\",\"data\":{{\"state\":\"{state}\",\"hasCtx\":{has_ctx}}},\"timestamp\":{}}}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        );
+        // #endregion
         if let Err(error) = crate::android::jni::android::with_android_env(|env, context| {
             crate::android::jni::android::notify_overlay_bridge(
                 env,
@@ -323,6 +333,15 @@ pub fn notify_capsule_state(payload: &CapsulePayload) {
             )
         }) {
             log::warn!("[android-native] notify overlay bridge failed: {error}");
+            // #region agent log
+            log::warn!(
+                "[OpenLessDbg58c22b] {{\"sessionId\":\"58c22b\",\"hypothesisId\":\"A\",\"location\":\"native_bridge::notify_capsule_state\",\"message\":\"notify failed\",\"data\":{{\"error\":\"{error}\",\"state\":\"{state}\"}},\"timestamp\":{}}}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            );
+            // #endregion
         }
     }
     let _ = payload;
@@ -518,6 +537,7 @@ fn spawn_stop_dictation_with_translation(translation: bool) {
 /// (see DictationContext::with_raw_requested()'s doc comment) — the LLM
 /// polish step is skipped entirely for this utterance and the raw
 /// transcript is inserted as-is.
+#[cfg(target_os = "android")]
 fn spawn_stop_dictation_for_ime_with_raw(raw: bool) {
     let Some(backend) = CORE_BACKEND.get().cloned() else {
         log::warn!("[android-native] core backend unavailable");

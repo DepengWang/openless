@@ -76,6 +76,13 @@ const SERVICE_SNIPPETS = [
             android:noHistory="false"
             android:launchMode="singleTask"
             android:theme="@style/Theme.openless" />`, // launcher intent-filter attached by moveLauncherIntentFilterToWarmupActivity()
+  // IME long-press Logo → native keyboard settings. Must be declared or
+  // startActivity(OpenLessKeyboardSettingsActivity) fails with ActivityNotFound.
+  `<activity
+            android:name=".OpenLessKeyboardSettingsActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.openless" />`,
 ];
 
 function printHelp() {

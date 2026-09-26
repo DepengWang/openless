@@ -67,6 +67,23 @@ class OpenLessOverlayService : Service(), OpenLessOverlayBridge.OverlayStateList
 
     override fun onCreate() {
         super.onCreate()
+        // #region agent log
+        // Overlay mode must register its own Service Context: RuntimeService only
+        // lives while the IME is active, so pure-floating-window dictation otherwise
+        // hits "no live Android Activity context registered" on every capsule notify.
+        runCatching {
+            OpenLessNative.nativeRegisterActivityContext(this)
+            android.util.Log.i(
+                "OpenLessDbg58c22b",
+                """{"sessionId":"58c22b","hypothesisId":"A","location":"OpenLessOverlayService.onCreate","message":"registered overlay service context","data":{"hasCtx":${OpenLessNative.nativeHasRegisteredActivityContext()}},"timestamp":${System.currentTimeMillis()}}""",
+            )
+        }.onFailure { error ->
+            android.util.Log.w(
+                "OpenLessDbg58c22b",
+                """{"sessionId":"58c22b","hypothesisId":"A","location":"OpenLessOverlayService.onCreate","message":"overlay register failed","data":{"error":"${error.message}"},"timestamp":${System.currentTimeMillis()}}""",
+            )
+        }
+        // #endregion
         try {
             OpenLessNative.requireBackendContract()
         } catch (error: Throwable) {
@@ -116,6 +133,14 @@ class OpenLessOverlayService : Service(), OpenLessOverlayBridge.OverlayStateList
         }
         // 系统杀死前台服务时也会走到这里：同步原生 OVERLAY_VISIBLE=false，避免状态永久残留为 true。
         runCatching { OpenLessNative.nativeNotifyOverlayDestroyed() }
+        // #region agent log
+        android.util.Log.i(
+            "OpenLessDbg58c22b",
+            """{"sessionId":"58c22b","hypothesisId":"A","location":"OpenLessOverlayService.onDestroy","message":"unregistering overlay service context","timestamp":${System.currentTimeMillis()}}""",
+        )
+        runCatching { OpenLessNative.nativeUnregisterActivityContext(this) }
+        runCatching { OpenLessNative.nativeRegisterActivityContext(applicationContext) }
+        // #endregion
         super.onDestroy()
     }
 

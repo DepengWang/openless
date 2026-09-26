@@ -108,8 +108,8 @@ internal class StrokeInputController(private val service: OpenLessImeService) {
         // is excluded from swipe-to-dismiss and left entirely to SwipeRail.
         val root = OpenLessImeService.SwipeModeContainer(service, verticalDismissExclusionRatio = 0.16f) { direction -> service.swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, service.dp(300))
-            minimumHeight = service.dp(300)
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, service.keyboardPanelHeightPx())
+            minimumHeight = service.keyboardPanelHeightPx()
             setPadding(service.dp(4), service.dp(3), service.dp(4), service.dp(3))
             setBackgroundColor(service.tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
         }
@@ -346,8 +346,8 @@ internal class StrokeInputController(private val service: OpenLessImeService) {
         service.refreshLanguage()
         val root = OpenLessImeService.SwipeModeContainer(service) { direction -> service.swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, service.dp(300))
-            minimumHeight = service.dp(300)
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, service.keyboardPanelHeightPx())
+            minimumHeight = service.keyboardPanelHeightPx()
             setPadding(service.dp(8), service.dp(8), service.dp(8), service.dp(8))
             setBackgroundColor(service.tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
         }
