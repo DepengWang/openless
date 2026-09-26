@@ -3460,7 +3460,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      */
     private fun updateBackendLinkIndicator() {
         val color = when {
+            // Matches VoiceButton's own waveform color for each armed
+            // gesture exactly (rawWaveformColor's when block) — the
+            // breathing dot and the waveform should never disagree about
+            // which mode a recording is currently armed for.
             recording && rawModeArmed -> LINK_COLOR_RECORDING_RAW
+            recording && quickNoteArmed -> LINK_COLOR_QUICK_NOTE
+            recording && cloudNoteArmed -> LINK_COLOR_CLOUD_NOTE
             recording -> LINK_COLOR_RECORDING
             processing -> LINK_COLOR_PROCESSING
             !backendLinkHealthy -> LINK_COLOR_ISSUE
