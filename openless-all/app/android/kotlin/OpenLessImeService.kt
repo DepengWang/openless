@@ -1536,23 +1536,21 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         action: () -> Unit,
     ): TextView {
         return keyboardKey(label, 1f, action = action, longPressAction = onLongPress).apply {
-            // Was 20f/dp(9) — on at least one Xiaomi MIUI device, stroke's
-            // own fixed-width candidate slot (see renderCandidateRow()'s
-            // STROKE_CANDIDATE_WIDTH_DP) clipped the glyph at that size:
-            // MIUI's default system font renders visibly wider per
-            // character than stock Android at the same sp, so the same
-            // padding budget left less real room for the glyph than on
-            // other devices. Smaller text plus more padding fixes the
-            // clipping and, as a side effect, widens the gap between
-            // candidates — shared by every caller (stroke, English,
-            // Pinyin), so all three get both fixes at once.
-            textSize = 17f
+            // Was 20f/dp(9); briefly tried 17f/dp(12) to fix a clipped-glyph
+            // report on a Xiaomi MIUI device (that OEM's default system
+            // font renders visibly wider per character than stock Android
+            // at the same sp), but 20sp reads noticeably better across
+            // devices — settled on keeping the original text size and
+            // widening padding a bit instead (dp(9) -> dp(11)), which still
+            // gives MIUI's wider glyphs a bit more breathing room without
+            // shrinking the text everyone else sees.
+            textSize = 20f
             setSingleLine(true)
             maxLines = 1
             background = null
             elevation = 0f
             translationZ = 0f
-            setPadding(dp(12), 0, dp(12), 0)
+            setPadding(dp(11), 0, dp(11), 0)
             styleCandidateFirstState(this, isFirst)
         }
     }

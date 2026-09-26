@@ -495,18 +495,18 @@ internal class StrokeInputController(private val service: OpenLessImeService) {
         if (wordSegments.isNotEmpty()) {
             val word = wordSegments.joinToString("")
             val displayWord = service.outputScript(word)
-            // Matches candidateItemView()'s own dp(12)-per-side padding
-            // (2*12=24) plus ~20dp per glyph at its 17sp text size.
-            val wordWidth = service.dp((displayWord.codePointCount(0, displayWord.length) * 20 + 24).coerceAtLeast(52))
+            // Matches candidateItemView()'s own dp(11)-per-side padding
+            // (2*11=22) plus ~22dp per glyph at its 20sp text size.
+            val wordWidth = service.dp((displayWord.codePointCount(0, displayWord.length) * 22 + 22).coerceAtLeast(50))
             specs.add(CandidateSpec(displayWord, firstCandidate, wordWidth) { commitWord(word) })
             firstCandidate = false
         }
         strokeMatches.forEach { candidate ->
             val displayCandidate = service.outputScript(candidate)
-            // Was dp(38) — too tight against candidateItemView()'s own
-            // padding/text-size on at least one Xiaomi MIUI device, clipping
-            // the glyph (see that function's own comment for why).
-            specs.add(CandidateSpec(displayCandidate, firstCandidate, service.dp(46)) { commitStrokeCandidate(candidate) })
+            // Was dp(38); briefly widened to dp(46) alongside
+            // candidateItemView()'s own now-reverted padding/text-size
+            // experiment (see that function's comment) — settled on dp(45).
+            specs.add(CandidateSpec(displayCandidate, firstCandidate, service.dp(45)) { commitStrokeCandidate(candidate) })
             firstCandidate = false
         }
         populateCandidateRow(specs)
