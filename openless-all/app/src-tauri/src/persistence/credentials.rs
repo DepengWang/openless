@@ -595,7 +595,7 @@ struct CredsProviders {
 /// 多模态（Omni）模型配置：一个 active provider + 按 provider 隔离的 entry。
 /// entry 字段形状与 LLM 对齐（API Key / Base URL / Model / 温度 / 额外请求头），
 /// 但存放在独立命名空间，绝不与 `providers.llm` 共享槽位。
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct CredsOmni {
     #[serde(default = "creds_default_omni")]
     active: String,
@@ -603,11 +603,20 @@ struct CredsOmni {
     providers: HashMap<String, CredsOmniEntry>,
 }
 
+impl Default for CredsOmni {
+    fn default() -> Self {
+        Self {
+            active: creds_default_omni(),
+            providers: HashMap::new(),
+        }
+    }
+}
+
 fn creds_default_omni() -> String {
     "custom".into()
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 #[allow(non_snake_case)]
 struct CredsOmniEntry {
     #[serde(flatten)]
@@ -673,7 +682,7 @@ impl std::fmt::Debug for MarketplaceGithubToken {
 ///     `None` = v1 老数据，此时 map key 本身就是 providerType（见 `channel_provider_type`）。
 ///   - `order` 越小越优先，启用列表的第一个即"当前使用"。
 ///   - 关闭的渠道会被自动排到末尾（见 `commands::channels::toggle`）。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[allow(non_snake_case)]
 struct ChannelMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -715,7 +724,7 @@ fn is_zero(value: &u64) -> bool {
 
 /// 「测试连通」的结果，持久化以便重启后仍能看到上次测试的延迟。
 /// `error` 同时承担 P0 的失败标红（测试失败）与 P2 的运行时失败标红。
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[allow(non_snake_case)]
 struct ChannelTest {
     ok: bool,
@@ -1005,6 +1014,49 @@ fn migrate_channel_map<V: HasChannelMeta>(map: &mut HashMap<String, V>, active: 
 /// 渠道 schema 版本：1 = 一个 preset 一个槽；2 = 渠道卡片。
 const CHANNELS_SCHEMA_VERSION: u32 = 2;
 
+/// Early Omni vaults used derive(Default), bypassing the serde "custom" default.
+/// Legacy account imports could consequently write a complete provider under "".
+/// Normalize the loaded copy only; a later gated save owns persistence. Never
+/// combine two different endpoint/key/model configurations or discard either one.
+fn migrate_legacy_omni_slot(omni: &mut CredsOmni) -> bool {
+    let Some(legacy) = omni.providers.get("") else {
+        return false;
+    };
+    if !matches!(
+        legacy.channel.providerType.as_deref(),
+        None | Some("" | "custom")
+    ) {
+        return false;
+    }
+    let mut recovered = legacy.clone();
+    recovered.channel.providerType = Some(creds_default_omni());
+    if let Some(current) = omni.providers.get("custom") {
+        if !matches!(
+            current.channel.providerType.as_deref(),
+            None | Some("" | "custom")
+        ) {
+            return false;
+        }
+        let mut normalized = current.clone();
+        normalized.channel.providerType = Some(creds_default_omni());
+        if normalized != recovered {
+            return false;
+        }
+    }
+    omni.providers.remove("");
+    omni.providers.insert(creds_default_omni(), recovered);
+    if omni.active.is_empty() {
+        omni.active = creds_default_omni();
+    }
+    // Readers normalize a copy of the same cache; emit this value-free evidence
+    // once per process, without logging the source configuration or identifiers.
+    static RECOVERY_LOGGED: AtomicBool = AtomicBool::new(false);
+    if !RECOVERY_LOGGED.swap(true, Ordering::Relaxed) {
+        log::info!("[e2ee-capture] stage=legacy_omni_identity code=recovered");
+    }
+    true
+}
+
 /// 就地把 v1 数据补成渠道卡片。返回是否有实际改动（调用方据此决定要不要落盘）。
 fn migrate_channels(root: &mut CredsRoot) -> bool {
     let active_asr = root.active.asr.clone();
@@ -1039,7 +1091,8 @@ fn migrate_channels(root: &mut CredsRoot) -> bool {
             root.active.llm = current_channel_id(&root.providers.llm).unwrap_or_default();
         }
     }
-    changed
+    // Omni normalization must not trigger the separate ASR/LLM active fallback.
+    migrate_legacy_omni_slot(&mut root.omni) || changed
 }
 
 /// 全新安装的平台预置。
@@ -3038,27 +3091,51 @@ fn sync_keyring_error_code(_cause: &(dyn std::error::Error + 'static)) -> Option
     None
 }
 
+fn sync_identity_error_code(value: &str) -> Option<&'static str> {
+    if value.is_empty() {
+        Some("empty")
+    } else if value.len() > 512 {
+        Some("too_long")
+    } else if matches!(value, "." | "..") {
+        Some("dot_segment")
+    } else if value.chars().any(char::is_control) {
+        Some("control_character")
+    } else if value.contains(['/', '\\']) {
+        Some("path_separator")
+    } else {
+        None
+    }
+}
+
 fn capture_sync_credentials_with(
     load: impl FnOnce() -> Result<CredsRoot>,
 ) -> Result<openless_core::credentials::SyncCredentials> {
-    let root = load().map_err(|error| {
-        let code = sync_capture_read_error_code(&error);
+    let root = load().inspect_err(|error| {
+        let code = sync_capture_read_error_code(error);
         log::warn!("[e2ee-capture] stage=credential_load code={code}");
-        error
     })?;
-    export_sync_credentials_root(&root).map_err(|error| {
+    export_sync_credentials_root(&root).inspect_err(|_| {
         // Metadata counts identify invalid legacy state without exposing channel names,
         // accounts, secret values, provider IDs, endpoints, or underlying error bodies.
         let disabled_active = usize::from(root.providers.asr.get(&root.active.asr).is_some_and(|entry| !entry.channel.enabled))
             + usize::from(root.providers.llm.get(&root.active.llm).is_some_and(|entry| !entry.channel.enabled))
             + usize::from(root.omni.providers.get(&root.omni.active).is_some_and(|entry| !entry.channel.enabled));
         let mismatched_omni = root.omni.providers.iter().filter(|(id,entry)| entry.channel.providerType.as_ref().is_some_and(|provider|provider!=*id)).count();
-        let invalid_id = |value: &str| value.is_empty() || value.len() > 512 || value.chars().any(|ch| ch.is_control() || ch == '/' || ch == '\\');
+        let identities = root.providers.asr.iter().map(|(id, entry)| ("asr", id, &entry.channel))
+            .chain(root.providers.llm.iter().map(|(id, entry)| ("llm", id, &entry.channel)))
+            .chain(root.omni.providers.iter().map(|(id, entry)| ("omni", id, &entry.channel)));
+        for (namespace, id, meta) in identities {
+            for (field, value) in [("channel_id", Some(id.as_str())), ("provider_type", meta.providerType.as_deref())] {
+                if let Some(code) = value.and_then(sync_identity_error_code) {
+                    log::warn!("[e2ee-capture] stage=credential_identity namespace={namespace} field={field} code={code}");
+                }
+            }
+        }
+        let invalid_id = |value: &str| sync_identity_error_code(value).is_some();
         let invalid_identities = root.providers.asr.iter().filter(|(id,entry)|invalid_id(id) || entry.channel.providerType.as_deref().is_some_and(invalid_id)).count()
             + root.providers.llm.iter().filter(|(id,entry)|invalid_id(id) || entry.channel.providerType.as_deref().is_some_and(invalid_id)).count()
             + root.omni.providers.iter().filter(|(id,entry)|invalid_id(id) || entry.channel.providerType.as_deref().is_some_and(invalid_id)).count();
         log::warn!("[e2ee-capture] stage=credential_projection code=invalid_snapshot disabled_active={disabled_active} mismatched_omni={mismatched_omni} invalid_identities={invalid_identities}");
-        error
     })
 }
 
@@ -5805,5 +5882,182 @@ mod sync_capture_diagnostic_tests {
                 .code,
             openless_core::BackendErrorCode::InvalidArgument
         );
+    }
+
+    #[test]
+    fn omni_defaults_and_legacy_account_import_use_the_same_custom_slot() {
+        let omitted: CredsRoot =
+            serde_json::from_str(r#"{"version":1,"active":{},"providers":{}}"#).unwrap();
+        let explicit: CredsOmni = serde_json::from_str("{}").unwrap();
+        assert_eq!(CredsRoot::default().omni.active, explicit.active);
+        assert_eq!(omitted.omni.active, "custom");
+        let imported = load_desktop_credentials_readonly_with(
+            |account| Ok((account == "omni.api_key").then(|| "legacy-fixture-key".into())),
+            || Ok(None),
+            true,
+        )
+        .unwrap();
+        assert_eq!(imported.omni.providers.len(), 1);
+        assert_eq!(
+            imported.omni.providers["custom"].apiKey.as_deref(),
+            Some("legacy-fixture-key")
+        );
+        export_sync_credentials_root(&imported).unwrap();
+    }
+
+    fn legacy_empty_omni_slot() -> CredsOmniEntry {
+        CredsOmniEntry {
+            displayName: Some("Legacy fixture".into()),
+            apiKey: Some("legacy-fixture-key".into()),
+            baseURL: Some("https://legacy.example/v1".into()),
+            model: Some("legacy-model".into()),
+            temperature: Some(0.7),
+            extraHeaders: Some(HashMap::from([("x-fixture".into(), "header-value".into())])),
+            channel: ChannelMeta {
+                order: Some(3),
+                lastTest: Some(ChannelTest {
+                    ok: true,
+                    latencyMs: Some(12),
+                    at: 7,
+                    error: None,
+                }),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn legacy_empty_omni_slot_migrates_losslessly_and_preserves_selected_provider() {
+        for active in ["", "qwen3-omni"] {
+            let mut root = CredsRoot {
+                version: CHANNELS_SCHEMA_VERSION,
+                ..Default::default()
+            };
+            root.omni.active = active.into();
+            let mut expected = legacy_empty_omni_slot();
+            root.omni.providers.insert(String::new(), expected.clone());
+            let persisted_before = serde_json::to_value(&root).unwrap();
+
+            // Match a read-only capture: normalize the loaded copy, never the OS source.
+            let mut loaded = decode_single_credentials(&persisted_before.to_string()).unwrap();
+            assert!(migrate_channels(&mut loaded));
+            expected.channel.providerType = Some("custom".into());
+            assert_eq!(
+                serde_json::to_value(&loaded.omni.providers["custom"]).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
+            assert!(!loaded.omni.providers.contains_key(""));
+            assert_eq!(
+                loaded.omni.active,
+                if active.is_empty() { "custom" } else { active }
+            );
+            assert_eq!(loaded.active.asr, root.active.asr);
+            assert_eq!(loaded.active.llm, root.active.llm);
+            let captured = capture_sync_credentials_with(|| Ok(loaded.clone())).unwrap();
+            let restored = apply_sync_credentials_root(&loaded, &captured).unwrap();
+            assert_eq!(export_sync_credentials_root(&restored).unwrap(), captured);
+            assert!(!migrate_channels(&mut loaded));
+            assert_eq!(serde_json::to_value(&root).unwrap(), persisted_before);
+        }
+    }
+
+    #[test]
+    fn legacy_empty_omni_slot_only_deduplicates_identical_custom_configuration() {
+        let mut root = CredsRoot {
+            version: CHANNELS_SCHEMA_VERSION,
+            ..Default::default()
+        };
+        root.omni.active = "qwen3-omni".into();
+        let legacy = legacy_empty_omni_slot();
+        let mut custom = legacy.clone();
+        custom.channel.providerType = Some("custom".into());
+        root.omni.providers.insert(String::new(), legacy);
+        root.omni.providers.insert("custom".into(), custom);
+        assert!(migrate_channels(&mut root));
+        assert!(!root.omni.providers.contains_key(""));
+        assert_eq!(root.omni.active, "qwen3-omni");
+        export_sync_credentials_root(&root).unwrap();
+
+        for field in [
+            "apiKey",
+            "baseURL",
+            "model",
+            "temperature",
+            "extraHeaders",
+            "displayName",
+            "order",
+            "enabled",
+            "lastTest",
+        ] {
+            let mut conflict = root.clone();
+            conflict
+                .omni
+                .providers
+                .insert(String::new(), legacy_empty_omni_slot());
+            let mut changed = serde_json::to_value(&conflict.omni.providers["custom"]).unwrap();
+            changed.as_object_mut().unwrap().remove(field);
+            if field == "enabled" {
+                changed[field] = serde_json::json!(false);
+            }
+            conflict
+                .omni
+                .providers
+                .insert("custom".into(), serde_json::from_value(changed).unwrap());
+            let before = serde_json::to_value(&conflict).unwrap();
+            assert!(
+                !migrate_channels(&mut conflict),
+                "conflicting {field} must stay untouched"
+            );
+            assert_eq!(serde_json::to_value(&conflict).unwrap(), before);
+            assert!(export_sync_credentials_root(&conflict).is_err());
+        }
+    }
+
+    #[test]
+    fn legacy_omni_repair_does_not_reinterpret_other_invalid_identities() {
+        for provider_type in [None, Some(""), Some("custom")] {
+            let mut root = CredsRoot {
+                version: CHANNELS_SCHEMA_VERSION,
+                ..Default::default()
+            };
+            let mut entry = legacy_empty_omni_slot();
+            entry.channel.providerType = provider_type.map(str::to_string);
+            root.omni.providers.insert(String::new(), entry);
+            assert!(migrate_channels(&mut root));
+            export_sync_credentials_root(&root).unwrap();
+        }
+        for (id, provider_type) in [("", "other"), ("unsafe/path", "unsafe/path")] {
+            let mut root = CredsRoot {
+                version: CHANNELS_SCHEMA_VERSION,
+                ..Default::default()
+            };
+            let mut entry = legacy_empty_omni_slot();
+            entry.channel.providerType = Some(provider_type.into());
+            root.omni.providers.insert(id.into(), entry);
+            let before = serde_json::to_value(&root).unwrap();
+            assert!(!migrate_channels(&mut root));
+            assert_eq!(serde_json::to_value(&root).unwrap(), before);
+            assert!(export_sync_credentials_root(&root).is_err());
+        }
+    }
+
+    #[test]
+    fn legacy_omni_repair_preserves_restored_empty_and_inactive_snapshots() {
+        let root = CredsRoot::default();
+        let empty = openless_core::credentials::SyncCredentials {
+            channels: vec![],
+            credentials: vec![],
+        };
+        let mut inactive = export_sync_credentials_root(&root).unwrap();
+        for channel in &mut inactive.channels {
+            channel.active = false;
+            channel.enabled = false;
+        }
+        for snapshot in [empty, inactive] {
+            let mut restored = apply_sync_credentials_root(&root, &snapshot).unwrap();
+            assert!(restored.omni.active.is_empty());
+            assert!(!migrate_channels(&mut restored));
+            assert_eq!(export_sync_credentials_root(&restored).unwrap(), snapshot);
+        }
     }
 }
