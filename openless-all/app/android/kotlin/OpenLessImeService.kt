@@ -1202,6 +1202,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         englishLayer = EnglishLayer.LETTERS
         englishComposingWord.clear()
         litePinyinController.clear()
+        litePinyinController.resetAssociationContext()
         strokeController.resetForModeSwitch()
         clipboardSelectionMode = false
         clipboardSelectionAnchor = -1
@@ -1365,8 +1366,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // mode — whichever is currently active is cherry red, the other
         // gray, so long-press's effect is legible at a glance either way.
         val spaceHint = TextView(this).apply {
-            val pinyinLabel = ui("拼音", "Pinyin")
-            val englishLabel = ui("英文", "English")
+            val pinyinLabel = ui("拼音", "PINYIN")
+            val englishLabel = ui("英文", "ENGLISH")
             val hintText = "$pinyinLabel\n$englishLabel"
             val englishStart = hintText.length - englishLabel.length
             val activeColor = if (isDarkTheme) Color.rgb(190, 45, 60) else Color.rgb(153, 26, 40)
@@ -1381,7 +1382,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     englishStart, hintText.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
                 )
             }
-            textSize = 14f
+            textSize = 12f
             gravity = android.view.Gravity.CENTER
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             isClickable = false
@@ -3037,12 +3038,81 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     /** Candidate tap is the ONLY way a pinyin candidate reaches the field — see toggleLatinInputMode()'s doc comment on why Space deliberately never does this. */
     private fun selectPinyinCandidate(char: String) {
         currentInputConnection?.commitText(char, 1)
-        // Recorded before clear() — the encoding is still intact and is
-        // half of the (encoding, text) key this boosts (plan 8.4).
+        // Both recorded before clear() — the encoding is still intact and
+        // is half of what each one keys off (plan 8.4 / two-step combo
+        // learning, see LitePinyinController.observeCommitForLearning()).
         litePinyinController.recordSelection(char)
+        litePinyinController.observeCommitForLearning(char)
         litePinyinController.clear()
-        renderPinyinCandidates(emptyList())
+        litePinyinController.recordCommittedText(char)
         performKeyHaptic()
+        refreshPinyinAssociations()
+    }
+
+    /**
+     * Post-commit "what word comes next" suggestions — reuses
+     * StrokeInputController's own phraseRepository instance (same ~220k-
+     * entry index, same user-frequency store Stroke mode already tunes) so
+     * a word committed via Pinyin can suggest a continuation the same way
+     * Stroke's own commits do, and vice versa. Gated by the same
+     * strokeAssociationEnabled preference Stroke's own refreshAssociations()
+     * checks — this is explicitly the same feature, not a parallel one.
+     */
+    private fun refreshPinyinAssociations() {
+        if (!OpenLessAndroidPreferences.strokeAssociationEnabled(this)) {
+            renderPinyinAssociations(emptyList())
+            return
+        }
+        litePinyinController.queryAssociations(strokeController.phraseRepository) { results ->
+            // isEmpty(): guards against the case where the user already
+            // started typing a fresh encoding by the time this async result
+            // lands — associationEpoch alone only protects against a STALE
+            // association query, not against a completely different
+            // encoding query having taken over the candidate row since.
+            if (latinInputMode == LatinInputMode.PINYIN && litePinyinController.isEmpty()) renderPinyinAssociations(results)
+        }
+    }
+
+    /** Same row/candidateItemView() machinery as renderPinyinCandidates(), but no encoding label (there's no in-progress encoding here) and suffix-based commit (see selectPinyinAssociation()) instead of committing the whole label — mirrors StrokeInputController.refreshAssociations() exactly. */
+    private fun renderPinyinAssociations(candidates: List<StrokePhraseRepository.Candidate>) {
+        val row = englishCandidateRow ?: return
+        row.removeAllViews()
+        val overlayEntries = mutableListOf<Pair<String, () -> Unit>>()
+        candidates.forEachIndexed { index, candidate ->
+            val displayText = outputScript(candidate.text)
+            row.addView(
+                candidateItemView(
+                    displayText,
+                    isFirst = index == 0,
+                    action = { selectPinyinAssociation(candidate) },
+                ),
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT),
+            )
+            overlayEntries.add(displayText to { selectPinyinAssociation(candidate) })
+        }
+        candidateOverlayEntries = overlayEntries
+        if (candidates.isEmpty()) englishExpandCandidatesButton?.visibility = View.GONE
+    }
+
+    /**
+     * Only the part of the association candidate not already on screen gets
+     * committed — matches StrokeInputController.commitAssociation() exactly
+     * (same StrokePhraseRepository.Candidate type). candidate.matchedPrefix
+     * is always populated by StrokePhraseRepository.find() before a
+     * candidate is ever returned from searchAsync(), so it's trusted
+     * directly here rather than re-deriving the query context.
+     */
+    private fun selectPinyinAssociation(candidate: StrokePhraseRepository.Candidate) {
+        if (isSensitiveField(currentInputEditorInfo) || !candidate.text.startsWith(candidate.matchedPrefix)) return
+        val suffix = candidate.text.removePrefix(candidate.matchedPrefix)
+        val connection = currentInputConnection ?: return
+        if (suffix.isNotEmpty() && !connection.commitText(outputScript(suffix), 1)) return
+        if (OpenLessAndroidPreferences.strokeUsageEnabled(this)) {
+            strokeController.phraseRepository.recordUsage(candidate.matchedPrefix, candidate.text)
+        }
+        litePinyinController.recordCommittedText(suffix)
+        performKeyHaptic()
+        refreshPinyinAssociations()
     }
 
     /**
@@ -3090,6 +3160,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         englishLayer = EnglishLayer.LETTERS
         englishComposingWord.clear()
         litePinyinController.clear()
+        litePinyinController.resetAssociationContext()
         startRuntimeService()
         sessionEpoch++
         recording = false
