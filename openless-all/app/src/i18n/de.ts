@@ -2,6 +2,22 @@ import type { zhCN } from './zh-CN';
 
 export const de: typeof zhCN = {
   cloudSyncE2ee: {
+    protocolTitle: 'Cloud-Sync: Vereinbarung und Datenschutz',
+    protocolIntro:
+      'OpenLess und seine unabhängigen Entwickler respektieren Ihre Privatsphäre und schützen Ihre Daten. Lesen Sie diese Hinweise, bevor Sie fortfahren.',
+    protocolPasswordTitle: 'Synchronisierungspasswort sicher aufbewahren',
+    protocolPassword:
+      'Passwort und Entschlüsselungsschlüssel werden lokal verwendet und nicht an den Sync-Dienst gesendet. Geht das Passwort verloren und kann kein Gerät das Backup mehr entsperren, können wir den Inhalt nicht wiederherstellen.',
+    protocolEncryptionTitle: 'Vor dem Hochladen lokal verschlüsseln',
+    protocolEncryption:
+      'Einstellungen, API-Schlüssel und Textverlauf werden auf diesem Gerät verschlüsselt. Backup-Inhalte werden als Geheimtext übertragen und gespeichert. Der Sync-Dienst kann Ihre API-Schlüssel daraus weder lesen noch verwenden und führt damit keine Modellanfragen aus.',
+    protocolExcludedTitle: 'Anmeldestatus und sichtbare Metadaten',
+    protocolExcluded:
+      'Das Backup enthält weder Sync-Passwort noch Entschlüsselungsschlüssel, von OpenLess verwaltete GitHub/OAuth-Anmeldedaten, Zugriffstoken oder private Geräteschlüssel. Die Kontoanmeldung verarbeitet notwendige Zugangsdaten separat. Kontokennung, Größe, Versionen und Sync-Zeiten bleiben für den Server sichtbar.',
+    protocolCheck:
+      'Ich habe diese Vereinbarung gelesen, verstehe den Umfang und bewahre mein Sync-Passwort sicher auf.',
+    protocolBack: 'Zurück zum Umfang',
+    protocolConfirm: 'Gelesen und bestätigen',
     setupPromptTitle: 'Einrichtung verschlüsselt sichern?',
     setupPromptBody:
       'Die Dienste sind eingerichtet. Einstellungen, API-Schlüssel und Textverlauf werden auf diesem Gerät verschlüsselt. Erst nach Ihrer Zustimmung und Aktivierung werden Daten hochgeladen.',
@@ -311,6 +327,26 @@ export const de: typeof zhCN = {
     editInstructionMode: 'Bearbeitungsanweisung',
   },
   lessComputer: {
+    activity: {
+      process: 'Ablauf',
+      count: '{{count}} Aktivitäten',
+      count_one: '{{count}} Aktivität',
+      count_other: '{{count}} Aktivitäten',
+      finished: 'Abgeschlossen',
+      stopped: 'Gestoppt',
+      search: 'Suche',
+      searchRunning: 'Wird gesucht…',
+      read: 'Lesen',
+      readRunning: 'Wird gelesen…',
+      command: 'Befehle',
+      commandRunning: 'Befehle werden ausgeführt…',
+      edit: 'Bearbeitung',
+      editRunning: 'Wird bearbeitet…',
+      web: 'Webseiten',
+      webRunning: 'Webseiten werden gelesen…',
+      other: 'Werkzeuge',
+      otherRunning: 'In Arbeit…',
+    },
     desktop: {
       approvedSubmitted: 'Freigabe gesendet',
       deniedSubmitted: 'Ablehnung gesendet',

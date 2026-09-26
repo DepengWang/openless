@@ -2,6 +2,22 @@ import type { zhCN } from './zh-CN';
 
 export const fr: typeof zhCN = {
   cloudSyncE2ee: {
+    protocolTitle: 'Accord de synchronisation et confidentialité',
+    protocolIntro:
+      'OpenLess et ses développeurs indépendants respectent votre vie privée et protègent vos données. Lisez cette notice avant de continuer.',
+    protocolPasswordTitle: 'Conservez votre mot de passe',
+    protocolPassword:
+      'Le mot de passe et la clé de déchiffrement restent utilisés localement et ne sont jamais envoyés au service. Si vous perdez le mot de passe et qu’aucun appareil ne peut déverrouiller la sauvegarde, nous ne pouvons pas récupérer son contenu.',
+    protocolEncryptionTitle: 'Chiffrement local avant l’envoi',
+    protocolEncryption:
+      'Réglages, clés API et historique texte sont chiffrés sur cet appareil. La sauvegarde est transmise et stockée chiffrée. Le service ne peut ni lire ni utiliser vos clés API et n’emploie pas ces contenus pour appeler des modèles.',
+    protocolExcludedTitle: 'Connexion et métadonnées visibles',
+    protocolExcluded:
+      'La sauvegarde exclut le mot de passe, les clés de déchiffrement, l’état GitHub/OAuth géré par OpenLess, les jetons d’accès et les clés privées de l’appareil. L’authentification du compte traite séparément les identifiants nécessaires. Le serveur voit encore le compte, la taille chiffrée, les versions et les dates de synchronisation.',
+    protocolCheck:
+      'J’ai lu l’accord et la notice, je comprends le périmètre et conserverai mon mot de passe en sécurité.',
+    protocolBack: 'Revenir au périmètre',
+    protocolConfirm: 'Lu et confirmé',
     setupPromptTitle: 'Sauvegarder votre configuration ?',
     setupPromptBody:
       'Les services sont configurés. Réglages, clés API et historique texte sont chiffrés sur cet appareil. L’envoi commence uniquement après examen du périmètre et activation.',
@@ -312,6 +328,26 @@ export const fr: typeof zhCN = {
     editInstructionMode: 'Instruction de modification',
   },
   lessComputer: {
+    activity: {
+      process: 'Activité',
+      count: '{{count}} activités',
+      count_one: '{{count}} activité',
+      count_other: '{{count}} activités',
+      finished: 'Terminé',
+      stopped: 'Arrêté',
+      search: 'Recherche',
+      searchRunning: 'Recherche en cours…',
+      read: 'Lecture',
+      readRunning: 'Lecture en cours…',
+      command: 'Commandes',
+      commandRunning: 'Exécution des commandes…',
+      edit: 'Modifications',
+      editRunning: 'Modification en cours…',
+      web: 'Web',
+      webRunning: 'Navigation en cours…',
+      other: 'Outils',
+      otherRunning: 'Traitement en cours…',
+    },
     desktop: {
       approvedSubmitted: 'Approbation envoyée',
       deniedSubmitted: 'Refus envoyé',

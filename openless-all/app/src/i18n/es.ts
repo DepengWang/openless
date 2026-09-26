@@ -2,6 +2,22 @@ import type { zhCN } from './zh-CN';
 
 export const es: typeof zhCN = {
   cloudSyncE2ee: {
+    protocolTitle: 'Acuerdo de sincronización y privacidad',
+    protocolIntro:
+      'OpenLess y sus desarrolladores independientes respetan tu privacidad y protegen tus datos. Lee este aviso antes de continuar.',
+    protocolPasswordTitle: 'Guarda tu contraseña de sincronización',
+    protocolPassword:
+      'La contraseña y la clave de descifrado se usan localmente y no se envían al servicio. Si pierdes la contraseña y ningún dispositivo puede desbloquear la copia, no podremos recuperar su contenido.',
+    protocolEncryptionTitle: 'Cifrado local antes de subir los datos',
+    protocolEncryption:
+      'Los ajustes, claves API e historial de texto se cifran en este dispositivo. La copia se envía y almacena cifrada. El servicio no puede leer ni utilizar tus claves API y no usa estos datos para ejecutar solicitudes a modelos.',
+    protocolExcludedTitle: 'Inicio de sesión y metadatos visibles',
+    protocolExcluded:
+      'La copia excluye la contraseña, claves de descifrado, estado de GitHub/OAuth gestionado por OpenLess, tokens de acceso y claves privadas del dispositivo. La autenticación de la cuenta trata sus credenciales por separado. El servidor aún puede ver la cuenta, el tamaño del cifrado, las versiones y las fechas de sincronización.',
+    protocolCheck:
+      'He leído el acuerdo y el aviso, entiendo el alcance y guardaré mi contraseña de forma segura.',
+    protocolBack: 'Volver al alcance',
+    protocolConfirm: 'Leído y confirmado',
     setupPromptTitle: '¿Guardar una copia cifrada?',
     setupPromptBody:
       'Los servicios están configurados. Los ajustes, claves de API e historial de texto se cifran en este dispositivo. Solo se suben tras revisar el alcance y activar la sincronización.',
@@ -309,6 +325,26 @@ export const es: typeof zhCN = {
     editInstructionMode: 'Instrucción de edición',
   },
   lessComputer: {
+    activity: {
+      process: 'Actividad',
+      count: '{{count}} actividades',
+      count_one: '{{count}} actividad',
+      count_other: '{{count}} actividades',
+      finished: 'Completado',
+      stopped: 'Detenido',
+      search: 'Búsqueda',
+      searchRunning: 'Buscando…',
+      read: 'Lectura',
+      readRunning: 'Leyendo…',
+      command: 'Comandos',
+      commandRunning: 'Ejecutando comandos…',
+      edit: 'Edición',
+      editRunning: 'Editando…',
+      web: 'Web',
+      webRunning: 'Consultando páginas…',
+      other: 'Herramientas',
+      otherRunning: 'Procesando…',
+    },
     desktop: {
       approvedSubmitted: 'Aprobación enviada',
       deniedSubmitted: 'Rechazo enviado',

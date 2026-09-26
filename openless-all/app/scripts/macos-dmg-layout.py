@@ -17,6 +17,7 @@ from mac_alias import Alias
 
 HDIUTIL = "/usr/bin/hdiutil"
 APP_ROOT = Path(__file__).resolve().parent.parent
+BACKGROUND_COLOR_KEYS = ("backgroundColorRed", "backgroundColorGreen", "backgroundColorBlue")
 
 
 def settings():
@@ -111,6 +112,9 @@ def write_layout(volume):
             "gridOffsetX": 0.0, "gridOffsetY": 0.0, "gridSpacing": 64.0,
             "scrollPositionX": 0.0, "scrollPositionY": 0.0,
             "backgroundType": 2, "backgroundImageAlias": alias,
+            # Finder requires the complete RGB tuple even for picture mode.
+            # Without it macOS 27 ignores this icvp, including iconSize/alias.
+            "backgroundColorRed": 1.0, "backgroundColorGreen": 1.0, "backgroundColorBlue": 1.0,
         }
         for name, key in [(app_name, "appPosition"), ("Applications", "applicationFolderPosition")]:
             store[name]["Iloc"] = (dmg[key]["x"], dmg[key]["y"])
@@ -137,6 +141,8 @@ def verify_layout(image):
         with DSStore.open(str(volume / ".DS_Store"), "r") as store:
             icon = store["."]["icvp"]
             view = store["."]["bwsp"]
+            if any(type(icon.get(key)) is not float or icon[key] != 1.0 for key in BACKGROUND_COLOR_KEYS):
+                raise ValueError("DMG Finder icon view requires all three white RGB real components")
             position, size = dmg["windowPosition"], dmg["windowSize"]
             expected_bounds = "{{%d, %d}, {%d, %d}}" % (position["x"], position["y"], size["width"], size["height"])
             if view["WindowBounds"] != expected_bounds or any(view[key] for key in ["ShowToolbar", "ShowStatusBar", "ShowPathbar", "ShowSidebar", "ShowTabView"]):

@@ -7,6 +7,22 @@ import { en } from './en';
 export const ko: typeof zhCN = {
   ...en,
   cloudSyncE2ee: {
+    protocolTitle: '클라우드 동기화 약관 및 개인정보 안내',
+    protocolIntro:
+      'OpenLess와 독립 개발자는 개인정보를 존중하고 데이터를 보호하기 위해 노력합니다. 계속하기 전에 아래 안내를 읽어 주세요.',
+    protocolPasswordTitle: '동기화 비밀번호를 안전하게 보관하세요',
+    protocolPassword:
+      '동기화 비밀번호와 복호화 키는 기기에서만 사용되며 동기화 서비스로 전송되지 않습니다. 비밀번호를 잃고 백업을 잠금 해제할 기기도 없다면 내용을 복구할 수 없습니다.',
+    protocolEncryptionTitle: '기기에서 암호화한 후 업로드',
+    protocolEncryption:
+      '설정, API 키, 텍스트 기록은 이 기기에서 암호화됩니다. 백업은 암호문으로 전송되고 저장됩니다. 동기화 서비스는 이를 통해 API 키를 읽거나 사용하지 못하며 모델 요청에도 이용하지 않습니다.',
+    protocolExcludedTitle: '로그인 상태와 확인 가능한 정보',
+    protocolExcluded:
+      '동기화 비밀번호, 복호화 키, OpenLess가 관리하는 GitHub/OAuth 로그인 상태, 액세스 토큰, 기기 개인 키는 백업에 포함되지 않습니다. 계정 인증에는 필요한 자격 증명을 별도로 사용합니다. 서버는 계정 식별자, 암호문 크기, 버전 및 동기화 시간을 볼 수 있습니다.',
+    protocolCheck:
+      '약관과 개인정보 안내를 읽고 범위를 이해했으며 동기화 비밀번호를 안전하게 보관하겠습니다.',
+    protocolBack: '동기화 범위로 돌아가기',
+    protocolConfirm: '읽었으며 동의합니다',
     setupPromptTitle: '설정을 암호화해 백업할까요?',
     setupPromptBody:
       '서비스 설정이 완료되었습니다. 설정, API 키, 텍스트 기록은 이 기기에서 암호화됩니다. 범위를 확인하고 동기화를 켠 후에만 업로드됩니다.',
@@ -294,6 +310,26 @@ export const ko: typeof zhCN = {
     editInstructionMode: '편집 지시',
   },
   lessComputer: {
+    activity: {
+      process: '처리 과정',
+      count: '활동 {{count}}개',
+      count_one: '활동 {{count}}개',
+      count_other: '활동 {{count}}개',
+      finished: '완료',
+      stopped: '중지됨',
+      search: '검색',
+      searchRunning: '검색 중…',
+      read: '읽기',
+      readRunning: '읽는 중…',
+      command: '명령',
+      commandRunning: '명령 실행 중…',
+      edit: '편집',
+      editRunning: '편집 중…',
+      web: '웹',
+      webRunning: '웹페이지 확인 중…',
+      other: '도구',
+      otherRunning: '처리 중…',
+    },
     desktop: {
       approvedSubmitted: '허용을 제출했습니다',
       deniedSubmitted: '거부를 제출했습니다',

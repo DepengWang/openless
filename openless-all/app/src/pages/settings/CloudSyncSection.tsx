@@ -40,6 +40,7 @@ import {
 type Intent = 'enable' | 'unlock' | 'restore';
 type Dialog =
   | { kind: 'consent'; intent: Intent }
+  | { kind: 'protocol'; intent: Intent }
   | { kind: 'create'; observedRevision: string }
   | { kind: 'unlock'; intent: Intent }
   | { kind: 'password' }
@@ -190,9 +191,11 @@ export function CloudSyncSection() {
     alive.current = true;
     let disposed = false;
     const unlisten: Array<() => void> = [];
-    const uiPersistenceFailed = () => {
+    const uiPersistenceFailed = (event: Event) => {
       if (disposed) return;
-      showError(localError('local_storage_unavailable'));
+      // Render only allow-listed stable codes; preserve a denied-vault or busy
+      // cause instead of replacing every failure with a generic storage error.
+      showError((event as CustomEvent<unknown>).detail ?? localError('local_storage_unavailable'));
       void loadRef.current();
     };
     window.addEventListener('openless:sync-ui-persistence-failed', uiPersistenceFailed);
@@ -309,6 +312,7 @@ export function CloudSyncSection() {
     }
   };
   const begin = (intent: Intent) => {
+    setNotice(null);
     if (intent === 'enable' || current.current?.consentVersion !== CONSENT_VERSION) {
       setDialog({ kind: 'consent', intent });
     } else {
@@ -628,7 +632,12 @@ export function CloudSyncSection() {
         />
       )}
       {dialog && (
-        <SyncDialog title={t(`cloudSyncE2ee.${dialogTitle}`)} busy={working} onClose={closeDialog}>
+        <SyncDialog
+          key={dialog.kind}
+          title={t(`cloudSyncE2ee.${dialogTitle}`)}
+          busy={working}
+          onClose={closeDialog}
+        >
           {notice?.error && (
             <p role="alert" style={{ color: 'var(--ol-err)' }}>
               {t(`cloudSyncE2ee.${notice.key}`)}
@@ -637,6 +646,19 @@ export function CloudSyncSection() {
           {dialog.kind === 'consent' && (
             <ConsentForm
               busy={working}
+              onConfirm={() => {
+                setNotice(null);
+                setDialog({ kind: 'protocol', intent: dialog.intent });
+              }}
+            />
+          )}
+          {dialog.kind === 'protocol' && (
+            <ProtocolWarning
+              busy={working}
+              onBack={() => {
+                setNotice(null);
+                setDialog({ kind: 'consent', intent: dialog.intent });
+              }}
               onConfirm={() =>
                 void perform(async (valid) =>
                   routePreparation(await prepareEncryptedSync(), dialog.intent, valid),
@@ -732,6 +754,64 @@ function ConsentForm({ busy, onConfirm }: { busy: boolean; onConfirm: () => void
       <Btn variant="primary" disabled={!consented || busy} onClick={onConfirm}>
         {t('cloudSyncE2ee.continue')}
       </Btn>
+    </div>
+  );
+}
+
+function ProtocolWarning({
+  busy,
+  onConfirm,
+  onBack,
+}: {
+  busy: boolean;
+  onConfirm: () => void;
+  onBack: () => void;
+}) {
+  const { t } = useTranslation();
+  const [acknowledged, setAcknowledged] = useState(false);
+  return (
+    <div style={{ display: 'grid', gap: 18 }}>
+      <p style={{ margin: 0, color: 'var(--ol-ink-3)', lineHeight: 1.65 }}>
+        {t('cloudSyncE2ee.protocolIntro')}
+      </p>
+      <div
+        style={{
+          display: 'grid',
+          gap: 16,
+          padding: 18,
+          border: '1px solid var(--ol-line)',
+          borderRadius: 14,
+          background: 'var(--ol-surface-2)',
+        }}
+      >
+        {['Password', 'Encryption', 'Excluded'].map((section) => (
+          <section key={section}>
+            <h4 style={{ fontSize: 14, margin: '0 0 6px', color: 'var(--ol-ink)' }}>
+              {t(`cloudSyncE2ee.protocol${section}Title`)}
+            </h4>
+            <p style={{ margin: 0, lineHeight: 1.7, color: 'var(--ol-ink-3)' }}>
+              {t(`cloudSyncE2ee.protocol${section}`)}
+            </p>
+          </section>
+        ))}
+      </div>
+      <label style={{ display: 'flex', alignItems: 'flex-start', gap: 9, lineHeight: 1.6 }}>
+        <input
+          type="checkbox"
+          checked={acknowledged}
+          disabled={busy}
+          onChange={(event) => setAcknowledged(event.currentTarget.checked)}
+        />
+        {t('cloudSyncE2ee.protocolCheck')}
+      </label>
+      <div className="ol-cloud-sync-actions" style={{ justifyContent: 'flex-end' }}>
+        <Btn disabled={busy} onClick={onBack}>
+          {t('cloudSyncE2ee.protocolBack')}
+        </Btn>
+        <Btn variant="primary" disabled={!acknowledged || busy} onClick={onConfirm}>
+          {t('cloudSyncE2ee.protocolConfirm')}
+        </Btn>
+      </div>
     </div>
   );
 }
@@ -895,7 +975,9 @@ function RestoreReview({
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <p>{t('cloudSyncE2ee.restoreDescription')}</p>
-      {preview.unconfirmedOperationId && <p role="note">{t('cloudSyncE2ee.errors.outcomeUnknown')}</p>}
+      {preview.unconfirmedOperationId && (
+        <p role="note">{t('cloudSyncE2ee.errors.outcomeUnknown')}</p>
+      )}
       <ul style={{ margin: 0, paddingLeft: 20, lineHeight: 1.75 }}>
         {Object.entries(preview.counts)
           .filter(([, count]) => count > 0)

@@ -102,7 +102,7 @@ const factory = new Function(
   'exports',
   'require',
   '__listen',
-  `${compiled};return {CloudSyncSection,PasswordForm,ConsentForm,RestoreReview};`,
+  `${compiled};return {CloudSyncSection,PasswordForm,ConsentForm,ProtocolWarning,RestoreReview};`,
 );
 
 const initial: EncryptedSyncStatus = {
@@ -275,6 +275,22 @@ try {
   assert.equal(find(consent, (node) => node.type === 'input').props.checked, false);
   assert.equal(find(consent, (node) => node.type === 'button').props.disabled, true);
 
+  const protocolHooks = new Hooks();
+  const protocolProps = { busy: false, onConfirm() {}, onBack() {} };
+  let protocolTree = protocolHooks.render(() => components.ProtocolWarning(protocolProps));
+  const confirmProtocol = () =>
+    find(protocolTree, (node) => node.props.children === 'cloudSyncE2ee.protocolConfirm');
+  assert.equal(confirmProtocol().props.disabled, true);
+  find(protocolTree, (node) => node.type === 'input').props.onChange({
+    currentTarget: { checked: true },
+  });
+  protocolTree = protocolHooks.render(() => components.ProtocolWarning(protocolProps));
+  assert.equal(confirmProtocol().props.disabled, false);
+  protocolTree = protocolHooks.render(() =>
+    components.ProtocolWarning({ ...protocolProps, busy: true }),
+  );
+  assert.equal(confirmProtocol().props.disabled, true);
+
   const hooks = new Hooks();
   const render = () => hooks.render(() => components.CloudSyncSection());
   render();
@@ -287,6 +303,19 @@ try {
   });
   tree = render();
   find(tree, (node) => node.type === components.ConsentForm).props.onConfirm();
+  await settle();
+  tree = render();
+  assert.deepEqual(
+    calls,
+    [],
+    'scope consent alone must not prepare or upload before the privacy warning',
+  );
+  find(tree, (node) => node.type === components.ProtocolWarning).props.onBack();
+  tree = render();
+  assert.deepEqual(calls, [], 'returning from the warning must not perform native sync work');
+  find(tree, (node) => node.type === components.ConsentForm).props.onConfirm();
+  tree = render();
+  find(tree, (node) => node.type === components.ProtocolWarning).props.onConfirm();
   await settle();
   tree = render();
   assert.deepEqual(
@@ -417,6 +446,10 @@ try {
   });
   tree = fresh();
   find(tree, (node) => node.type === components.ConsentForm).props.onConfirm();
+  await settle();
+  tree = fresh();
+  assert.deepEqual(calls, [], 'a new vault also requires the second privacy acknowledgement');
+  find(tree, (node) => node.type === components.ProtocolWarning).props.onConfirm();
   await settle();
   tree = fresh();
   const createForm = find(tree, (node) => node.type === components.PasswordForm);

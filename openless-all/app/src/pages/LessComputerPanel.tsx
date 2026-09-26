@@ -3,11 +3,9 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  ActivityIcon,
   ArrowUpIcon,
   CheckIcon,
   ChevronRightIcon,
-  CircleDotIcon,
   HistoryIcon,
   LayersIcon,
   Maximize2Icon,
@@ -15,7 +13,6 @@ import {
   MinusIcon,
   PlusIcon,
   ShieldCheckIcon,
-  TerminalIcon,
   XIcon,
 } from 'lucide-react';
 import {
@@ -26,7 +23,6 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from '../components/chat/ui/message-scroller';
-import { AgentBuddy, type BuddyColor } from '../components/chat/AgentBuddy';
 import { VoiceWaveform } from '../components/chat/VoiceWaveform';
 import { AssistantMarkdown } from '../components/chat/markdown';
 import { useChatPanelLifecycle } from '../components/chat/lifecycle';
@@ -48,14 +44,15 @@ import type {
   LessComputerVoiceEvent,
   UserPreferences,
 } from '../lib/types';
+import { groupToolActivities, toolActivityCategory } from '../lib/lessComputerToolActivity';
 import './less-computer-panel.css';
 
 type Translate = ReturnType<typeof useTranslation>['t'];
-const AGENTS: { id: CodingAgentProviderId; name: string; color: BuddyColor }[] = [
-  { id: 'claude-code-cli', name: 'Claude Code', color: 'coral' },
-  { id: 'opencode-cli', name: 'OpenCode', color: 'amber' },
-  { id: 'codex-cli', name: 'Codex', color: 'violet' },
-  { id: 'dsh-cli', name: 'dsh', color: 'mint' },
+const AGENTS: { id: CodingAgentProviderId; name: string }[] = [
+  { id: 'claude-code-cli', name: 'Claude Code' },
+  { id: 'opencode-cli', name: 'OpenCode' },
+  { id: 'codex-cli', name: 'Codex' },
+  { id: 'dsh-cli', name: 'dsh' },
 ];
 
 type RunStatus = 'idle' | 'working' | 'done' | 'error' | 'cancelled';
@@ -425,19 +422,45 @@ export function LessComputerPanel() {
         className={`lc-desktop${closing ? ' is-closing' : ''}`}
         key={`${sessionSeq}-${enterEpoch}`}
       >
-        <aside className="lc-sidebar" aria-label={t('lessComputer.desktop.agents')}>
-          <div className="lc-brand" data-tauri-drag-region>
-            <span className="lc-brand-mark" aria-hidden="true">
-              <span />
-              <span />
-              <span />
-            </span>
-            <span data-tauri-drag-region>
-              Less
-              <br />
-              <strong>Computer</strong>
-            </span>
+        <header className="lc-topbar" data-tauri-drag-region>
+          <div className="lc-window-controls">
+            <button
+              className="lc-window-close"
+              type="button"
+              disabled={!isTauri}
+              aria-label={t('lessComputer.closeTooltip')}
+              title={t('lessComputer.closeTooltip')}
+              onClick={() => void windowAction('hide')}
+            >
+              <XIcon />
+            </button>
+            <button
+              className="lc-window-minimize"
+              type="button"
+              disabled={!isTauri}
+              aria-label={t('lessComputer.desktop.minimize')}
+              title={t('lessComputer.desktop.minimize')}
+              onClick={() => void windowAction('minimize')}
+            >
+              <MinusIcon />
+            </button>
+            <button
+              className="lc-window-maximize"
+              type="button"
+              disabled={!isTauri}
+              aria-label={t('lessComputer.desktop.maximize')}
+              title={t('lessComputer.desktop.maximize')}
+              onClick={() => void windowAction('maximize')}
+            >
+              <Maximize2Icon />
+            </button>
           </div>
+          <div className="lc-session-title" data-tauri-drag-region>
+            <span className="lc-session-dot" />
+            <span data-tauri-drag-region>{t('lessComputer.desktop.currentSession')}</span>
+          </div>
+        </header>
+        <aside className="lc-sidebar" aria-label={t('lessComputer.desktop.agents')}>
           <div className="lc-sidebar-scroll">
             <div className="lc-section-label">{t('lessComputer.desktop.agents')}</div>
             <div className="lc-agent-list">
@@ -447,7 +470,6 @@ export function LessComputerPanel() {
                   className={`lc-agent${provider === agent.id ? ' is-configured' : ''}`}
                   title={agent.name}
                 >
-                  <AgentBuddy color={agent.color} size={42} />
                   <div className="lc-agent-name">
                     <strong>{agent.name}</strong>
                     <span>
@@ -510,45 +532,6 @@ export function LessComputerPanel() {
           </button>
         </aside>
 
-        <header className="lc-topbar" data-tauri-drag-region>
-          <div className="lc-session-title" data-tauri-drag-region>
-            <span className="lc-session-dot" />
-            <span data-tauri-drag-region>{t('lessComputer.desktop.currentSession')}</span>
-          </div>
-          <div className="lc-window-controls">
-            <button
-              className="lc-window-close"
-              type="button"
-              disabled={!isTauri}
-              aria-label={t('lessComputer.closeTooltip')}
-              title={t('lessComputer.closeTooltip')}
-              onClick={() => void windowAction('hide')}
-            >
-              <XIcon />
-            </button>
-            <button
-              className="lc-window-minimize"
-              type="button"
-              disabled={!isTauri}
-              aria-label={t('lessComputer.desktop.minimize')}
-              title={t('lessComputer.desktop.minimize')}
-              onClick={() => void windowAction('minimize')}
-            >
-              <MinusIcon />
-            </button>
-            <button
-              className="lc-window-maximize"
-              type="button"
-              disabled={!isTauri}
-              aria-label={t('lessComputer.desktop.maximize')}
-              title={t('lessComputer.desktop.maximize')}
-              onClick={() => void windowAction('maximize')}
-            >
-              <Maximize2Icon />
-            </button>
-          </div>
-        </header>
-
         <main className="lc-conversation" aria-label={t('lessComputer.desktop.currentSession')}>
           {windowError && (
             <p className="lc-notice" role="alert">
@@ -570,11 +553,6 @@ export function LessComputerPanel() {
             >
               {turns.length === 0 ? (
                 <div className="lc-empty">
-                  <div className="lc-empty-buddies" aria-hidden="true">
-                    {AGENTS.map((agent) => (
-                      <AgentBuddy key={agent.id} color={agent.color} size={64} />
-                    ))}
-                  </div>
                   <h2>{t('lessComputer.subtitle')}</h2>
                   <p>{t('lessComputer.desktop.emptyHint')}</p>
                   <span className="lc-empty-label">
@@ -611,7 +589,6 @@ export function LessComputerPanel() {
           </div>
           <Composer working={working} voice={voice} t={t} />
         </main>
-        <ActivityPanel turn={latestTurn} t={t} />
       </div>
       {loginOpen && isTauri && (
         <GithubLoginModal
@@ -633,7 +610,12 @@ function runStatusLabel(turn: Turn | undefined, t: Translate): string {
     turn.segments.some((segment) => segment.kind === 'approval' && !segment.decision)
   )
     return t('lessComputer.desktop.waitingApproval');
-  if (turn.status === 'working') return t('lessComputer.working');
+  if (turn.status === 'working') {
+    const active = turn.segments.find((segment) => segment.kind === 'tool' && segment.running);
+    return active?.kind === 'tool'
+      ? t(`lessComputer.activity.${toolActivityCategory(active.name)}Running`)
+      : t('lessComputer.working');
+  }
   if (turn.status === 'done') return t('lessComputer.done');
   if (turn.status === 'cancelled') return t('common.cancelled');
   if (turn.status === 'error') return t('lessComputer.error');
@@ -797,12 +779,7 @@ function TurnView({
       )}
       <MessageScrollerItem messageId={`t${index}-assistant`} scrollAnchor={!hasUser}>
         <div className="lc-assistant-message">
-          <div className="lc-assistant-label">
-            <span className="lc-assistant-symbol" aria-hidden="true">
-              ✳
-            </span>
-            Less Computer
-          </div>
+          <div className="lc-assistant-label">Less Computer</div>
           {turn.segments.map((segment, i) => {
             if (segment.kind === 'text')
               return (
@@ -813,18 +790,29 @@ function TurnView({
                   />
                 </div>
               );
-            if (segment.kind === 'tool')
+            if (segment.kind === 'tool') {
+              if (turn.segments[i - 1]?.kind === 'tool') return null;
+              const tools: ToolSegment[] = [];
+              let end = i;
+              while (end < turn.segments.length) {
+                const candidate = turn.segments[end];
+                if (candidate.kind !== 'tool') break;
+                tools.push(candidate);
+                end += 1;
+              }
               return (
-                <div
-                  className={`lc-tool-event${segment.running ? ' is-active' : ''}`}
+                <ToolProcess
                   key={`s${i}`}
-                  role={segment.running ? 'status' : undefined}
-                >
-                  <TerminalIcon />
-                  <span>{t('lessComputer.tool', { name: segment.name })}</span>
-                  {segment.running && <span className="lc-active-dot" />}
-                </div>
+                  tools={tools}
+                  working={turn.status === 'working'}
+                  interrupted={
+                    (turn.status === 'error' || turn.status === 'cancelled') &&
+                    end === turn.segments.length
+                  }
+                  t={t}
+                />
               );
+            }
             if (segment.kind === 'compaction')
               return (
                 <div className="lc-compaction" key={`s${i}`}>
@@ -868,6 +856,82 @@ function TurnView({
         </div>
       </MessageScrollerItem>
     </>
+  );
+}
+
+function ToolProcess({
+  tools,
+  working,
+  interrupted,
+  t,
+}: {
+  tools: ToolSegment[];
+  working: boolean;
+  interrupted: boolean;
+  t: Translate;
+}) {
+  const groups = groupToolActivities(tools, working, interrupted);
+  const active = groups.find((group) => group.state === 'active');
+  return (
+    <details className="lc-tool-process">
+      <summary>
+        <ChevronRightIcon className="lc-process-chevron" />
+        <span className={`lc-process-label${active ? ' is-running' : ''}`}>
+          {active
+            ? t(`lessComputer.activity.${active.category}Running`)
+            : t('lessComputer.activity.process')}
+        </span>
+        <span className="lc-process-count">
+          {t('lessComputer.activity.count', { count: tools.length })}
+        </span>
+        {!active && (
+          <span className="lc-process-result">
+            {interrupted ? t('lessComputer.activity.stopped') : t('lessComputer.activity.finished')}
+          </span>
+        )}
+      </summary>
+      <ol className="lc-process-steps">
+        {groups.map((group, index) => (
+          <li key={index} className={`lc-process-step is-${group.state}`}>
+            <span className="lc-process-marker" aria-hidden="true">
+              {group.state === 'active' ? (
+                <span />
+              ) : group.state === 'stopped' ? (
+                <MinusIcon />
+              ) : (
+                <CheckIcon />
+              )}
+            </span>
+            <div className="lc-process-step-content">
+              <div className="lc-process-phase-row">
+                <span
+                  className={`lc-process-phase${group.state === 'active' ? ' is-running' : ''}`}
+                >
+                  {t(
+                    `lessComputer.activity.${group.category}${group.state === 'active' ? 'Running' : ''}`,
+                  )}
+                </span>
+                {group.state !== 'active' && (
+                  <span className="lc-process-result">
+                    {t(
+                      `lessComputer.activity.${group.state === 'stopped' ? 'stopped' : 'finished'}`,
+                    )}
+                  </span>
+                )}
+              </div>
+              <ul className="lc-process-tools">
+                {group.names.map((tool, toolIndex) => (
+                  <li key={toolIndex}>
+                    <span>{tool.name}</span>
+                    {tool.count > 1 && <span className="lc-tool-count">×{tool.count}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </details>
   );
 }
 
@@ -928,82 +992,6 @@ function ApprovalCard({
         </>
       )}
     </section>
-  );
-}
-
-function ActivityPanel({ turn, t }: { turn: Turn | undefined; t: Translate }) {
-  const events = turn?.segments.filter((segment) => segment.kind !== 'text') ?? [];
-  return (
-    <aside className="lc-activity" aria-label={t('lessComputer.desktop.activity')}>
-      <div className="lc-activity-heading">
-        <ActivityIcon />
-        <h2>{t('lessComputer.desktop.activity')}</h2>
-      </div>
-      {!turn ? (
-        <div className="lc-activity-empty">
-          <CircleDotIcon />
-          <strong>{t('lessComputer.desktop.noActivity')}</strong>
-          <p>{t('lessComputer.desktop.activityHint')}</p>
-        </div>
-      ) : (
-        <>
-          <div className="lc-task-summary">
-            <span className="lc-section-label">{t('lessComputer.desktop.currentTask')}</span>
-            {turn.user && <p>{turn.user}</p>}
-            <strong>{runStatusLabel(turn, t)}</strong>
-          </div>
-          <ol className="lc-activity-list">
-            {events.map((event, index) => (
-              <li key={index}>
-                <span className="lc-activity-node">
-                  {event.kind === 'tool' ? (
-                    <TerminalIcon />
-                  ) : event.kind === 'approval' ? (
-                    <ShieldCheckIcon />
-                  ) : (
-                    <LayersIcon />
-                  )}
-                </span>
-                <div>
-                  {event.kind === 'tool' ? (
-                    <>
-                      <strong>{event.name}</strong>
-                      <span>
-                        {event.running
-                          ? t('lessComputer.desktop.toolActive')
-                          : t('lessComputer.desktop.toolReported')}
-                      </span>
-                    </>
-                  ) : event.kind === 'compaction' ? (
-                    <strong>{t('lessComputer.compaction')}</strong>
-                  ) : (
-                    <>
-                      <strong>{t('lessComputer.desktop.approval')}</strong>
-                      <span>
-                        {event.decision
-                          ? t(`lessComputer.desktop.${event.decision}Submitted`)
-                          : event.pending
-                            ? t('lessComputer.desktop.submittingApproval')
-                            : turn.status === 'working'
-                              ? t('lessComputer.desktop.waitingApproval')
-                              : t('lessComputer.desktop.approvalExpired')}
-                      </span>
-                    </>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ol>
-          {turn.costUsd != null && (
-            <div className="lc-api-cost">
-              <span>{t('lessComputer.desktop.apiCost')}</span>
-              <strong>{t('lessComputer.cost', { cost: turn.costUsd.toFixed(3) })}</strong>
-            </div>
-          )}
-        </>
-      )}
-      <p className="lc-activity-source">{t('lessComputer.desktop.activitySource')}</p>
-    </aside>
   );
 }
 

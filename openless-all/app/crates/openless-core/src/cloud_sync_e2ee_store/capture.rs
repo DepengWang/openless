@@ -121,41 +121,41 @@ impl CoreSyncStore {
                 Some(permit) => repositories.preferences.sync_snapshot(permit),
                 None => repositories.preferences.sync_snapshot_readonly(),
             }
-            .map_err(|_| DocumentError::CaptureFailed)?,
+            .map_err(|error| capture_backend_error("preferences", error))?,
         );
         let dictionary = secret_rows(
             &match permit {
                 Some(permit) => repositories.vocabulary.sync_snapshot(permit),
                 None => repositories.vocabulary.list(),
             }
-            .map_err(|_| DocumentError::CaptureFailed)?,
+            .map_err(|error| capture_backend_error("dictionary", error))?,
         )?;
         let corrections = secret_rows(
             &match permit {
                 Some(permit) => repositories.correction_rules.sync_snapshot(permit),
                 None => repositories.correction_rules.list(),
             }
-            .map_err(|_| DocumentError::CaptureFailed)?,
+            .map_err(|error| capture_backend_error("corrections", error))?,
         )?;
         let history = secret_rows(
             &match permit {
                 Some(permit) => repositories.history.sync_snapshot(permit),
                 None => repositories.history.list(),
             }
-            .map_err(|_| DocumentError::CaptureFailed)?,
+            .map_err(|error| capture_backend_error("history", error))?,
         )?;
         let style_packs = match permit {
             Some(permit) => repositories.style_packs.sync_snapshot(permit),
             None => repositories.style_packs.sync_snapshot_readonly(),
         }
-        .map_err(|_| DocumentError::CaptureFailed)?;
+        .map_err(|error| capture_backend_error("style_packs", error))?;
         let activity = match permit {
             Some(permit) => repositories.activity.sync_records(permit),
             None => repositories.activity.sync_records_readonly(),
         }
-        .map_err(|_| DocumentError::CaptureFailed)?;
+        .map_err(|error| capture_backend_error("activity", error))?;
         let presets = crate::vocabulary::list_vocab_presets(&self.inner.data_dir)
-            .map_err(|_| DocumentError::CaptureFailed)?;
+            .map_err(|error| capture_backend_error("vocabulary_presets", error))?;
         let builtin_ids: Vec<_> = crate::vocabulary::builtin_vocab_presets()
             .into_iter()
             .map(|preset| preset.id)
@@ -191,7 +191,7 @@ impl CoreSyncStore {
                     .await
             }
         }
-        .map_err(|_| DocumentError::CaptureFailed)?;
+        .map_err(|error| capture_backend_error("credentials", error))?;
         validate_credential_set(&credentials.channels, &credentials.credentials)?;
         Ok(ExportSnapshot {
             source_device: self.inner.device.clone(),
@@ -237,4 +237,11 @@ impl CoreSyncStore {
             .write_scope(scope.clone(), state.secret_json()?)
             .await
     }
+}
+
+/// Values, paths, record IDs and error bodies may contain private user data.
+/// A capture diagnostic therefore records only an audited stage and enum code.
+fn capture_backend_error(stage: &'static str, error: crate::BackendError) -> DocumentError {
+    log::warn!("[e2ee-capture] stage={stage} code={:?}", error.code);
+    DocumentError::CaptureFailed
 }

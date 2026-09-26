@@ -3,6 +3,21 @@
 
 export const zhCN = {
   cloudSyncE2ee: {
+    protocolTitle: '云同步协议与隐私提醒',
+    protocolIntro:
+      'OpenLess 及个人开发者尊重您的隐私，并致力于保护您的资料。请阅读以下说明，再决定是否继续。',
+    protocolPasswordTitle: '请妥善保存同步密码',
+    protocolPassword:
+      '同步密码和解密密钥仅用于本机加密与解锁，不会发送给云同步服务。若密码遗失且没有仍可解锁的设备，我们无法找回加密内容。',
+    protocolEncryptionTitle: '先在本机加密，再上传',
+    protocolEncryption:
+      '配置、服务 API 密钥和历史文本会先在本机加密，发往云端和保存在云端的备份内容均为密文。云同步服务无法据此读取或调用您的服务 API 密钥，也不会使用这些内容执行模型请求。',
+    protocolExcludedTitle: '登录状态与可见信息',
+    protocolExcluded:
+      '同步密码、解密密钥、OpenLess 管理的 GitHub/OAuth 登录状态、访问令牌及设备私钥不进入备份。账号认证会单独处理必要凭据；服务器仍可见账号标识、密文大小、版本及同步时间。',
+    protocolCheck: '我已阅读协议与隐私提醒，了解同步范围，并会妥善保管同步密码。',
+    protocolBack: '返回同步范围',
+    protocolConfirm: '我已阅读并确认',
     setupPromptTitle: '为配置开启加密备份？',
     setupPromptBody:
       '服务配置已完成。配置、服务 API 密钥和历史文本会先在此设备加密。查看同步范围并主动开启后，才会上传。',
@@ -286,6 +301,26 @@ export const zhCN = {
     editInstructionMode: '编辑指令',
   },
   lessComputer: {
+    activity: {
+      process: '处理过程',
+      count: '{{count}} 项活动',
+      count_one: '{{count}} 项活动',
+      count_other: '{{count}} 项活动',
+      finished: '已完成',
+      stopped: '已停止',
+      search: '搜索',
+      searchRunning: '正在搜索…',
+      read: '读取',
+      readRunning: '正在读取…',
+      command: '运行命令',
+      commandRunning: '正在运行命令…',
+      edit: '编辑',
+      editRunning: '正在编辑…',
+      web: '查看网页',
+      webRunning: '正在查看网页…',
+      other: '工具处理',
+      otherRunning: '正在处理…',
+    },
     desktop: {
       approvedSubmitted: '已提交允许',
       deniedSubmitted: '已提交拒绝',

@@ -5,6 +5,22 @@ import type { zhCN } from './zh-CN';
 // Type-level guarantee that en mirrors the zh-CN shape.
 export const en: typeof zhCN = {
   cloudSyncE2ee: {
+    protocolTitle: 'Cloud sync agreement and privacy notice',
+    protocolIntro:
+      'OpenLess and its independent developers respect your privacy and work to protect your data. Read this notice before continuing.',
+    protocolPasswordTitle: 'Keep your sync password safe',
+    protocolPassword:
+      'Your sync password and decryption key are used locally and are never sent to the sync service. If you lose the password and have no device that can still unlock the backup, we cannot recover its contents.',
+    protocolEncryptionTitle: 'Encrypt on this device before uploading',
+    protocolEncryption:
+      'Settings, service API keys and text history are encrypted locally. Backup content is sent and stored as ciphertext. The sync service cannot read or use your API keys from it, and does not use this content to run model requests.',
+    protocolExcludedTitle: 'Sign-in state and visible metadata',
+    protocolExcluded:
+      'The backup excludes your sync password, decryption keys, OpenLess-managed GitHub/OAuth sign-in state, access tokens and device private keys. Account authentication handles necessary credentials separately. The server can still see account identifiers, ciphertext size, versions and sync times.',
+    protocolCheck:
+      'I have read the agreement and privacy notice, understand the scope, and will keep my sync password safe.',
+    protocolBack: 'Back to sync scope',
+    protocolConfirm: 'I have read and confirm',
     setupPromptTitle: 'Back up your setup securely?',
     setupPromptBody:
       'Your service setup is complete. Settings, service API keys and text history are encrypted on this device. Uploads start only after you review the scope and enable sync.',
@@ -307,6 +323,26 @@ export const en: typeof zhCN = {
     editInstructionMode: 'Edit instruction',
   },
   lessComputer: {
+    activity: {
+      process: 'Activity',
+      count: '{{count}} activities',
+      count_one: '{{count}} activity',
+      count_other: '{{count}} activities',
+      finished: 'Finished',
+      stopped: 'Stopped',
+      search: 'Search',
+      searchRunning: 'Searching…',
+      read: 'Read',
+      readRunning: 'Reading…',
+      command: 'Commands',
+      commandRunning: 'Running commands…',
+      edit: 'Edits',
+      editRunning: 'Editing…',
+      web: 'Web',
+      webRunning: 'Browsing…',
+      other: 'Tools',
+      otherRunning: 'Working…',
+    },
     desktop: {
       approvedSubmitted: 'Approval sent',
       deniedSubmitted: 'Denial sent',

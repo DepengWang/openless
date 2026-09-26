@@ -259,7 +259,7 @@ fn validate_side_binding(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl SideAwareComboMonitor {
     /// Update the existing route without replacing its handle or event sender.
     /// Used when a failed native-key switch restores an already-live shortcut.
@@ -636,7 +636,7 @@ pub mod platform {
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn restoring_live_side_binding_preserves_its_event_route() {
         use std::sync::mpsc;
@@ -670,7 +670,7 @@ mod tests {
         press_and_release("D");
         assert!(monitor
             .update_binding(ShortcutBinding {
-                primary: "F21".into(),
+                primary: "F25".into(),
                 modifiers: vec!["ctrl-right".into()]
             })
             .is_err());

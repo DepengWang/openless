@@ -3,6 +3,21 @@ import type { zhCN } from './zh-CN';
 // 繁體中文資源，與其餘七種語言共用同一組文案 key。
 export const zhTW: typeof zhCN = {
   cloudSyncE2ee: {
+    protocolTitle: '雲端同步協議與隱私提醒',
+    protocolIntro:
+      'OpenLess 及個人開發者尊重您的隱私，並致力於保護您的資料。請閱讀以下說明，再決定是否繼續。',
+    protocolPasswordTitle: '請妥善保存同步密碼',
+    protocolPassword:
+      '同步密碼及解密金鑰僅用於本機加密與解鎖，不會傳送給雲端同步服務。若密碼遺失且沒有仍可解鎖的裝置，我們無法找回加密內容。',
+    protocolEncryptionTitle: '先在本機加密，再上傳',
+    protocolEncryption:
+      '設定、服務 API 金鑰及歷史文字會先在本機加密，傳送與儲存在雲端的備份內容均為密文。雲端同步服務無法據此讀取或使用您的 API 金鑰，也不會使用這些內容執行模型請求。',
+    protocolExcludedTitle: '登入狀態與可見資訊',
+    protocolExcluded:
+      '同步密碼、解密金鑰、OpenLess 管理的 GitHub/OAuth 登入狀態、存取權杖及裝置私鑰不進入備份。帳號驗證會另外處理必要憑證；伺服器仍可見帳號識別碼、密文大小、版本及同步時間。',
+    protocolCheck: '我已閱讀協議與隱私提醒，了解同步範圍，並會妥善保管同步密碼。',
+    protocolBack: '返回同步範圍',
+    protocolConfirm: '我已閱讀並確認',
     setupPromptTitle: '為設定開啟加密備份？',
     setupPromptBody:
       '服務設定已完成。設定、服務 API 金鑰及歷史文字會先在此裝置加密。檢視同步範圍並主動開啟後，才會上傳。',
@@ -286,6 +301,26 @@ export const zhTW: typeof zhCN = {
     editInstructionMode: '編輯指令',
   },
   lessComputer: {
+    activity: {
+      process: '處理過程',
+      count: '{{count}} 項活動',
+      count_one: '{{count}} 項活動',
+      count_other: '{{count}} 項活動',
+      finished: '已完成',
+      stopped: '已停止',
+      search: '搜尋',
+      searchRunning: '正在搜尋…',
+      read: '讀取',
+      readRunning: '正在讀取…',
+      command: '執行指令',
+      commandRunning: '正在執行指令…',
+      edit: '編輯',
+      editRunning: '正在編輯…',
+      web: '檢視網頁',
+      webRunning: '正在檢視網頁…',
+      other: '工具處理',
+      otherRunning: '正在處理…',
+    },
     desktop: {
       approvedSubmitted: '已提交允許',
       deniedSubmitted: '已提交拒絕',

@@ -53,7 +53,8 @@ async function install(): Promise<void> {
     a.account?.githubId === b.account?.githubId && a.vaultId === b.vaultId;
   const belongs = (state: Status, event: Restored) =>
     state.account?.githubId === event.accountId && state.vaultId === event.vaultId;
-  const failed = () => window.dispatchEvent(new Event('openless:sync-ui-persistence-failed'));
+  const failed = (error: unknown) =>
+    window.dispatchEvent(new CustomEvent('openless:sync-ui-persistence-failed', { detail: error }));
   const enqueue = (work: () => Promise<void>): Promise<void> => {
     const next = queue.catch(() => {}).then(work);
     queue = next.catch(failed);

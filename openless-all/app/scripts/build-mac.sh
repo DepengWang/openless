@@ -84,6 +84,7 @@ if [ "$MAC_BUNDLE_ARCH" = "aarch64" ]; then
   DMG_LAYOUT_PYTHON="$DMG_LAYOUT_ENV_DIR/bin/python3"
   "$DMG_LAYOUT_PYTHON" -m pip install --quiet --disable-pip-version-check \
     --only-binary=:all: --no-deps --require-hashes -r scripts/macos-dmg-requirements.txt
+  "$DMG_LAYOUT_PYTHON" scripts/macos-dmg-layout.test.py
   CI=true TAURI_BUNDLER_DMG_IGNORE_CI=false \
     OPENLESS_DMG_LAYOUT_ROOT="$PWD" OPENLESS_DMG_LAYOUT_PYTHON="$DMG_LAYOUT_PYTHON" \
     OPENLESS_DMG_LAYOUT_STAMP="$DMG_LAYOUT_ENV_DIR/layout-applied" \

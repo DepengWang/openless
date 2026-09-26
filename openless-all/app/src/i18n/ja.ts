@@ -7,6 +7,22 @@ import { en } from './en';
 export const ja: typeof zhCN = {
   ...en,
   cloudSyncE2ee: {
+    protocolTitle: 'クラウド同期の同意事項とプライバシー',
+    protocolIntro:
+      'OpenLess と開発者はプライバシーを尊重し、データの保護に取り組んでいます。続行する前に、以下をご確認ください。',
+    protocolPasswordTitle: '同期パスワードを大切に保管してください',
+    protocolPassword:
+      '同期パスワードと復号キーは端末内で使用され、同期サービスには送信されません。パスワードを紛失し、解除できる端末もない場合、内容を復元することはできません。',
+    protocolEncryptionTitle: '端末で暗号化してから送信',
+    protocolEncryption:
+      '設定、API キー、テキスト履歴はこの端末で暗号化されます。バックアップは暗号文として送信・保存されます。同期サービスはその内容から API キーを読み取ったり使用したりせず、モデルへのリクエストにも利用しません。',
+    protocolExcludedTitle: 'ログイン状態と確認可能な情報',
+    protocolExcluded:
+      '同期パスワード、復号キー、OpenLess が管理する GitHub/OAuth ログイン状態、アクセストークン、端末の秘密鍵はバックアップに含まれません。アカウント認証には必要な認証情報を別途使用します。サーバーにはアカウント識別子、暗号文のサイズ、版、同期日時が見えます。',
+    protocolCheck:
+      '同意事項とプライバシーの説明を読み、対象を理解しました。同期パスワードを適切に保管します。',
+    protocolBack: '同期対象に戻る',
+    protocolConfirm: '内容を確認して同意',
     setupPromptTitle: '設定を暗号化してバックアップしますか？',
     setupPromptBody:
       'サービスの設定が完了しました。設定、API キー、テキスト履歴はこの端末で暗号化されます。対象を確認して同期を有効にした後にのみアップロードされます。',
@@ -298,6 +314,26 @@ export const ja: typeof zhCN = {
     editInstructionMode: '編集指示',
   },
   lessComputer: {
+    activity: {
+      process: '処理の流れ',
+      count: '{{count}} 件の処理',
+      count_one: '{{count}} 件の処理',
+      count_other: '{{count}} 件の処理',
+      finished: '完了',
+      stopped: '停止',
+      search: '検索',
+      searchRunning: '検索中…',
+      read: '読み取り',
+      readRunning: '読み取り中…',
+      command: 'コマンド',
+      commandRunning: 'コマンドを実行中…',
+      edit: '編集',
+      editRunning: '編集中…',
+      web: 'ウェブ',
+      webRunning: 'ウェブページを確認中…',
+      other: 'ツール',
+      otherRunning: '処理中…',
+    },
     desktop: {
       approvedSubmitted: '許可を送信しました',
       deniedSubmitted: '拒否を送信しました',

@@ -2949,14 +2949,117 @@ fn export_sync_credentials_root(
     snapshot
         .credentials
         .sort_by(|a, b| (a.namespace, &a.channel_id).cmp(&(b.namespace, &b.channel_id)));
-    snapshot.validate().map_err(anyhow::Error::new)?;
+    snapshot.validate().map_err(|error| {
+        // Recheck the pure validator only to retain its fixed, value-free cause.
+        // The original rejection and BackendError remain unchanged.
+        if let Err(cause) = openless_core::cloud_sync_e2ee_documents::validate_credential_set(
+            &snapshot.channels,
+            &snapshot.credentials,
+        ) {
+            log::warn!("[e2ee-capture] stage=credential_validation code={cause}");
+        }
+        anyhow::Error::new(error)
+    })?;
     Ok(snapshot)
+}
+
+/// Classify typed causes without formatting an error, credential attribute or blob.
+fn sync_capture_read_error_code(error: &anyhow::Error) -> &'static str {
+    let mut fallback = "native_store_failed";
+    for cause in error.chain() {
+        if let Some(code) = sync_keyring_error_code(cause) {
+            if code != "keyring_platform_failure" {
+                return code;
+            }
+            fallback = code;
+        }
+        if let Some(error) = cause.downcast_ref::<serde_json::Error>() {
+            use serde_json::error::Category;
+            return match error.classify() {
+                Category::Io => error
+                    .io_error_kind()
+                    .map(sync_io_error_code)
+                    .unwrap_or("json_io"),
+                Category::Syntax => "json_syntax",
+                Category::Data => "json_data",
+                Category::Eof => "json_eof",
+            };
+        }
+        if let Some(error) = cause.downcast_ref::<std::io::Error>() {
+            return sync_io_error_code(error.kind());
+        }
+        if cause.is::<std::str::Utf8Error>() || cause.is::<std::string::FromUtf8Error>() {
+            return "invalid_utf8";
+        }
+        if let Some(error) = cause.downcast_ref::<openless_core::BackendError>() {
+            use openless_core::BackendErrorCode;
+            return match error.code {
+                BackendErrorCode::PermissionDenied => "backend_permission_denied",
+                BackendErrorCode::InvalidArgument => "backend_invalid_argument",
+                BackendErrorCode::Persistence => "backend_persistence",
+                BackendErrorCode::OutcomeUnknown => "backend_outcome_unknown",
+                BackendErrorCode::Unsupported => "backend_unsupported",
+                _ => "backend_failed",
+            };
+        }
+    }
+    fallback
+}
+
+fn sync_io_error_code(kind: std::io::ErrorKind) -> &'static str {
+    use std::io::ErrorKind;
+    match kind {
+        ErrorKind::PermissionDenied => "io_permission_denied",
+        ErrorKind::NotFound => "io_not_found",
+        ErrorKind::InvalidData => "io_invalid_data",
+        ErrorKind::InvalidInput => "io_invalid_input",
+        ErrorKind::UnexpectedEof => "io_unexpected_eof",
+        ErrorKind::TimedOut => "io_timed_out",
+        ErrorKind::WouldBlock => "io_would_block",
+        ErrorKind::Interrupted => "io_interrupted",
+        _ => "io_other",
+    }
+}
+
+fn sync_keyring_error_code(_cause: &(dyn std::error::Error + 'static)) -> Option<&'static str> {
+    #[cfg(not(target_os = "android"))]
+    if let Some(error) = _cause.downcast_ref::<keyring::Error>() {
+        return Some(match error {
+            keyring::Error::NoStorageAccess(_) => "keyring_access_denied",
+            keyring::Error::NoEntry => "keyring_no_entry",
+            keyring::Error::BadEncoding(_) => "keyring_bad_encoding",
+            keyring::Error::TooLong(_, _) => "keyring_attribute_too_long",
+            keyring::Error::Invalid(_, _) => "keyring_invalid_attribute",
+            keyring::Error::Ambiguous(_) => "keyring_ambiguous",
+            keyring::Error::PlatformFailure(_) => "keyring_platform_failure",
+            _ => "keyring_other",
+        });
+    }
+    None
 }
 
 fn capture_sync_credentials_with(
     load: impl FnOnce() -> Result<CredsRoot>,
 ) -> Result<openless_core::credentials::SyncCredentials> {
-    export_sync_credentials_root(&load()?)
+    let root = load().map_err(|error| {
+        let code = sync_capture_read_error_code(&error);
+        log::warn!("[e2ee-capture] stage=credential_load code={code}");
+        error
+    })?;
+    export_sync_credentials_root(&root).map_err(|error| {
+        // Metadata counts identify invalid legacy state without exposing channel names,
+        // accounts, secret values, provider IDs, endpoints, or underlying error bodies.
+        let disabled_active = usize::from(root.providers.asr.get(&root.active.asr).is_some_and(|entry| !entry.channel.enabled))
+            + usize::from(root.providers.llm.get(&root.active.llm).is_some_and(|entry| !entry.channel.enabled))
+            + usize::from(root.omni.providers.get(&root.omni.active).is_some_and(|entry| !entry.channel.enabled));
+        let mismatched_omni = root.omni.providers.iter().filter(|(id,entry)| entry.channel.providerType.as_ref().is_some_and(|provider|provider!=*id)).count();
+        let invalid_id = |value: &str| value.is_empty() || value.len() > 512 || value.chars().any(|ch| ch.is_control() || ch == '/' || ch == '\\');
+        let invalid_identities = root.providers.asr.iter().filter(|(id,entry)|invalid_id(id) || entry.channel.providerType.as_deref().is_some_and(invalid_id)).count()
+            + root.providers.llm.iter().filter(|(id,entry)|invalid_id(id) || entry.channel.providerType.as_deref().is_some_and(invalid_id)).count()
+            + root.omni.providers.iter().filter(|(id,entry)|invalid_id(id) || entry.channel.providerType.as_deref().is_some_and(invalid_id)).count();
+        log::warn!("[e2ee-capture] stage=credential_projection code=invalid_snapshot disabled_active={disabled_active} mismatched_omni={mismatched_omni} invalid_identities={invalid_identities}");
+        error
+    })
 }
 
 fn restored_channel_meta(channel: &openless_core::credentials::SyncChannel) -> ChannelMeta {
@@ -5599,5 +5702,108 @@ mod encrypted_sync_tests {
         assert!(super::super::android_credentials::read(&path, &mut crypto.inner).is_err());
         assert!(path.exists());
         assert!(validate_sync_key(&openless_core::SecretValue::new("not-a-key")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod sync_capture_diagnostic_tests {
+    use super::*;
+    #[test]
+    fn typed_diagnostics_never_expose_error_bodies_or_attributes() {
+        let private = "fixture-private-value-never-log";
+        let cases: Vec<(anyhow::Error, &str)> = vec![
+            (
+                anyhow::Error::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    private,
+                ))
+                .context(private),
+                "io_permission_denied",
+            ),
+            (
+                anyhow::Error::new(
+                    serde_json::from_str::<u32>(&format!("\"{private}\"")).unwrap_err(),
+                )
+                .context(private),
+                "json_data",
+            ),
+            (
+                anyhow::Error::new(serde_json::from_str::<serde_json::Value>("]").unwrap_err()),
+                "json_syntax",
+            ),
+            (
+                anyhow::Error::new(serde_json::from_str::<serde_json::Value>("{").unwrap_err()),
+                "json_eof",
+            ),
+            (
+                anyhow::Error::new(String::from_utf8(vec![255]).unwrap_err()),
+                "invalid_utf8",
+            ),
+            (anyhow::anyhow!(private), "native_store_failed"),
+        ];
+        for (error, expected) in cases {
+            let code = sync_capture_read_error_code(&error);
+            assert_eq!(code, expected);
+            assert!(!code.contains(private));
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn keyring_causes_are_classified_without_formatting_secret_material() {
+        let private = "fixture-private-value-never-log";
+        let cases: Vec<(keyring::Error, &str)> = vec![
+            (
+                keyring::Error::NoStorageAccess(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    private,
+                ))),
+                "keyring_access_denied",
+            ),
+            (
+                keyring::Error::PlatformFailure(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    private,
+                ))),
+                "io_timed_out",
+            ),
+            (
+                keyring::Error::BadEncoding(private.as_bytes().to_vec()),
+                "keyring_bad_encoding",
+            ),
+            (
+                keyring::Error::Invalid(private.into(), private.into()),
+                "keyring_invalid_attribute",
+            ),
+            (keyring::Error::NoEntry, "keyring_no_entry"),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(
+                sync_capture_read_error_code(&anyhow::Error::new(error).context(private)),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn projection_diagnostic_does_not_relax_omni_identity_validation() {
+        let mut root = CredsRoot::default();
+        root.omni.active = "custom".into();
+        root.omni.providers.insert(
+            "custom".into(),
+            CredsOmniEntry {
+                channel: ChannelMeta {
+                    providerType: Some("different".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let error = export_sync_credentials_root(&root).unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<openless_core::BackendError>()
+                .unwrap()
+                .code,
+            openless_core::BackendErrorCode::InvalidArgument
+        );
     }
 }

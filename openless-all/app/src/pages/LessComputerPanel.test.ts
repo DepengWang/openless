@@ -1,12 +1,17 @@
+// @ts-nocheck — Node-only handler replay; production UI remains strictly typed.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-const app = fileURLToPath(new URL('../', import.meta.url));
+const app = process.argv[2] || process.cwd();
 const require = createRequire(resolve(app, 'package.json'));
 const ts = require('typescript');
-const replayModule = await import(pathToFileURL(resolve(app, 'src/lib/lessComputerReplay.ts')));
+const replayModule = await import(
+  new URL('file://' + resolve(app, 'src/lib/lessComputerReplay.ts'))
+);
+const activityModule = await import(
+  new URL('file://' + resolve(app, 'src/lib/lessComputerToolActivity.ts'))
+);
 const source = readFileSync(resolve(app, 'src/pages/LessComputerPanel.tsx'), 'utf8');
 const parsed = ts.createSourceFile(
   'LessComputerPanel.tsx',
@@ -44,7 +49,7 @@ const factory = new Function(
   '__getWindow',
   'exports',
   'require',
-  `${compiled};return {LessComputerPanel,Composer,ApprovalCard,TurnView,ActivityPanel,voiceTime};`,
+  `${compiled};return {LessComputerPanel,Composer,ApprovalCard,TurnView,ToolProcess,voiceTime};`,
 );
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const deferred = () => {
@@ -152,6 +157,7 @@ function context(native, replay) {
     },
     chatPanelFocusKeyboard: async () => {},
     ...replayModule,
+    ...activityModule,
   });
   const api = factory(
     ...names.map((n) => imports[n]),
@@ -493,22 +499,70 @@ await test('native window actions use hide/minimize/toggleMaximize; Escape close
   assert.equal(c.calls.windows.length, 3);
   c.hooks.unmount();
 });
-await test('activity derives tool report/approval/cost only; unknown API values and text deltas create no invented events', async () => {
+await test('tool activity is collapsed, grouped and loses shimmer on every terminal state', async () => {
   const c = context(false);
-  const tree = c.api.ActivityPanel({
+  const tools = [
+    { kind: 'tool', name: 'Read', running: false },
+    { kind: 'tool', name: 'Bash', running: false },
+    { kind: 'tool', name: 'Bash', running: true },
+  ];
+  const active = c.api.ToolProcess({ tools, working: true, interrupted: false, t: (k) => k });
+  assert.equal(active.type, 'details');
+  assert.equal(active.props.open, undefined, 'native disclosure starts closed');
+  assert.equal(
+    nodes(active).filter((n) => n.props.className?.startsWith('lc-process-step is-')).length,
+    2,
+  );
+  assert(nodes(active).some((n) => n.props.children === 'lessComputer.activity.commandRunning'));
+  assert(nodes(active).some((n) => n.props.className === 'lc-process-label is-running'));
+  assert(nodes(active).some((n) => n.props.className === 'lc-process-phase is-running'));
+  assert(nodes(active).some((n) => n.props.children === 'Read'));
+  assert(nodes(active).some((n) => n.props.children === 'Bash'));
+  for (const interrupted of [false, true]) {
+    const ended = c.api.ToolProcess({ tools, working: false, interrupted, t: (k) => k });
+    assert(!nodes(ended).some((n) => n.props.className?.includes('is-running')));
+    assert.equal(
+      nodes(ended).some((n) => n.props.className === 'lc-process-step is-stopped'),
+      interrupted,
+    );
+  }
+});
+await test('approval stays directly visible between separate folded tool blocks', async () => {
+  const c = context(false);
+  const tree = c.api.TurnView({
+    index: 0,
+    actionable: true,
+    onApproval() {},
+    t: (k) => k,
     turn: {
-      user: 'task',
+      user: 'fixture',
+      status: 'working',
+      errorMsg: '',
+      costUsd: null,
       segments: [
         { kind: 'tool', name: 'Read', running: false },
-        { kind: 'text', content: 'answer' },
+        {
+          kind: 'approval',
+          token: 'real-token',
+          command: 'fixture command',
+          reason: 'fixture reason',
+        },
+        { kind: 'tool', name: 'Bash', running: true },
       ],
-      status: 'done',
-      costUsd: null,
     },
-    t: (k) => k,
   });
-  assert.equal(nodes(tree).filter((n) => n.type === 'li').length, 1);
-  assert(nodes(tree).some((n) => n.props.children === 'lessComputer.desktop.toolReported'));
-  assert(!nodes(tree).some((n) => n.props.className === 'lc-api-cost'));
+  assert.equal(nodes(tree).filter((n) => n.type === c.api.ToolProcess).length, 2);
+  assert.equal(nodes(tree).filter((n) => n.type === c.api.ApprovalCard).length, 1);
+});
+await test('window controls are first, agents are text only and activity is not duplicated', async () => {
+  const c = context(false);
+  const tree = c.render();
+  const shell = find(tree, (n) => n.props.className === 'lc-desktop');
+  const first = shell.props.children.find(Boolean);
+  assert.equal(first.type, 'header');
+  assert.equal(first.props.children[0].props.className, 'lc-window-controls');
+  assert(!nodes(tree).some((n) => n.type === 'AgentBuddy'));
+  assert(!nodes(tree).some((n) => n.props.className === 'lc-activity'));
+  c.hooks.unmount();
 });
 console.log(`${passed} actual-component behavior tests passed`);

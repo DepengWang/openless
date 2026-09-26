@@ -71,6 +71,7 @@ pub async fn qa_get_snapshot(window: Window, core: CoreState<'_>) -> Result<open
 
 #[tauri::command]
 pub async fn qa_window_set_expanded(window: Window, expanded: bool) -> Result<(), String> {
+    use tauri::Manager;
     if window.label() != "qa" { return Err("qa_window_required".into()); }
     let app = window.app_handle().clone();
     let (sender, receiver) = tokio::sync::oneshot::channel();

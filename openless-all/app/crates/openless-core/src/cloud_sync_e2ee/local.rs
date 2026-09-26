@@ -97,7 +97,12 @@ impl LocalStorage {
     }
 
     pub(crate) async fn read_ui(&self) -> SyncResult<Option<UiEnvelope>> {
-        let value: Option<UiEnvelope> = self.read("device", "sync-ui-preferences").await?;
+        let value: Option<UiEnvelope> =
+            self.read("device", "sync-ui-preferences")
+                .await
+                .inspect_err(|error| {
+                    log_local_failure("ui_mirror_read", error);
+                })?;
         if let Some(value) = &value {
             if value.schema_version != 1
                 || crate::cloud_sync_e2ee_protocol::types::UuidV4::parse(&value.revision).is_err()
@@ -133,7 +138,10 @@ impl LocalStorage {
                     .credentials
                     .read_sync_secret(account.clone())
                     .await
-                    .map_err(|_| error("secure_storage_denied"))?;
+                    .map_err(|_| {
+                        log::warn!("[e2ee-local] stage=wrapping_key_read code=secure_storage_denied");
+                        error("secure_storage_denied")
+                    })?;
                 let bytes = match value {
                     Some(value) => decode_key(value.expose_secret())?,
                     None => {
@@ -171,7 +179,10 @@ impl LocalStorage {
                                 SecretValue::new(URL_SAFE_NO_PAD.encode(&bytes[..])),
                             )
                             .await
-                            .map_err(|_| error("secure_storage_denied"))?;
+                            .map_err(|_| {
+                                log::warn!("[e2ee-local] stage=wrapping_key_write code=secure_storage_denied");
+                                error("secure_storage_denied")
+                            })?;
                         let verified = self
                             .credentials
                             .read_sync_secret(account)
@@ -462,4 +473,19 @@ pub(crate) fn durable_create(path: &Path, bytes: &[u8]) -> SyncResult<bool> {
     })();
     let _ = fs::remove_file(&temporary);
     result
+}
+
+fn log_local_failure(stage: &'static str, failure: &crate::BackendError) {
+    let code = match failure
+        .details
+        .as_ref()
+        .and_then(|details| details.get("reason"))
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("secure_storage_denied") => "secure_storage_denied",
+        Some("recovery_required") => "recovery_required",
+        Some("secure_random_unavailable") => "secure_random_unavailable",
+        _ => "local_storage_unavailable",
+    };
+    log::warn!("[e2ee-local] stage={stage} code={code}");
 }
