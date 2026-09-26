@@ -64,6 +64,7 @@ const KOTLIN_FILES = [
   'LitePinyinRepository.kt',
   'LitePinyinUserFrequency.kt',
   'LitePinyinLearnedPhrases.kt',
+  'OpenLessSettingsExport.kt',
   'StrokePhraseRepository.kt',
   'StrokeUserFrequency.kt',
   'EnglishCandidateProvider.kt',

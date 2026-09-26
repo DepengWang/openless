@@ -118,4 +118,22 @@ object OpenLessNative {
      * without this — the settings-reopen black screen fix.
      */
     @JvmStatic external fun nativeEnsureMainWebviewWindow(): Boolean
+
+    // Settings export/import (OpenLessKeyboardSettingsActivity's "导出/导入配置")
+    // — see native_bridge.rs's export/import*Json() functions for what each
+    // one actually reads/writes. Synchronous, unlike the dictation lifecycle
+    // calls above: plain file reads/writes, safe to call straight from the
+    // settings Activity's own UI thread for a one-off export/import tap.
+
+    /** JSON: {activeAsrProvider, activeLlmProvider, activeStylePackId, selectionPolishStylePackId}. */
+    @JvmStatic external fun nativeExportPreferencesSubset(): String
+
+    /** Applies whichever of the four fields above are present in [json]; others are left untouched. */
+    @JvmStatic external fun nativeImportPreferencesSubset(json: String)
+
+    /** JSON: the same shape as the Rust-side CredentialsSnapshot (ASR/LLM provider credential fields) — see persistence/credentials.rs. */
+    @JvmStatic external fun nativeExportCredentialsSnapshot(): String
+
+    /** Applies whichever fields are present (non-null) in [json]; others are left untouched. */
+    @JvmStatic external fun nativeImportCredentialsSnapshot(json: String)
 }

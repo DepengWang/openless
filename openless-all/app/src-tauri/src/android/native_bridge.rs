@@ -12,6 +12,7 @@ use openless_core::{
 };
 
 use crate::coordinator::Coordinator;
+use crate::persistence::{CredentialAccount, CredentialsSnapshot, CredentialsVault, PreferencesStore};
 use crate::types::{CapsulePayload, CapsuleState};
 
 static COORDINATOR: OnceLock<Arc<Coordinator>> = OnceLock::new();
@@ -55,6 +56,148 @@ fn android_backend_snapshot_response(backend: Option<&OpenLessBackend>) -> Strin
 
 pub fn register_android_coordinator(coordinator: Arc<Coordinator>) {
     let _ = COORDINATOR.set(coordinator);
+}
+
+/// Settings-export subset of [`openless_core::UserPreferences`] — just the
+/// fields the Android keyboard settings page's export/import feature covers
+/// (ASR/LLM provider selection, style pack selection). Every field is
+/// `Option` so a partial import (the settings page lets the user deselect
+/// categories before importing) can omit a field entirely rather than
+/// forcing an empty-string overwrite.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ExportedPreferencesSubset {
+    active_asr_provider: Option<String>,
+    active_llm_provider: Option<String>,
+    active_style_pack_id: Option<String>,
+    selection_polish_style_pack_id: Option<String>,
+}
+
+fn export_preferences_subset_json() -> String {
+    let prefs = match PreferencesStore::new() {
+        Ok(store) => store.get(),
+        Err(error) => {
+            log::warn!("[android-native] open preferences store for settings export failed: {error:#}");
+            return "{}".to_string();
+        }
+    };
+    let subset = ExportedPreferencesSubset {
+        active_asr_provider: Some(prefs.active_asr_provider),
+        active_llm_provider: Some(prefs.active_llm_provider),
+        active_style_pack_id: Some(prefs.active_style_pack_id),
+        selection_polish_style_pack_id: Some(prefs.selection_polish_style_pack_id),
+    };
+    serde_json::to_string(&subset).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Applies only the fields present in `json` (see
+/// [`ExportedPreferencesSubset`]'s own doc comment on why every field is
+/// optional). Syncs the credential vault's own active-ASR pointer first —
+/// see [`crate::commands::sync_active_asr_provider_to_vault`] — so the
+/// plain (non-provider-scoped) `CredentialsVault::set()` calls a caller
+/// separately makes via [`import_credentials_snapshot_json`] land in the
+/// provider slot this import just selected, not whatever the target device
+/// happened to have active before.
+fn import_preferences_subset_json(json: &str) {
+    let parsed: ExportedPreferencesSubset = match serde_json::from_str(json) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!("[android-native] parse imported preferences subset failed: {error}");
+            return;
+        }
+    };
+    let store = match PreferencesStore::new() {
+        Ok(store) => store,
+        Err(error) => {
+            log::warn!("[android-native] open preferences store for settings import failed: {error:#}");
+            return;
+        }
+    };
+    let mut prefs = store.get();
+    if let Some(value) = parsed.active_asr_provider {
+        if let Err(error) = crate::commands::sync_active_asr_provider_to_vault(&value) {
+            log::warn!("[android-native] sync imported ASR provider to vault failed: {error}");
+        }
+        prefs.active_asr_provider = value;
+    }
+    if let Some(value) = parsed.active_llm_provider {
+        prefs.active_llm_provider = value;
+    }
+    if let Some(value) = parsed.active_style_pack_id {
+        prefs.active_style_pack_id = value;
+    }
+    if let Some(value) = parsed.selection_polish_style_pack_id {
+        prefs.selection_polish_style_pack_id = value;
+    }
+    if let Err(error) = store.set(prefs) {
+        log::warn!("[android-native] save imported preferences subset failed: {error:#}");
+    }
+}
+
+fn export_credentials_snapshot_json() -> String {
+    serde_json::to_string(&CredentialsVault::snapshot()).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Restores whichever fields are present (`Some`) in the snapshot — the
+/// settings page's export always includes every field it read, but an
+/// older or hand-edited import file might only have some of them. Plain
+/// (non-provider-scoped) `CredentialsVault::set()` calls, matching
+/// `CredentialsVault::snapshot()`'s own plain reads (see that function's
+/// `credentials_snapshot()` implementation in persistence/credentials.rs) —
+/// call [`import_preferences_subset_json`] first if the import also
+/// includes a provider-selection change, so these land in the right slot.
+fn import_credentials_snapshot_json(json: &str) {
+    let snapshot: CredentialsSnapshot = match serde_json::from_str(json) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!("[android-native] parse imported credentials snapshot failed: {error}");
+            return;
+        }
+    };
+    let fields: [(CredentialAccount, Option<String>); 17] = [
+        (CredentialAccount::VolcengineAppKey, snapshot.volcengine_app_key),
+        (
+            CredentialAccount::VolcengineAccessKey,
+            snapshot.volcengine_access_key,
+        ),
+        (
+            CredentialAccount::VolcengineResourceId,
+            snapshot.volcengine_resource_id,
+        ),
+        (CredentialAccount::VolcengineService, snapshot.volcengine_service),
+        (
+            CredentialAccount::VolcengineAuthMode,
+            snapshot.volcengine_auth_mode,
+        ),
+        (CredentialAccount::VolcengineApiKey, snapshot.volcengine_api_key),
+        (CredentialAccount::AsrApiKey, snapshot.asr_api_key),
+        (CredentialAccount::AsrEndpoint, snapshot.asr_endpoint),
+        (CredentialAccount::AsrModel, snapshot.asr_model),
+        (CredentialAccount::XfyunAppId, snapshot.xfyun_app_id),
+        (CredentialAccount::XfyunApiKey, snapshot.xfyun_api_key),
+        (
+            CredentialAccount::TencentCloudAppId,
+            snapshot.tencent_cloud_app_id,
+        ),
+        (
+            CredentialAccount::TencentCloudSecretId,
+            snapshot.tencent_cloud_secret_id,
+        ),
+        (
+            CredentialAccount::TencentCloudSecretKey,
+            snapshot.tencent_cloud_secret_key,
+        ),
+        (CredentialAccount::ArkApiKey, snapshot.ark_api_key),
+        (CredentialAccount::ArkModelId, snapshot.ark_model_id),
+        (CredentialAccount::ArkEndpoint, snapshot.ark_endpoint),
+    ];
+    for (account, value) in fields {
+        if let Some(value) = value {
+            if let Err(error) = CredentialsVault::set(account, &value) {
+                log::warn!("[android-native] import credential field failed: {error:#}");
+            }
+        }
+    }
 }
 
 pub fn register_android_backend(backend: Arc<OpenLessBackend>) {
@@ -1000,6 +1143,76 @@ mod jni_exports {
                 crate::android::jni::android::export_jboolean(false)
             }
         }
+    }
+
+    /// Settings export/import (OpenLessKeyboardSettingsActivity's "导出/导入配置")
+    /// — see export_preferences_subset_json()/import_preferences_subset_json()'s
+    /// own doc comments. Synchronous (unlike the dictation lifecycle calls
+    /// above): these are plain file reads/writes on a background settings
+    /// screen, not something already running on a worker thread of its own,
+    /// so there's no separate spawn_*() wrapper to hand off to.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeExportPreferencesSubset(
+        env: *mut JNIEnv,
+        _class: JClass,
+    ) -> jstring {
+        let response = export_preferences_subset_json();
+        match JniEnv::from_raw(env) {
+            Ok(mut env) => crate::android::jni::android::export_jstring(&mut env, &response),
+            Err(_) => std::ptr::null_mut(),
+        }
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeImportPreferencesSubset(
+        env: *mut JNIEnv,
+        _class: JClass,
+        json: jstring,
+    ) {
+        let mut jni_env = match JniEnv::from_raw(env) {
+            Ok(env) => env,
+            Err(error) => {
+                log::warn!("[android-native] attach JNI env for import_preferences_subset failed: {error}");
+                return;
+            }
+        };
+        let json_str: String = jni_env
+            .get_string(&JString::from_raw(json))
+            .map(|value| value.into())
+            .unwrap_or_default();
+        import_preferences_subset_json(&json_str);
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeExportCredentialsSnapshot(
+        env: *mut JNIEnv,
+        _class: JClass,
+    ) -> jstring {
+        let response = export_credentials_snapshot_json();
+        match JniEnv::from_raw(env) {
+            Ok(mut env) => crate::android::jni::android::export_jstring(&mut env, &response),
+            Err(_) => std::ptr::null_mut(),
+        }
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeImportCredentialsSnapshot(
+        env: *mut JNIEnv,
+        _class: JClass,
+        json: jstring,
+    ) {
+        let mut jni_env = match JniEnv::from_raw(env) {
+            Ok(env) => env,
+            Err(error) => {
+                log::warn!("[android-native] attach JNI env for import_credentials_snapshot failed: {error}");
+                return;
+            }
+        };
+        let json_str: String = jni_env
+            .get_string(&JString::from_raw(json))
+            .map(|value| value.into())
+            .unwrap_or_default();
+        import_credentials_snapshot_json(&json_str);
     }
 }
 

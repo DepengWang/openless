@@ -56,6 +56,19 @@ internal class StrokeUserFrequency(context: Context) {
 
     fun capacity(): Int = MAX_ENTRIES
 
+    /** Every stored entry as a plain "context<sep>candidate"->"count,lastUsedMs" map, for the settings page's export/import feature — see OpenLessSettingsExport. */
+    fun exportAll(): Map<String, String> {
+        @Suppress("UNCHECKED_CAST")
+        return preferences.all as Map<String, String>
+    }
+
+    /** Replaces the entire store with [entries] — an import wholesale-restores a backup rather than merging with whatever's already on this device. */
+    fun importAll(entries: Map<String, String>) {
+        preferences.edit().clear().apply()
+        preferences.edit().apply { entries.forEach { (key, value) -> putString(key, value) } }.apply()
+        approxSize = entries.size
+    }
+
     private fun key(context: String, candidate: String) = "$context$SEPARATOR$candidate"
 
     private fun resolvedSize(): Int {

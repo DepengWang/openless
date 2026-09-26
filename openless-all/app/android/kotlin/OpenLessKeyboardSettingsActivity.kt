@@ -16,6 +16,7 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -29,6 +30,17 @@ import androidx.core.view.WindowInsetsCompat
  */
 class OpenLessKeyboardSettingsActivity : Activity() {
     private val prefs by lazy { getSharedPreferences("openless_ime_ui", Context.MODE_PRIVATE) }
+
+    // Export/import (see OpenLessSettingsExport): plain Activity, so this
+    // uses the classic startActivityForResult()/onActivityResult() pair
+    // rather than androidx.activity's ActivityResultContracts, which needs
+    // ComponentActivity. pendingExportJson bridges the gap between building
+    // the export JSON (at the moment the user picks categories) and
+    // actually having somewhere to write it (only known once
+    // ACTION_CREATE_DOCUMENT's picker returns a Uri, an async round trip).
+    private var pendingExportJson: String? = null
+    private val requestCodeExportSave = 4201
+    private val requestCodeImportOpen = 4202
     private val englishUi by lazy {
         val locale = prefs.getString("locale", null) ?: resources.configuration.locales[0].toLanguageTag()
         !locale.startsWith("zh", ignoreCase = true)
@@ -466,6 +478,56 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             ),
         )
 
+        // "导出/导入配置": bundles everything OpenLessSettingsExport knows how
+        // to read (see that object's own Category enum) into one JSON file,
+        // or restores one — for moving personal settings to another device
+        // without retyping everything. Plain JSON, no encryption, by
+        // explicit product decision — the warning text below is the only
+        // protection against an accidentally-shared file containing a
+        // Cloud notes token or (if that category is checked) a raw ASR/LLM
+        // API key.
+        content.addView(sectionLabel(ui("导出 / 导入配置", "Export / Import settings")))
+        content.addView(
+            TextView(this).apply {
+                text = ui(
+                    "把云笔记地址、震动参数、笔画调频、简拼优选、ASR/LLM/风格包的选择（以及可选的 API Key）打包成一个文件，方便迁移到另一台设备。文件是明文 JSON——如果勾选了 API Key，文件里会有裸的密钥，请妥善保管。",
+                    "Bundles the Cloud notes address, haptic settings, stroke ranking, pinyin combo learning, and ASR/LLM/style pack selection (plus optional API keys) into one file for moving to another device. The file is plain JSON — including API keys leaves them in the file in plaintext, so keep it safe.",
+                )
+                textSize = 12f
+                setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(110, 110, 115)))
+                setPadding(0, 0, 0, dp(10))
+            },
+        )
+        val exportImportRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        exportImportRow.addView(
+            TextView(this).apply {
+                text = ui("导出配置 →", "Export settings →")
+                textSize = 15f
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                setTextColor(tone(Color.rgb(94, 234, 212), Color.rgb(15, 118, 110)))
+                isClickable = true
+                setOnClickListener { showExportCategoryDialog() }
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        exportImportRow.addView(
+            TextView(this).apply {
+                text = ui("导入配置 →", "Import settings →")
+                textSize = 15f
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                setTextColor(tone(Color.rgb(94, 234, 212), Color.rgb(15, 118, 110)))
+                isClickable = true
+                setOnClickListener { launchImportPicker() }
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        content.addView(
+            exportImportRow,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(16)
+            },
+        )
+
         // build_first_seen_wall_time is written by OpenLessApplication's
         // resetRestartStatsOnVersionBump() at the exact moment it last
         // zeroed the restart-cause counters below — i.e. "counting since
@@ -491,6 +553,115 @@ class OpenLessKeyboardSettingsActivity : Activity() {
         )
 
         return root
+    }
+
+    private fun showExportCategoryDialog() {
+        val categories = OpenLessSettingsExport.Category.entries.toTypedArray()
+        val labels = categories.map { ui(it.labelZh, it.labelEn) }.toTypedArray()
+        val checked = BooleanArray(categories.size) { true }
+        android.app.AlertDialog.Builder(this)
+            .setTitle(ui("选择要导出的内容", "Choose what to export"))
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked -> checked[which] = isChecked }
+            .setPositiveButton(ui("导出", "Export")) { _, _ ->
+                val selected = categories.filterIndexed { index, _ -> checked[index] }.toSet()
+                if (selected.isEmpty()) {
+                    Toast.makeText(this, ui("没有选择任何内容", "Nothing selected"), Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                pendingExportJson = OpenLessSettingsExport.export(this, selected)
+                val timestamp = android.text.format.DateFormat.format("yyyyMMdd-HHmm", System.currentTimeMillis())
+                val intent = android.content.Intent(android.content.Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(android.content.Intent.CATEGORY_OPENABLE)
+                    type = "application/json"
+                    putExtra(android.content.Intent.EXTRA_TITLE, "openless-settings-$timestamp.json")
+                }
+                runCatching { startActivityForResult(intent, requestCodeExportSave) }
+                    .onFailure {
+                        pendingExportJson = null
+                        Toast.makeText(this, ui("找不到文件管理器", "No file manager available"), Toast.LENGTH_SHORT).show()
+                    }
+            }
+            .setNegativeButton(ui("取消", "Cancel"), null)
+            .show()
+    }
+
+    private fun launchImportPicker() {
+        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(android.content.Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+        }
+        runCatching { startActivityForResult(intent, requestCodeImportOpen) }
+            .onFailure { Toast.makeText(this, ui("找不到文件选择器", "No file picker available"), Toast.LENGTH_SHORT).show() }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK || data == null) return
+        when (requestCode) {
+            requestCodeExportSave -> {
+                val uri = data.data
+                val json = pendingExportJson
+                pendingExportJson = null
+                if (uri == null || json == null) return
+                val wrote = runCatching {
+                    contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray(Charsets.UTF_8)) }
+                }.isSuccess
+                Toast.makeText(
+                    this,
+                    if (wrote) ui("已导出", "Exported") else ui("导出失败", "Export failed"),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+            requestCodeImportOpen -> {
+                val uri = data.data ?: return
+                val json = runCatching {
+                    contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+                }.getOrNull()
+                if (json.isNullOrBlank()) {
+                    Toast.makeText(this, ui("读取文件失败", "Failed to read file"), Toast.LENGTH_SHORT).show()
+                    return
+                }
+                showImportCategoryDialog(json)
+            }
+        }
+    }
+
+    private fun showImportCategoryDialog(json: String) {
+        val present = OpenLessSettingsExport.categoriesPresent(json)
+        if (present.isEmpty()) {
+            Toast.makeText(this, ui("这不是一个有效的配置文件", "Not a valid settings file"), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val categories = present.toList()
+        val labels = categories.map { ui(it.labelZh, it.labelEn) }.toTypedArray()
+        val checked = BooleanArray(categories.size) { true }
+        android.app.AlertDialog.Builder(this)
+            .setTitle(ui("选择要导入的内容", "Choose what to import"))
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked -> checked[which] = isChecked }
+            .setPositiveButton(ui("导入", "Import")) { _, _ ->
+                val selected = categories.filterIndexed { index, _ -> checked[index] }.toSet()
+                if (selected.isEmpty()) {
+                    Toast.makeText(this, ui("没有选择任何内容", "Nothing selected"), Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                OpenLessSettingsExport.import(this, json, selected)
+                val needsRestart = OpenLessSettingsExport.importNeedsAppRestart(json, selected)
+                Toast.makeText(
+                    this,
+                    if (needsRestart) {
+                        ui(
+                            "导入完成——请完全关闭并重新打开 OpenLess 使部分设置生效",
+                            "Imported — fully close and reopen OpenLess for some settings to take effect",
+                        )
+                    } else {
+                        ui("导入完成", "Imported")
+                    },
+                    Toast.LENGTH_LONG,
+                ).show()
+                setContentView(buildContent())
+            }
+            .setNegativeButton(ui("取消", "Cancel"), null)
+            .show()
     }
 
     /** Fires a one-shot vibration with the sliders' current (already-saved) values, so a change is felt immediately. */
