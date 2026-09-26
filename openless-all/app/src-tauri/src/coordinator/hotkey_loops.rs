@@ -2443,6 +2443,7 @@ pub(crate) mod windows_less_computer_tests {
             backend,
             less_computer_voice: Mutex::new(None),
             settings_host_gate: Mutex::new(()),
+            hotkey_resume_started: AtomicBool::new(false),
             overlay_qa_handoff: tokio::sync::Mutex::new(()),
             inserter: TextInserter::new(),
             vocab_card_visible: AtomicBool::new(false),
