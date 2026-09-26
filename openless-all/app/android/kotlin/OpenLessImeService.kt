@@ -513,13 +513,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     override fun onEvaluateFullscreenMode(): Boolean = false
 
     /** Configured panel height in px (prefs `keyboard_height_dp`, default 300). */
-    internal fun keyboardPanelHeightPx(): Int = dp(keyboardPanelHeightDp())
+    internal fun keyboardPanelHeightPx(): Int = panelHeightPx(this)
 
-    internal fun keyboardPanelHeightDp(): Int {
-        return getSharedPreferences("openless_ime_ui", MODE_PRIVATE)
-            .getInt(PREF_KEYBOARD_HEIGHT_DP, DEFAULT_KEYBOARD_HEIGHT_DP)
-            .coerceIn(MIN_KEYBOARD_HEIGHT_DP, MAX_KEYBOARD_HEIGHT_DP)
-    }
+    internal fun keyboardPanelHeightDp(): Int = panelHeightDp(this)
 
     override fun onCreateInputView(): View {
         refreshLanguage()
@@ -4326,7 +4322,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // asks for — makes every panel's height genuinely fixed instead of
         // accidental.
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            val fixedHeight = keyboardPanelHeightPx()
+            val fixedHeight = panelHeightPx(context)
             val exactHeightSpec = android.view.View.MeasureSpec.makeMeasureSpec(fixedHeight, android.view.View.MeasureSpec.EXACTLY)
             super.onMeasure(widthMeasureSpec, exactHeightSpec)
         }
@@ -5584,6 +5580,17 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         const val DEFAULT_KEYBOARD_HEIGHT_DP = 300
         const val MIN_KEYBOARD_HEIGHT_DP = 220
         const val MAX_KEYBOARD_HEIGHT_DP = 420
+
+        fun panelHeightDp(context: android.content.Context): Int {
+            return context.getSharedPreferences("openless_ime_ui", android.content.Context.MODE_PRIVATE)
+                .getInt(PREF_KEYBOARD_HEIGHT_DP, DEFAULT_KEYBOARD_HEIGHT_DP)
+                .coerceIn(MIN_KEYBOARD_HEIGHT_DP, MAX_KEYBOARD_HEIGHT_DP)
+        }
+
+        fun panelHeightPx(context: android.content.Context): Int {
+            return (panelHeightDp(context) * context.resources.displayMetrics.density).toInt()
+        }
+
         private const val SILENCE_LEVEL_THRESHOLD = 0.02f
         private const val SILENCE_CHECK_DELAY_MS = 3000L
         private const val BACKEND_HEARTBEAT_INTERVAL_MS = 6000L
