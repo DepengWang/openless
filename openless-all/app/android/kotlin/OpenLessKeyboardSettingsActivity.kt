@@ -174,6 +174,23 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             },
         )
 
+        content.addView(sectionLabel(ui("键盘外观", "Keyboard appearance")))
+        val currentHeightDp = prefs.getInt(
+            OpenLessImeService.PREF_KEYBOARD_HEIGHT_DP,
+            OpenLessImeService.DEFAULT_KEYBOARD_HEIGHT_DP,
+        ).coerceIn(OpenLessImeService.MIN_KEYBOARD_HEIGHT_DP, OpenLessImeService.MAX_KEYBOARD_HEIGHT_DP)
+        content.addView(
+            sliderRow(
+                label = ui("键盘高度", "Keyboard height"),
+                min = OpenLessImeService.MIN_KEYBOARD_HEIGHT_DP,
+                max = OpenLessImeService.MAX_KEYBOARD_HEIGHT_DP,
+                current = currentHeightDp,
+                onChange = { value ->
+                    prefs.edit().putInt(OpenLessImeService.PREF_KEYBOARD_HEIGHT_DP, value).apply()
+                },
+            ),
+        )
+
         content.addView(sectionLabel(ui("震动反馈", "Haptic feedback")))
 
         val enabledRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
