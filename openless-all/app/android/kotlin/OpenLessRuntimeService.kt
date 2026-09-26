@@ -24,12 +24,35 @@ class OpenLessRuntimeService : Service() {
     // exists, is backgrounded, or has been reclaimed by the OS.
     override fun onCreate() {
         super.onCreate()
-        runCatching { OpenLessNative.nativeRegisterActivityContext(this) }
-            .onFailure { error -> Log.w(TAG, "register runtime service context failed", error) }
+        // #region agent log
+        runCatching {
+            OpenLessNative.nativeRegisterActivityContext(this)
+            android.util.Log.i(
+                "OpenLessDbg58c22b",
+                """{"sessionId":"58c22b","hypothesisId":"A","location":"OpenLessRuntimeService.onCreate","message":"registered runtime service context","data":{"hasCtx":${OpenLessNative.nativeHasRegisteredActivityContext()}},"timestamp":${System.currentTimeMillis()}}""",
+            )
+        }
+            .onFailure { error ->
+                Log.w(TAG, "register runtime service context failed", error)
+                android.util.Log.w(
+                    "OpenLessDbg58c22b",
+                    """{"sessionId":"58c22b","hypothesisId":"A","location":"OpenLessRuntimeService.onCreate","message":"register failed","data":{"error":"${error.message}"},"timestamp":${System.currentTimeMillis()}}""",
+                )
+            }
+        // #endregion
     }
 
     override fun onDestroy() {
+        // #region agent log
+        android.util.Log.i(
+            "OpenLessDbg58c22b",
+            """{"sessionId":"58c22b","hypothesisId":"A","location":"OpenLessRuntimeService.onDestroy","message":"unregistering runtime service context","data":{"hasCtxBefore":${runCatching { OpenLessNative.nativeHasRegisteredActivityContext() }.getOrDefault(false)}},"timestamp":${System.currentTimeMillis()}}""",
+        )
+        // #endregion
         runCatching { OpenLessNative.nativeUnregisterActivityContext(this) }
+        // Re-baseline to Application so settings / overlay / mic IPC keep working
+        // after the user switches away from the OpenLess IME.
+        runCatching { OpenLessNative.nativeRegisterActivityContext(applicationContext) }
         super.onDestroy()
     }
 
