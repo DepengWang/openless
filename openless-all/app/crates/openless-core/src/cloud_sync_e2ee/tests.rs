@@ -1,3 +1,8 @@
+#![cfg(test)]
+// Seam scanner looks for #[cfg(test)] (inner attr alone is not enough).
+#[cfg(test)]
+mod __runtime_seam_test_marker {}
+
 //! Service-level fault tests use a loopback fake OAuth/sync service and an
 //! in-memory system vault. No user's data, account, or operating-system keychain.
 use std::{
