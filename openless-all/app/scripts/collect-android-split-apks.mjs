@@ -46,42 +46,34 @@ function walkApks(root) {
 }
 
 function listApkAbis(apkPath) {
-  const abis = new Set();
-  const unzip = spawnSync('unzip', ['-Z1', apkPath], {
-    encoding: 'utf8',
-    maxBuffer: 32 * 1024 * 1024,
-  });
-  if (unzip.status === 0 && unzip.stdout) {
-    for (const line of unzip.stdout.split(/\r?\n/)) {
-      if (!line.startsWith('lib/')) continue;
-      const abi = line.split('/')[1];
-      if (KNOWN_ABIS.has(abi)) abis.add(abi);
+  // Use the same standard ZIP reader as the original workflow. Scanning for
+  // central-directory magic accepts truncated archives and bytes inside entries.
+  const script = `
+import json, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as apk:
+    bad = apk.testzip()
+    if bad is not None:
+        raise ValueError("CRC failure in " + bad)
+    print(json.dumps(sorted({name.split('/')[1] for name in apk.namelist()
+        if name.startswith('lib/') and len(name.split('/')) >= 3})))
+`;
+  const commands = process.platform === 'win32' ? ['python', 'python3'] : ['python3', 'python'];
+  for (const command of commands) {
+    const result = spawnSync(command, ['-c', script, apkPath], {
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024,
+    });
+    if (result.error?.code === 'ENOENT') continue;
+    if (result.error || result.status !== 0) {
+      throw new Error(`Invalid APK ZIP ${apkPath}: ${result.error?.message || result.stderr}`);
     }
-    return [...abis].sort();
+    const abis = JSON.parse(result.stdout);
+    for (const abi of abis) {
+      if (!KNOWN_ABIS.has(abi)) throw new Error(`Unknown ABI ${abi} in ${apkPath}`);
+    }
+    return abis;
   }
-
-  // Fallback when unzip is unavailable (local Windows): scan zip central-directory names.
-  const buf = readFileSync(apkPath);
-  let offset = 0;
-  while (offset + 46 < buf.length) {
-    if (buf.readUInt32LE(offset) !== 0x02014b50) {
-      offset += 1;
-      continue;
-    }
-    const nameLen = buf.readUInt16LE(offset + 28);
-    const extraLen = buf.readUInt16LE(offset + 30);
-    const commentLen = buf.readUInt16LE(offset + 32);
-    const nameStart = offset + 46;
-    const nameEnd = nameStart + nameLen;
-    if (nameEnd > buf.length) break;
-    const name = buf.toString('utf8', nameStart, nameEnd);
-    if (name.startsWith('lib/')) {
-      const abi = name.split('/')[1];
-      if (KNOWN_ABIS.has(abi)) abis.add(abi);
-    }
-    offset = nameEnd + extraLen + commentLen;
-  }
-  return [...abis].sort();
+  throw new Error('Python 3 is required to validate APK ZIP contents');
 }
 
 export function collectSplitApks({
@@ -106,7 +98,9 @@ export function collectSplitApks({
   }
 
   mkdirSync(outDir, { recursive: true });
-  const candidates = walkApks(androidRoot).filter((apk) => apk.replace(/\\/g, '/').includes('/outputs/'));
+  const candidates = walkApks(androidRoot).filter((apk) =>
+    apk.replace(/\\/g, '/').includes('/outputs/'),
+  );
   if (candidates.length === 0) {
     const all = walkApks(androidRoot);
     const hint = all.length ? all.map((p) => relative(androidRoot, p)).join('\n') : '(none)';
@@ -119,7 +113,9 @@ export function collectSplitApks({
   for (const apk of candidates) {
     const abis = listApkAbis(apk);
     if (abis.length !== 1) {
-      throw new Error(`${apk} contains ABI directories [${abis.join(', ')}]; expected exactly one ABI per APK`);
+      throw new Error(
+        `${apk} contains ABI directories [${abis.join(', ')}]; expected exactly one ABI per APK`,
+      );
     }
     const abi = abis[0];
     if (!expected.has(abi)) {

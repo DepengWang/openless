@@ -1,11 +1,5 @@
 import assert from 'node:assert/strict';
-import {
-  mkdtempSync,
-  mkdirSync,
-  writeFileSync,
-  rmSync,
-  readFileSync,
-} from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -24,11 +18,23 @@ const workflowPath = fileURLToPath(
 );
 
 // --- ABI matrix ---
-assert.equal(parseAndroidAbis('').map((e) => e.abi).join(','), 'aarch64');
-assert.equal(parseAndroidAbis('all').length, 4);
-assert.equal(parseAndroidAbis('aarch64,armv7').map((e) => e.abi).join(','), 'aarch64,armv7');
 assert.equal(
-  parseAndroidAbis('aarch64 aarch64,armv7').map((e) => e.abi).join(','),
+  parseAndroidAbis('')
+    .map((e) => e.abi)
+    .join(','),
+  'aarch64',
+);
+assert.equal(parseAndroidAbis('all').length, 4);
+assert.equal(
+  parseAndroidAbis('aarch64,armv7')
+    .map((e) => e.abi)
+    .join(','),
+  'aarch64,armv7',
+);
+assert.equal(
+  parseAndroidAbis('aarch64 aarch64,armv7')
+    .map((e) => e.abi)
+    .join(','),
   'aarch64,armv7',
 );
 assert.throws(() => parseAndroidAbis('riscv'), /Unknown Android ABI/);
@@ -44,55 +50,24 @@ assert.equal(cli.status, 0);
 assert.equal(JSON.parse(cli.stdout)[0].gradle_abi, 'arm64-v8a');
 
 // --- collectSplitApks with a minimal zip APK ---
-function writeMinimalApk(path, abi) {
-  const fileName = Buffer.from(`lib/${abi}/libdummy.so`, 'utf8');
-  const data = Buffer.from('so');
-  const local = Buffer.alloc(30 + fileName.length + data.length);
-  local.writeUInt32LE(0x04034b50, 0);
-  local.writeUInt16LE(20, 4);
-  local.writeUInt16LE(0, 6);
-  local.writeUInt16LE(0, 8);
-  local.writeUInt16LE(0, 10);
-  local.writeUInt16LE(0, 12);
-  local.writeUInt32LE(0, 14);
-  local.writeUInt32LE(data.length, 18);
-  local.writeUInt32LE(data.length, 22);
-  local.writeUInt16LE(fileName.length, 26);
-  local.writeUInt16LE(0, 28);
-  fileName.copy(local, 30);
-  data.copy(local, 30 + fileName.length);
-
-  const central = Buffer.alloc(46 + fileName.length);
-  central.writeUInt32LE(0x02014b50, 0);
-  central.writeUInt16LE(20, 4);
-  central.writeUInt16LE(20, 6);
-  central.writeUInt16LE(0, 8);
-  central.writeUInt16LE(0, 10);
-  central.writeUInt16LE(0, 12);
-  central.writeUInt16LE(0, 14);
-  central.writeUInt32LE(0, 16);
-  central.writeUInt32LE(data.length, 20);
-  central.writeUInt32LE(data.length, 24);
-  central.writeUInt16LE(fileName.length, 28);
-  central.writeUInt16LE(0, 30);
-  central.writeUInt16LE(0, 32);
-  central.writeUInt16LE(0, 34);
-  central.writeUInt16LE(0, 36);
-  central.writeUInt32LE(0, 38);
-  central.writeUInt32LE(0, 42);
-  fileName.copy(central, 46);
-
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(0, 4);
-  eocd.writeUInt16LE(0, 6);
-  eocd.writeUInt16LE(1, 8);
-  eocd.writeUInt16LE(1, 10);
-  eocd.writeUInt32LE(central.length, 12);
-  eocd.writeUInt32LE(local.length, 16);
-  eocd.writeUInt16LE(0, 20);
-
-  writeFileSync(path, Buffer.concat([local, central, eocd]));
+function writeMinimalApk(path, ...abis) {
+  const python = process.platform === 'win32' ? 'python' : 'python3';
+  const result = spawnSync(
+    python,
+    [
+      '-c',
+      `
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], 'w') as apk:
+    for abi in sys.argv[2:]:
+        apk.writestr('lib/' + abi + '/libdummy.so', b'so')
+`,
+      path,
+      ...abis,
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stderr);
 }
 
 const tmp = mkdtempSync(join(tmpdir(), 'openless-apk-collect-'));
@@ -101,17 +76,39 @@ try {
   const outDir = join(tmp, 'out');
   const apkDir = join(androidRoot, 'app', 'build', 'outputs', 'apk', 'release');
   mkdirSync(apkDir, { recursive: true });
-  writeMinimalApk(join(apkDir, 'app-arm64-v8a-release.apk'), 'arm64-v8a');
-  const { outputs } = collectSplitApks({
+  const apk = join(apkDir, 'app-arm64-v8a-release.apk');
+  writeMinimalApk(apk, 'arm64-v8a');
+  const options = {
     mode: 'release',
     label: 'test',
     expectedGradleAbis: ['arm64-v8a'],
     androidRoot,
     outDir,
-    version: '9.9.9',
-  });
-  assert.match(outputs.arm64_v8a_path.replace(/\\/g, '/'), /OpenLess_9\.9\.9_arm64-v8a\.apk$/);
+    version: '2.0.0-Beta.3+build.20260925',
+  };
+  const { outputs } = collectSplitApks(options);
+  assert.match(
+    outputs.arm64_v8a_path.replace(/\\/g, '/'),
+    /OpenLess_2\.0\.0-Beta\.3\+build\.20260925_arm64-v8a\.apk$/,
+  );
   assert.equal(outputs.arm64_v8a_arch, 'aarch64');
+  writeMinimalApk(apk, 'arm64-v8a', 'unexpected-abi');
+  assert.throws(() => collectSplitApks(options), /Unknown ABI/);
+  writeMinimalApk(apk, 'arm64-v8a', 'x86');
+  assert.throws(() => collectSplitApks(options), /expected exactly one ABI/);
+  writeMinimalApk(apk, 'arm64-v8a');
+  writeFileSync(apk, readFileSync(apk).subarray(0, -22));
+  assert.throws(() => collectSplitApks(options), /Invalid APK ZIP/);
+  writeMinimalApk(apk, 'arm64-v8a');
+  const corrupt = readFileSync(apk);
+  corrupt[30 + Buffer.byteLength('lib/arm64-v8a/libdummy.so')] ^= 0xff;
+  writeFileSync(apk, corrupt);
+  assert.throws(() => collectSplitApks(options), /Invalid APK ZIP/);
+  writeMinimalApk(apk, 'x86');
+  assert.throws(() => collectSplitApks(options), /Missing split APKs/);
+  writeMinimalApk(apk, 'arm64-v8a');
+  writeMinimalApk(join(apkDir, 'duplicate.apk'), 'arm64-v8a');
+  assert.throws(() => collectSplitApks(options), /Duplicate APKs/);
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
@@ -138,3 +135,4 @@ assert.match(workflow, /download-artifact/);
 assert.match(workflow, /Rust cache/);
 
 console.log('android-apk-workflow-contract checks passed');
+

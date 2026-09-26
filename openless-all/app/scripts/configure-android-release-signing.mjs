@@ -3,11 +3,12 @@
  * Decode ANDROID_KEYSTORE_* env vars and patch gen/android signing for
  * release (and optionally debug) APK builds.
  *
- * When OPENLESS_SIGN_DEBUG=true (CI signed_debug dispatch), also wires the
- * debug buildType to openlessRelease so a debug APK can overlay-install over
- * a matching release-signed package while keeping the debug artifact name.
+ * Passwords stay in process env (never literals in Gradle DSL). When
+ * OPENLESS_SIGN_DEBUG=true (CI signed_debug dispatch), also wires the debug
+ * buildType to openlessRelease so a debug APK can overlay-install over a
+ * matching release-signed package while keeping the debug artifact name.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -60,17 +61,17 @@ function ensureBuildTypeSigning(content, buildType) {
     );
   }
 
-  return content.replace(
-    /android\s*\{/,
-    `android {\n    buildTypes {\n        getByName("${buildType}") {\n            ${SIGNING_ASSIGNMENT}\n        }\n    }`,
+  return (
+    content +
+    `\nandroid {\n    buildTypes {\n        getByName("${buildType}") {\n            ${SIGNING_ASSIGNMENT}\n        }\n    }\n}\n`
   );
 }
 
 function main() {
   const base64 = requireEnv('ANDROID_KEYSTORE_BASE64');
-  const storePassword = requireEnv('ANDROID_KEYSTORE_PASSWORD');
-  const keyAlias = requireEnv('ANDROID_KEY_ALIAS');
-  const keyPassword = requireEnv('ANDROID_KEY_PASSWORD');
+  requireEnv('ANDROID_KEYSTORE_PASSWORD');
+  requireEnv('ANDROID_KEY_ALIAS');
+  requireEnv('ANDROID_KEY_PASSWORD');
   const signDebug = ['1', 'true', 'yes'].includes(
     String(process.env.OPENLESS_SIGN_DEBUG || '').trim().toLowerCase(),
   );
@@ -80,32 +81,38 @@ function main() {
   }
 
   mkdirSync(dirname(keystorePath), { recursive: true });
-  writeFileSync(keystorePath, Buffer.from(base64, 'base64'));
-
-  const escapedStore = storePassword.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const escapedKey = keyPassword.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const escapedAlias = keyAlias.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const escapedKeystore = keystorePath.replace(/\\/g, '/');
+  writeFileSync(keystorePath, Buffer.from(base64, 'base64'), { mode: 0o600 });
+  chmodSync(keystorePath, 0o600);
 
   let content = readFileSync(gradlePath, 'utf8');
+  if (!/android\s*\{/.test(content)) {
+    throw new Error('Android Gradle configuration block not found');
+  }
 
-  if (!content.includes('create("openlessRelease")')) {
-    const signingConfigsBlock = `
+  const releaseSigningConfig = `create("openlessRelease") {
+            storeFile = rootProject.file("openless-release.keystore")
+            storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+            keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+        }`;
+  const signingConfigsBlock = `
     signingConfigs {
-        create("openlessRelease") {
-            storeFile = file("${escapedKeystore}")
-            storePassword = "${escapedStore}"
-            keyAlias = "${escapedAlias}"
-            keyPassword = "${escapedKey}"
-        }
+        ${releaseSigningConfig}
     }`;
-    if (!/signingConfigs\s*\{/.test(content)) {
-      content = content.replace(/android\s*\{/, `android {${signingConfigsBlock}`);
-    } else {
-      throw new Error(
-        'build.gradle.kts already has signingConfigs but no openlessRelease; refuse to patch blindly',
-      );
-    }
+
+  // Migrate an existing generated block too, so local rebuilds cannot retain
+  // the old password literals in cacheable Kotlin DSL source.
+  if (/create\("openlessRelease"\)\s*\{/.test(content)) {
+    const block = /create\("openlessRelease"\)\s*\{(?:[^{}"]|"(?:\\.|[^"\\])*")*\}/;
+    if (!block.test(content)) throw new Error('Unrecognized existing release signing block');
+    content = content.replace(block, () => releaseSigningConfig);
+  } else if (/signingConfigs\s*\{/.test(content)) {
+    content = content.replace(
+      /signingConfigs\s*\{/,
+      `signingConfigs {\n        ${releaseSigningConfig}`,
+    );
+  } else {
+    content = content.replace(/android\s*\{/, `android {${signingConfigsBlock}`);
   }
 
   content = ensureBuildTypeSigning(content, 'release');
