@@ -443,17 +443,17 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             },
         )
 
-        // 话筒右划进入"云笔记"：录音的原始转写（不经 LLM 整理，见
-        // OpenLessImeService.toggleDictation() 里 rawModeArmed || cloudNoteArmed
-        // 那一支）会以 JSON POST 到这里配置的地址，不插入任何输入框，也不
-        // 在本机留存。两项都填了才会真的提交——留空时只会在状态栏提示去
-        // 设置里补上，不会静默失败。
+        // 话筒右划进入"云笔记"：录音经 LLM 整理后的文字（跟正常上屏用的是
+        // 同一条润色流程——见 OpenLessImeService.handleImeTextReady()）会以
+        // JSON POST 到这里配置的地址，不插入任何输入框，也不在本机留存。
+        // 两项都填了才会真的提交——留空时只会在状态栏提示去设置里补上，不会
+        // 静默失败。
         content.addView(sectionLabel(ui("云笔记提交", "Cloud notes webhook")))
         content.addView(
             TextView(this).apply {
                 text = ui(
-                    "话筒右划进入「云笔记」模式：录音的原始转写会提交到下面的地址，不插入输入框，也不保存在本机。",
-                    "Swipe the mic right to enter Cloud notes mode: the raw transcript is POSTed to the address below instead of being inserted — nothing is kept on this device either.",
+                    "话筒右划进入「云笔记」模式：录音经过整理后的文字会提交到下面的地址，不插入输入框，也不保存在本机。",
+                    "Swipe the mic right to enter Cloud notes mode: the polished transcript is POSTed to the address below instead of being inserted — nothing is kept on this device either.",
                 )
                 textSize = 12f
                 setTextColor(tone(Color.rgb(150, 150, 150), Color.rgb(110, 110, 115)))

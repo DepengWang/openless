@@ -3309,13 +3309,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             // transcript as-is. Mirrors the existing "swipe left on the
             // overlay to finish+translate" gesture contract
             // (OpenLessOverlayService.kt), just decided earlier (at the
-            // swipe) instead of at this exact call. cloudNoteArmed rides the
-            // same raw stop call — the user explicitly asked for Cloud notes
-            // to skip the LLM too, so its webhook always gets the verbatim ASR
-            // transcript, never a polished one — handleImeTextReady() is
-            // what actually routes the resulting text to the webhook
-            // instead of the input field.
-            if (rawModeArmed || cloudNoteArmed) {
+            // swipe) instead of at this exact call. cloudNoteArmed
+            // deliberately does NOT ride this raw stop — per later product
+            // request, the webhook gets the same LLM-polished text a normal
+            // commit would, not the verbatim ASR transcript — so it falls
+            // through to the plain stop call below; handleImeTextReady() is
+            // what actually routes the resulting (polished) text to the
+            // webhook instead of the input field.
+            if (rawModeArmed) {
                 runNativeAction("停止听写") { OpenLessNative.nativeStopDictationForImeWithRaw(true) }
             } else {
                 runNativeAction("停止听写") { OpenLessNative.nativeStopDictationForIme() }
@@ -3685,11 +3686,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     /**
      * Dispatches a just-finished dictation's text to whichever destination
      * the mic's own swipe gesture armed for this session — an ordinary
-     * commit into the input field (plain or Raw), or (cloudNoteArmed) a JSON
-     * POST to the webhook configured in settings, never both. Wired up as
-     * OpenLessOverlayBridge.imeTextListener in onCreate() — both a plain
-     * stop and a Raw stop (see toggleDictation()'s own rawModeArmed ||
-     * cloudNoteArmed check) land here the same way; quick note's stop uses a
+     * commit into the input field, or (cloudNoteArmed) a JSON POST to the
+     * webhook configured in settings, never both. Wired up as
+     * OpenLessOverlayBridge.imeTextListener in onCreate() — every stop this
+     * function ever sees has gone through the plain (LLM-polished) pipeline,
+     * since toggleDictation() only routes to the Raw stop for rawModeArmed,
+     * not cloudNoteArmed (per product request, Cloud notes gets the same
+     * polished text a normal commit would); quick note's stop uses a
      * completely separate JNI call/callback that never reaches this
      * function at all (see quickNoteDictation()).
      */
@@ -3703,16 +3706,16 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     /**
-     * POSTs the verbatim ASR transcript (Raw — never LLM-polished, per
-     * toggleDictation()'s rawModeArmed || cloudNoteArmed check) to the
-     * URL/token configured in the native settings page's "云笔记
-     * 提交" section (OpenLessKeyboardSettingsActivity) — never inserted into
-     * the input field, never archived locally either (contrast
-     * quickNoteDictation(), which does both of those things quick note's
-     * own way). Runs the request off the main thread (a plain background
-     * Thread, not the shared LitePinyin-style executor — this fires at most
-     * once per dictation, not per keystroke) and settles the status bubble
-     * once it resolves either way.
+     * POSTs the LLM-polished transcript (see handleImeTextReady()'s own doc
+     * comment on why this is never the verbatim Raw one) to the URL/token
+     * configured in the native settings page's "云笔记提交" section
+     * (OpenLessKeyboardSettingsActivity) — never inserted into the input
+     * field, never archived locally either (contrast quickNoteDictation(),
+     * which does both of those things quick note's own way). Runs the
+     * request off the main thread (a plain background Thread, not the
+     * shared LitePinyin-style executor — this fires at most once per
+     * dictation, not per keystroke) and settles the status bubble once it
+     * resolves either way.
      */
     private fun submitCloudNoteText(text: String) {
         if (text.isBlank()) {
