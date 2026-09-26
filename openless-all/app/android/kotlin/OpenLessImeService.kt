@@ -237,16 +237,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private var dictationResultRow: LinearLayout? = null
     private var englishUi = false
     private val simplifiedToTraditional by lazy { Transliterator.getInstance("Hans-Hant") }
-    // Packaged as an asset (not a drawable resource) so it survives the
-    // gen/android scaffolding copy step the same way the stroke dictionaries do.
-    private val brandLogoBitmap: android.graphics.Bitmap? by lazy {
-        try {
-            assets.open("openless_wordmark.png").use { android.graphics.BitmapFactory.decodeStream(it) }
-        } catch (error: Exception) {
-            android.util.Log.w("OpenLessIme", "failed to load brand logo asset", error)
-            null
-        }
-    }
     // Owns everything specific to the stroke panel — encode entry, the
     // 字候选/联想候选 pipeline, and the number/symbol sub-panel — split out of
     // this class into its own file; see StrokeInputController's own doc
@@ -1116,7 +1106,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * this whole row.
      */
     internal fun buildBrandView(): View {
-        val bitmap = brandLogoBitmap
         val wrapper = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
@@ -1132,43 +1121,39 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 true
             }
         }
-        if (bitmap != null) {
-            // Half the wordmark's previous rendered size — at full size it
-            // crowded the header row next to the mode toggle/close button.
-            val heightPx = dp(19)
-            val widthPx = (heightPx.toFloat() * bitmap.width / bitmap.height).toInt()
-            wrapper.addView(android.widget.ImageView(this).apply {
-                setImageBitmap(bitmap)
-                scaleType = android.widget.ImageView.ScaleType.FIT_XY
-                // The wordmark asset is white-on-transparent; on the light
-                // theme's light panel that would be invisible, so it's
-                // recolored dark via a tint rather than shipping a second
-                // asset.
-                if (!isDarkTheme) {
-                    colorFilter = android.graphics.PorterDuffColorFilter(Color.rgb(30, 30, 34), android.graphics.PorterDuff.Mode.SRC_IN)
-                }
-            }, LinearLayout.LayoutParams(widthPx, heightPx))
-        } else {
-            wrapper.addView(TextView(this).apply {
-                text = "OpenLess"
-                textSize = 18f
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                setTextColor(tone(Color.WHITE, Color.rgb(30, 30, 34)))
-            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        }
+        // Plain styled text instead of the old wordmark bitmap — "Open" in
+        // the same cherry red as the stroke panel's right-side action rail
+        // (Color.rgb(153, 26, 40)), "Less" in the normal brand color, per
+        // product request. A single-tint image can't color half its own
+        // glyphs differently, so this replaces the bitmap path entirely
+        // rather than trying to recolor part of it.
+        wrapper.addView(TextView(this).apply {
+            val brand = "OpenLess"
+            val openLength = "Open".length
+            text = android.text.SpannableString(brand).apply {
+                setSpan(
+                    android.text.style.ForegroundColorSpan(Color.rgb(153, 26, 40)),
+                    0, openLength, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+                setSpan(
+                    android.text.style.ForegroundColorSpan(tone(Color.WHITE, Color.rgb(30, 30, 34))),
+                    openLength, brand.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+            }
+            textSize = 18f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         // Status dot: see backendLinkIndicator's field comment. Reassigned
-        // here on every panel rebuild, then immediately colored so it never
-        // shows a stale state (e.g. still green right after a rebuild that
-        // happened while actually recording). Voice-panel only — the other
-        // panels (stroke/clipboard/English) still rebuild this same view
-        // (so the reference and its color stay valid for whenever the user
-        // switches back), just hidden via GONE.
+        // here on every panel rebuild (buildBrandView() is shared by every
+        // panel's own header), then immediately colored so it never shows a
+        // stale state (e.g. still green right after a rebuild that happened
+        // while actually recording) — visible everywhere per product
+        // request, not just the Voice panel.
         backendLinkIndicator = View(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(LINK_COLOR_READY)
             }
-            visibility = if (inputMode == InputMode.VOICE) View.VISIBLE else View.GONE
         }
         // Continuous breathing pulse so the dot reads as "alive" rather
         // than a static badge — cancels whatever animator was running on
@@ -1751,6 +1736,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             highlighted: Boolean = false,
             rotationDegrees: Float = 0f,
             repeatOnLongPress: Boolean = false,
+            // Unlike the stroke panel's always-dark-red action keys (white
+            // in both themes, StrokeActionView's own default), these icons
+            // normally sit on a normal or rose key that flips with the
+            // theme — pass an explicit color for a caller whose key is red
+            // regardless of theme (e.g. backspaceKey below), same reasoning
+            // as keyboardKey()'s own graphicIconColor doc comment.
+            iconColor: Int = tone(Color.WHITE, Color.rgb(30, 30, 34)),
         ) = keyboardKey(
             "",
             1f,
@@ -1762,9 +1754,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             // View itself — rotating the whole View would also distort its
             // rectangular background in a non-square cell.
             graphicRotation = rotationDegrees,
-            // Unlike the stroke panel's always-dark-red action keys, these
-            // icons sit on a normal or rose key that flips with the theme.
-            graphicIconColor = tone(Color.WHITE, Color.rgb(30, 30, 34)),
+            graphicIconColor = iconColor,
         ).apply {
             if (highlighted) background = roundedButton(tone(Color.rgb(112, 78, 92), Color.rgb(232, 205, 213)), dp(5))
             attachPressScale(this)
@@ -1817,11 +1807,20 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // "1\n!"), which would leave just one letter undersized here, so the
         // spanned text it sets is overwritten with a plain two-line string
         // right after construction.
+        // Same cherry red as the stroke panel's own right-side action rail
+        // (Color.rgb(153, 26, 40)) — per product request, so these two keys
+        // read as the equivalent "action" keys on this panel.
         val clipboardKey = quickActionLabel(ui("历史\n字典", "History\nDict"), {
             clipboardHistoryMode = true
             refreshInputView()
         }, 17f, midDivider = true).apply {
             text = ui("历史\n字典", "History\nDict")
+            background = roundedButton(Color.rgb(153, 26, 40), dp(5))
+            // quickActionLabel()'s own softWhite text color reads fine on a
+            // normal/rose key but not on this now-red one (dark gray in
+            // light theme, on dark red) — fixed white regardless of theme,
+            // same reasoning as backspaceKey's iconColor override below.
+            setTextColor(Color.WHITE)
             setOnLongClickListener {
                 openSelectedTextCorrectionViaVoice()
                 true
@@ -1831,7 +1830,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             "backspace-icon",
             { deleteBackward() },
             repeatOnLongPress = true,
-        )
+            iconColor = Color.WHITE,
+        ).apply {
+            background = roundedButton(Color.rgb(153, 26, 40), dp(5))
+        }
         for (key in listOf(selectAllKey, copyKey, pasteKey, clipboardKey, backspaceKey)) {
             row2.addView(key, cell())
         }
