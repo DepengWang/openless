@@ -1243,4 +1243,38 @@ pub mod android {
             }
         })
     }
+
+    /// Write bytes to the user's public Downloads directory without opening
+    /// the Android document picker.
+    pub fn write_public_download(file_name: &str, bytes: &[u8]) -> Result<String, String> {
+        with_android_env(|env, context| {
+            let class = load_context_class(env, context, "com.openless.app.OpenLessContentWriter")?;
+            let file_name_obj = jobject_str(env, file_name)?;
+            let bytes_array = env
+                .byte_array_from_slice(bytes)
+                .map_err(|error| format!("create byte array for public download: {error}"))?;
+            let bytes_obj = JObject::from(bytes_array);
+            let value = env
+                .call_static_method(
+                    class,
+                    "writePublicDownload",
+                    "(Landroid/content/Context;Ljava/lang/String;[B)Ljava/lang/String;",
+                    &[
+                        JValue::Object(context),
+                        JValue::Object(&file_name_obj),
+                        JValue::Object(&bytes_obj),
+                    ],
+                )
+                .and_then(|value| value.l())
+                .map_err(|error| {
+                    format!("call OpenLessContentWriter.writePublicDownload: {error}")
+                })?;
+            if value.is_null() {
+                return Err("Android public download path is empty".to_string());
+            }
+            env.get_string(&JString::from(value))
+                .map(|path| path.to_string_lossy().into_owned())
+                .map_err(|error| format!("read Android public download path: {error}"))
+        })
+    }
 }

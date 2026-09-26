@@ -375,6 +375,7 @@ fn spawn_stop_dictation_with_translation(translation: bool) {
 /// (see DictationContext::with_raw_requested()'s doc comment) — the LLM
 /// polish step is skipped entirely for this utterance and the raw
 /// transcript is inserted as-is.
+#[cfg(target_os = "android")]
 fn spawn_stop_dictation_for_ime_with_raw(raw: bool) {
     let Some(backend) = CORE_BACKEND.get().cloned() else {
         log::warn!("[android-native] core backend unavailable");

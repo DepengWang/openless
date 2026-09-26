@@ -3074,12 +3074,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     /** Candidate tap is the ONLY way a pinyin candidate reaches the field — see toggleLatinInputMode()'s doc comment on why Space deliberately never does this. */
     private fun selectPinyinCandidate(char: String) {
         currentInputConnection?.commitText(char, 1)
-        // Both recorded before clear() — the encoding is still intact and
-        // is half of what each one keys off (plan 8.4 / two-step combo
-        // learning, see LitePinyinController.observeCommitForLearning()).
-        litePinyinController.recordSelection(char)
+        // observeCommitForLearning needs the encoding still intact; commitSelection
+        // then records frequency under the real sourceKey and consumes that key
+        // (full buffer or first syllable) before refreshing the candidate row.
         litePinyinController.observeCommitForLearning(char)
-        litePinyinController.clear()
+        litePinyinController.commitSelection(char) { renderPinyinCandidates(it) }
         litePinyinController.recordCommittedText(char)
         performKeyHaptic()
         refreshPinyinAssociations()

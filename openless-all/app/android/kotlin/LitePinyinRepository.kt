@@ -36,6 +36,7 @@ internal class LitePinyinRepository(context: Context) {
     // EnglishCandidateProvider's Node.topWords: sort once on load, not per
     // query).
     private val charIndex = HashMap<String, List<Entry>>()
+    private val syllableSet = HashSet<String>()
     private val abbreviationIndex = HashMap<String, List<Entry>>()
 
     // Caches only the STATIC merge (char entries then phrase entries, each
@@ -54,7 +55,8 @@ internal class LitePinyinRepository(context: Context) {
 
     /**
      * Off the caller's thread; posts [callback] back to the main looper.
-     * Exact match only — no prefix/fuzzy matching in this phase. Ranks by
+     * Exact full-key matches are followed by the first syllable's matches
+     * when the encoding contains multiple syllables. Ranks by
      * plan 3.5's five tiers, in order:
      *   0. a personally-learned two-commit combo for this exact encoding
      *      (LitePinyinLearnedPhrases — see observeSequence()) — not from
@@ -79,15 +81,47 @@ internal class LitePinyinRepository(context: Context) {
         }
         executor.execute {
             ensureLoaded()
-            val raw = mergedEntries(normalized)
-            val previouslySelected = raw
-                .filter { userFrequency.score(normalized, it.text) > 0.0 }
-                .sortedByDescending { userFrequency.score(normalized, it.text) }
-            val rest = raw.filterNot { entry -> previouslySelected.any { it.text == entry.text } }
-            var ranked = (previouslySelected + rest).map { it.text }.distinct()
+            val raw = candidateEntries(normalized)
+            fun rankEntries(entries: List<CandidateEntry>): List<String> {
+                val previouslySelected = entries
+                    .filter { userFrequency.score(it.sourceKey, it.entry.text) > 0.0 }
+                    .sortedByDescending { userFrequency.score(it.sourceKey, it.entry.text) }
+                val rest = entries.filterNot { entry ->
+                    previouslySelected.any { it.entry.text == entry.entry.text }
+                }
+                return (previouslySelected + rest).map { it.entry.text }
+            }
+            var ranked = (
+                rankEntries(raw.filter { it.sourceKey == normalized }) +
+                    rankEntries(raw.filter { it.sourceKey != normalized })
+                ).distinct()
             learnedPhrases.promoted(normalized)?.let { learned -> ranked = listOf(learned) + ranked.filterNot { it == learned } }
             Handler(Looper.getMainLooper()).post { callback(ranked.take(limit)) }
         }
+    }
+
+    /** Greedy left-to-right segmentation using the loaded single-character syllables. */
+    fun segmentEncoding(encoding: String): List<String> {
+        ensureLoaded()
+        val normalized = encoding.trim().lowercase()
+        if (normalized.isEmpty() || syllableSet.isEmpty()) return emptyList()
+        val segments = mutableListOf<String>()
+        var offset = 0
+        while (offset < normalized.length) {
+            val maxLength = minOf(MAX_SYLLABLE_LENGTH, normalized.length - offset)
+            var match: String? = null
+            for (length in maxLength downTo 1) {
+                val candidate = normalized.substring(offset, offset + length)
+                if (syllableSet.contains(candidate)) {
+                    match = candidate
+                    break
+                }
+            }
+            if (match == null) break
+            segments += match
+            offset += match.length
+        }
+        return segments
     }
 
     /** Call once a candidate is actually committed (a candidate tap — see OpenLessImeService.selectPinyinCandidate()) — off the caller's thread. */
@@ -95,6 +129,28 @@ internal class LitePinyinRepository(context: Context) {
         val normalized = encoding.trim().lowercase()
         if (normalized.isEmpty() || text.isEmpty()) return
         executor.execute { userFrequency.record(normalized, text) }
+    }
+
+    /**
+     * Which encoding key produced [text] for the current buffer — mirrors
+     * [candidateEntries] priority (exact full encoding first, then first
+     * syllable). Learned / unknown picks fall back to the full encoding.
+     */
+    fun resolveSourceKey(encoding: String, text: String): String {
+        ensureLoaded()
+        val normalized = encoding.trim().lowercase()
+        if (normalized.isEmpty() || text.isEmpty()) return normalized
+        if (mergedEntries(normalized).any { it.text == text }) return normalized
+        if (learnedPhrases.promoted(normalized) == text) return normalized
+        val firstSyllable = segmentEncoding(normalized).firstOrNull()
+        if (
+            firstSyllable != null &&
+            firstSyllable.length < normalized.length &&
+            mergedEntries(firstSyllable).any { it.text == text }
+        ) {
+            return firstSyllable
+        }
+        return normalized
     }
 
     /** Call after two direct pinyin commits land back-to-back — see LitePinyinController.observeCommitForLearning() — off the caller's thread. */
@@ -120,6 +176,16 @@ internal class LitePinyinRepository(context: Context) {
         return merged
     }
 
+    private data class CandidateEntry(val sourceKey: String, val entry: Entry)
+
+    private fun candidateEntries(normalized: String): List<CandidateEntry> {
+        val exact = mergedEntries(normalized).map { CandidateEntry(normalized, it) }
+        val firstSyllable = segmentEncoding(normalized).firstOrNull()
+        if (firstSyllable == null || firstSyllable.length >= normalized.length) return exact
+        val first = mergedEntries(firstSyllable).map { CandidateEntry(firstSyllable, it) }
+        return (exact + first).distinctBy { it.entry.text }
+    }
+
     private fun ensureLoaded() {
         if (loaded) return
         synchronized(this) {
@@ -138,7 +204,7 @@ internal class LitePinyinRepository(context: Context) {
                     val parts = line.split('\t')
                     if (parts.size < 3) return@forEach
                     val char = parts[0]
-                    val pinyin = parts[1]
+                    val pinyin = parts[1].trim().lowercase()
                     val weight = parts[2].toIntOrNull() ?: 0
                     if (char.isEmpty() || pinyin.isEmpty()) return@forEach
                     grouped.getOrPut(pinyin) { mutableListOf() }.add(Entry(char, weight))
@@ -146,6 +212,8 @@ internal class LitePinyinRepository(context: Context) {
             }
         }
         grouped.forEach { (pinyin, entries) -> charIndex[pinyin] = entries.sortedByDescending { it.weight } }
+        syllableSet.clear()
+        syllableSet.addAll(charIndex.keys)
     }
 
     private fun loadPhrases() {
@@ -176,6 +244,8 @@ internal class LitePinyinRepository(context: Context) {
     }
 
     private companion object {
+        const val MAX_SYLLABLE_LENGTH = 6
+
         // Same size as StrokePhraseRepository's own cache — this one is
         // keyed by the exact (short) encoding string rather than a rolling
         // suffix, so cardinality is naturally bounded by realistic typing

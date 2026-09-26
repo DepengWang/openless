@@ -529,6 +529,8 @@ macro_rules! app_invoke_handler_mobile {
             $crate::commands::open_system_settings,
             $crate::commands::trigger_microphone_prompt,
             $crate::commands::export_error_log,
+            #[cfg(target_os = "android")]
+            $crate::commands::export_error_log_to_downloads,
             $crate::commands::get_update_channel,
             $crate::commands::set_update_channel,
             $crate::commands::fetch_latest_beta_release,
