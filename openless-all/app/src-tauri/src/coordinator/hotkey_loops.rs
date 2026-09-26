@@ -86,6 +86,13 @@ pub(super) fn hotkey_supervisor_loop(inner: Arc<Inner>) {
         if inner.shutdown.load(Ordering::SeqCst) {
             return;
         }
+        let registration = inner.settings_host_gate.lock();
+        if inner.backend.ensure_runtime_ready().is_err() {
+            drop(registration);
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            continue;
+        }
+
         let target = hotkey_runtime_target(&inner);
 
         if inner.hotkey.lock().is_some() {
@@ -105,6 +112,7 @@ pub(super) fn hotkey_supervisor_loop(inner: Arc<Inner>) {
             };
             log::warn!("[hotkey-supervisor] fcitx5 plugin unavailable, retrying...");
             attempts += 1;
+            drop(registration);
             std::thread::sleep(std::time::Duration::from_secs(3));
             continue;
         }
@@ -194,6 +202,7 @@ pub(super) fn hotkey_supervisor_loop(inner: Arc<Inner>) {
                         error_message
                     );
                 }
+                drop(registration);
                 std::thread::sleep(std::time::Duration::from_secs(3));
             }
         }
@@ -202,23 +211,40 @@ pub(super) fn hotkey_supervisor_loop(inner: Arc<Inner>) {
 
 // ─────────────────────────── QA hotkey supervisor ───────────────────────────
 
+fn take_qa_hotkey_on_main_thread(inner: &Arc<Inner>) {
+    let main = Arc::clone(inner);
+    if let Err(error) = inner.host.run_on_main_thread(move || {
+        main.qa_hotkey.lock().take();
+    }) {
+        log::warn!("[qa] cannot dispatch hotkey removal: {error}");
+    }
+}
+
 pub(super) fn qa_hotkey_supervisor_loop(inner: Arc<Inner>) {
     let mut attempts: u32 = 0;
     loop {
         if inner.shutdown.load(Ordering::SeqCst) {
             return;
         }
+        let registration = inner.settings_host_gate.lock();
+        if inner.backend.ensure_runtime_ready().is_err() {
+            drop(registration);
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            continue;
+        }
+
         // 用户已经把 QA 关掉就睡着等 runtime target 改动；改动通过显式 settings effect 唤醒。
         let binding = match hotkey_runtime_target(&inner).qa {
             Some(b) => b,
             None => {
-                inner.qa_hotkey.lock().take();
+                take_qa_hotkey_on_main_thread(&inner);
+                drop(registration);
                 std::thread::sleep(std::time::Duration::from_secs(5));
                 continue;
             }
         };
         if crate::shortcut_binding::legacy_modifier_trigger(&binding).is_some() {
-            inner.qa_hotkey.lock().take();
+            take_qa_hotkey_on_main_thread(&inner);
             if let Some(monitor) = inner.hotkey.lock().as_ref() {
                 let (qa_trigger, selection_polish_trigger, translation_trigger) =
                     modifier_shortcut_triggers(&inner);
@@ -228,12 +254,14 @@ pub(super) fn qa_hotkey_supervisor_loop(inner: Arc<Inner>) {
                     translation_trigger,
                 );
             }
+            drop(registration);
             std::thread::sleep(std::time::Duration::from_secs(5));
             continue;
         }
 
         if inner.qa_hotkey.lock().is_some() {
             // 已注册成功 → 不重复装；睡 5s 复查（ binding 变化由 update 路径手动触发 ）。
+            drop(registration);
             std::thread::sleep(std::time::Duration::from_secs(5));
             continue;
         }
@@ -243,7 +271,7 @@ pub(super) fn qa_hotkey_supervisor_loop(inner: Arc<Inner>) {
         // PR #119 第一版漏掉的关键步骤，导致用户按了 hotkey 完全无反应。这里通过
         // run_on_main_thread 把 QaHotkeyMonitor::start 跳到主线程跑，结果再回 channel。
         let (tx, rx) = mpsc::channel::<QaHotkeyEvent>();
-        let (init_tx, init_rx) = mpsc::sync_channel::<Result<QaHotkeyMonitor, QaHotkeyError>>(1);
+        let (init_tx, init_rx) = mpsc::sync_channel::<Result<QaHotkeyMonitor, QaHotkeyError>>(0);
         let binding_for_main = binding.clone();
         if inner
             .host
@@ -253,6 +281,7 @@ pub(super) fn qa_hotkey_supervisor_loop(inner: Arc<Inner>) {
             })
             .is_err()
         {
+            drop(registration);
             std::thread::sleep(std::time::Duration::from_secs(1));
             continue;
         }
@@ -262,12 +291,14 @@ pub(super) fn qa_hotkey_supervisor_loop(inner: Arc<Inner>) {
         let init_result = match init_rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(r) => r,
             Err(_) => {
+                drop(init_rx);
                 attempts += 1;
                 if attempts <= 3 || attempts % 10 == 0 {
                     log::warn!(
                         "[coord] QA hotkey 第 {attempts} 次注册超时（主线程未回执）；3s 后重试"
                     );
                 }
+                drop(registration);
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 continue;
             }
@@ -292,6 +323,7 @@ pub(super) fn qa_hotkey_supervisor_loop(inner: Arc<Inner>) {
                 if attempts <= 3 || attempts % 10 == 0 {
                     log::warn!("[coord] QA hotkey 第 {attempts} 次注册失败: {e}; 3s 后重试");
                 }
+                drop(registration);
                 std::thread::sleep(std::time::Duration::from_secs(3));
             }
         }
@@ -324,6 +356,13 @@ pub(super) fn selection_polish_hotkey_supervisor_loop(inner: Arc<Inner>) {
         if inner.shutdown.load(Ordering::SeqCst) {
             return;
         }
+        let registration = inner.settings_host_gate.lock();
+        if inner.backend.ensure_runtime_ready().is_err() {
+            drop(registration);
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            continue;
+        }
+
         match try_update_selection_polish_hotkey_binding(&inner) {
             Ok(()) => return,
             Err(error) => {
@@ -333,6 +372,7 @@ pub(super) fn selection_polish_hotkey_supervisor_loop(inner: Arc<Inner>) {
                         "[selection-polish] hotkey registration attempt #{attempts} failed: {error}; retrying in 3s"
                     );
                 }
+                drop(registration);
                 std::thread::sleep(std::time::Duration::from_secs(3));
             }
         }
@@ -613,9 +653,17 @@ pub(super) fn coding_agent_hotkey_supervisor_loop(inner: Arc<Inner>) {
         if inner.shutdown.load(Ordering::SeqCst) {
             return;
         }
+        let registration = inner.settings_host_gate.lock();
+        if inner.backend.ensure_runtime_ready().is_err() {
+            drop(registration);
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            continue;
+        }
+
         if let Err(error) = update_coding_agent_hotkey_binding_now(&inner) {
             log::warn!("[less-computer] hotkey registration failed: {error}");
         }
+        drop(registration);
         std::thread::sleep(std::time::Duration::from_secs(5));
     }
 }
@@ -1273,6 +1321,13 @@ pub(super) fn combo_hotkey_supervisor_loop(inner: Arc<Inner>) {
         if inner.shutdown.load(Ordering::SeqCst) {
             return;
         }
+        let registration = inner.settings_host_gate.lock();
+        if inner.backend.ensure_runtime_ready().is_err() {
+            drop(registration);
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            continue;
+        }
+
         let target = hotkey_runtime_target(&inner);
         if crate::shortcut_binding::legacy_modifier_trigger(&target.dictation).is_some() {
             take_combo_hotkey_on_main_thread(&inner);
@@ -1311,6 +1366,7 @@ pub(super) fn combo_hotkey_supervisor_loop(inner: Arc<Inner>) {
                             "[coord] side-aware combo 第 {attempts} 次注册失败: {e}; 3s 后重试"
                         );
                     }
+                    drop(registration);
                     std::thread::sleep(std::time::Duration::from_secs(3));
                     continue;
                 }
@@ -1325,7 +1381,7 @@ pub(super) fn combo_hotkey_supervisor_loop(inner: Arc<Inner>) {
 
         let (tx, rx) = mpsc::channel::<ComboHotkeyEvent>();
         let (init_tx, init_rx) =
-            mpsc::sync_channel::<Result<ComboHotkeyMonitor, ComboHotkeyError>>(1);
+            mpsc::sync_channel::<Result<ComboHotkeyMonitor, ComboHotkeyError>>(0);
         let binding_for_main = binding.clone();
         if inner
             .host
@@ -1335,6 +1391,7 @@ pub(super) fn combo_hotkey_supervisor_loop(inner: Arc<Inner>) {
             })
             .is_err()
         {
+            drop(registration);
             std::thread::sleep(std::time::Duration::from_secs(1));
             continue;
         }
@@ -1342,12 +1399,14 @@ pub(super) fn combo_hotkey_supervisor_loop(inner: Arc<Inner>) {
         let init_result = match init_rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(r) => r,
             Err(_) => {
+                drop(init_rx);
                 attempts += 1;
                 if attempts <= 3 || attempts % 10 == 0 {
                     log::warn!(
                         "[coord] combo hotkey 第 {attempts} 次注册超时（主线程未回执）；3s 后重试"
                     );
                 }
+                drop(registration);
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 continue;
             }
@@ -1374,6 +1433,7 @@ pub(super) fn combo_hotkey_supervisor_loop(inner: Arc<Inner>) {
                 if attempts <= 3 || attempts % 10 == 0 {
                     log::warn!("[coord] combo hotkey 第 {attempts} 次注册失败: {e}; 3s 后重试");
                 }
+                drop(registration);
                 std::thread::sleep(std::time::Duration::from_secs(3));
             }
         }
@@ -1412,6 +1472,13 @@ pub(super) fn translation_hotkey_supervisor_loop(inner: Arc<Inner>) {
         if inner.shutdown.load(Ordering::SeqCst) {
             return;
         }
+        let registration = inner.settings_host_gate.lock();
+        if inner.backend.ensure_runtime_ready().is_err() {
+            drop(registration);
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            continue;
+        }
+
         let binding = hotkey_runtime_target(&inner).translation;
         if is_builtin_translation_shift(&binding)
             || crate::shortcut_binding::legacy_modifier_trigger(&binding).is_some()
@@ -1437,7 +1504,7 @@ pub(super) fn translation_hotkey_supervisor_loop(inner: Arc<Inner>) {
 
         let (tx, rx) = mpsc::channel::<ComboHotkeyEvent>();
         let (init_tx, init_rx) =
-            mpsc::sync_channel::<Result<ComboHotkeyMonitor, ComboHotkeyError>>(1);
+            mpsc::sync_channel::<Result<ComboHotkeyMonitor, ComboHotkeyError>>(0);
         let binding_for_main = binding.clone();
         if inner
             .host
@@ -1447,6 +1514,7 @@ pub(super) fn translation_hotkey_supervisor_loop(inner: Arc<Inner>) {
             })
             .is_err()
         {
+            drop(registration);
             std::thread::sleep(std::time::Duration::from_secs(1));
             continue;
         }
@@ -1454,7 +1522,9 @@ pub(super) fn translation_hotkey_supervisor_loop(inner: Arc<Inner>) {
         let init_result = match init_rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(r) => r,
             Err(_) => {
+                drop(init_rx);
                 attempts += 1;
+                drop(registration);
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 continue;
             }
@@ -1477,6 +1547,7 @@ pub(super) fn translation_hotkey_supervisor_loop(inner: Arc<Inner>) {
                         "[coord] translation hotkey 第 {attempts} 次注册失败: {e}; 3s 后重试"
                     );
                 }
+                drop(registration);
                 std::thread::sleep(std::time::Duration::from_secs(3));
             }
         }
@@ -1523,6 +1594,13 @@ pub(super) fn action_hotkey_supervisor_loop(inner: Arc<Inner>, kind: ActionHotke
         if inner.shutdown.load(Ordering::SeqCst) {
             return;
         }
+        let registration = inner.settings_host_gate.lock();
+        if inner.backend.ensure_runtime_ready().is_err() {
+            drop(registration);
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            continue;
+        }
+
         // None = 用户主动停用：反注册后退出守护（由 update_action_hotkey_binding 主动路径重装）。
         let Some(binding) = action_hotkey_binding(&inner, kind) else {
             take_action_hotkey_on_main_thread(&inner, kind);
@@ -1542,7 +1620,7 @@ pub(super) fn action_hotkey_supervisor_loop(inner: Arc<Inner>, kind: ActionHotke
 
         let (tx, rx) = mpsc::channel::<ComboHotkeyEvent>();
         let (init_tx, init_rx) =
-            mpsc::sync_channel::<Result<ComboHotkeyMonitor, ComboHotkeyError>>(1);
+            mpsc::sync_channel::<Result<ComboHotkeyMonitor, ComboHotkeyError>>(0);
         let binding_for_main = binding.clone();
         if inner
             .host
@@ -1552,6 +1630,7 @@ pub(super) fn action_hotkey_supervisor_loop(inner: Arc<Inner>, kind: ActionHotke
             })
             .is_err()
         {
+            drop(registration);
             std::thread::sleep(std::time::Duration::from_secs(1));
             continue;
         }
@@ -1559,12 +1638,14 @@ pub(super) fn action_hotkey_supervisor_loop(inner: Arc<Inner>, kind: ActionHotke
         let init_result = match init_rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(r) => r,
             Err(_) => {
+                drop(init_rx);
                 attempts += 1;
                 if attempts <= 3 || attempts % 10 == 0 {
                     log::warn!(
                         "[coord] action hotkey {kind:?} 第 {attempts} 次注册超时；3s 后重试"
                     );
                 }
+                drop(registration);
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 continue;
             }
@@ -1591,6 +1672,7 @@ pub(super) fn action_hotkey_supervisor_loop(inner: Arc<Inner>, kind: ActionHotke
                         "[coord] action hotkey {kind:?} 第 {attempts} 次注册失败: {e}; 3s 后重试"
                     );
                 }
+                drop(registration);
                 std::thread::sleep(std::time::Duration::from_secs(3));
             }
         }
@@ -1640,12 +1722,10 @@ pub(super) fn handle_action_hotkey_pressed(inner: &Arc<Inner>, kind: ActionHotke
                         ) =>
                     {
                         backend
-                            .stop_dictation_with_options(
-                                openless_core::DictationStopOptions {
-                                    quick_note: Some(true),
-                                    ..openless_core::DictationStopOptions::default()
-                                },
-                            )
+                            .stop_dictation_with_options(openless_core::DictationStopOptions {
+                                quick_note: Some(true),
+                                ..openless_core::DictationStopOptions::default()
+                            })
                             .await
                             .map(|_| ())
                     }
@@ -1828,6 +1908,12 @@ pub(super) fn style_pack_hotkey_supervisor_loop(inner: Arc<Inner>) {
         if inner.shutdown.load(Ordering::SeqCst) {
             return;
         }
+        let registration = inner.settings_host_gate.lock();
+        if inner.backend.ensure_runtime_ready().is_err() {
+            drop(registration);
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            continue;
+        }
 
         let desired = configured_style_pack_hotkeys(&inner);
         let registrations_match = {
@@ -1838,6 +1924,7 @@ pub(super) fn style_pack_hotkey_supervisor_loop(inner: Arc<Inner>) {
         };
         if registrations_match {
             attempts = 0;
+            drop(registration);
             std::thread::sleep(std::time::Duration::from_secs(5));
             continue;
         }
@@ -1849,6 +1936,7 @@ pub(super) fn style_pack_hotkey_supervisor_loop(inner: Arc<Inner>) {
                     attempts + 1
                 );
                 attempts = 0;
+                drop(registration);
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
             Err(error) => {
@@ -1858,6 +1946,7 @@ pub(super) fn style_pack_hotkey_supervisor_loop(inner: Arc<Inner>) {
                         "[coord] style pack hotkeys 第 {attempts} 次同步失败: {error}; 3s 后重试"
                     );
                 }
+                drop(registration);
                 std::thread::sleep(std::time::Duration::from_secs(3));
             }
         }

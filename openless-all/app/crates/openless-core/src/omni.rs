@@ -207,7 +207,7 @@ impl OpenAICompatibleOmni {
             });
         }
 
-        // SSE 流解析与 polish 路径同款：一帧 = 若干行，`\n\n` 分隔，
+        // 共用 UTF-8 解码会把 CRLF 归一为 LF；一帧 = 若干行，`\n\n` 分隔，
         // 每行 `data: {...}` / `data: [DONE]`。
         let mut response = response;
         let mut buffer = String::new();

@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 cc = "1.1"
 
 [dependencies]
+zeroize = "1"
 # Framework-independent business core.  Tauri remains an adapter and owns the
 # window/plugin/IPC concerns; Linux must depend on the same crate directly.
 openless-core = { path = "../crates/openless-core" }

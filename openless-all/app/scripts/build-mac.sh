@@ -74,7 +74,30 @@ DMG_PATH="$DMG_DIR/OpenLess_${APP_VERSION}_${MAC_BUNDLE_ARCH}.dmg"
 rm -rf "$APP"
 rm -f "$DMG_PATH" "${APP}.tar.gz" "${APP}.tar.gz.sig"
 TAURI_BUILD_ARGS+=(-- --locked --timings)
-npm run tauri -- "${TAURI_BUILD_ARGS[@]}"
+if [ "$MAC_BUNDLE_ARCH" = "aarch64" ]; then
+  # Tauri skips Finder AppleScript in CI. Write deterministic Finder metadata
+  # into its temporary image before Tauri compresses and signs the final DMG.
+  DMG_LAYOUT_ENV_DIR="$(mktemp -d "${TMPDIR:-/tmp}/openless-dmg-python.XXXXXX")"
+  cleanup_dmg_environment() { rm -rf "$DMG_LAYOUT_ENV_DIR"; }
+  trap cleanup_dmg_environment EXIT
+  python3 -m venv "$DMG_LAYOUT_ENV_DIR"
+  DMG_LAYOUT_PYTHON="$DMG_LAYOUT_ENV_DIR/bin/python3"
+  "$DMG_LAYOUT_PYTHON" -m pip install --quiet --disable-pip-version-check \
+    --only-binary=:all: --no-deps --require-hashes -r scripts/macos-dmg-requirements.txt
+  CI=true TAURI_BUNDLER_DMG_IGNORE_CI=false \
+    OPENLESS_DMG_LAYOUT_ROOT="$PWD" OPENLESS_DMG_LAYOUT_PYTHON="$DMG_LAYOUT_PYTHON" \
+    OPENLESS_DMG_LAYOUT_STAMP="$DMG_LAYOUT_ENV_DIR/layout-applied" \
+    PATH="$PWD/scripts/macos-dmg-bin:$PATH" npm run tauri -- "${TAURI_BUILD_ARGS[@]}"
+  if [ ! -s "$DMG_LAYOUT_ENV_DIR/layout-applied" ]; then
+    echo "✗ Tauri 未调用 DMG 布局步骤，中止交付"
+    exit 1
+  fi
+  "$DMG_LAYOUT_PYTHON" scripts/macos-dmg-layout.py verify "$DMG_PATH"
+  cleanup_dmg_environment
+  trap - EXIT
+else
+  npm run tauri -- "${TAURI_BUILD_ARGS[@]}"
+fi
 
 if [ ! -f "$APP/Contents/MacOS/openless" ]; then
   echo "✗ $APP 缺失或不是本次构建的产物（打包未完成），中止"

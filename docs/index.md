@@ -17,6 +17,8 @@
 
 ## 接口契约
 
+- [加密云同步客户端](encrypted-cloud-sync.md)：Beta 3 新协议、受控数据范围、系统凭据库、恢复与验证边界。
+
 - [官方云同步](cloud-sync.md)：可同步字段、GitHub 身份边界、版本冲突、本地恢复与验证。
 - [云同步服务端交接](cloud-sync-server-handoff.md)：同步服务地址与端口（apic.openless.top:9443）、客户端请求行为、状态码映射与服务端验收清单。
 - [Linux egui 后端契约](linux-egui-backend-contract.md)：`contract/backend-2.0.json`、启动快照、事件面与公开签名。
