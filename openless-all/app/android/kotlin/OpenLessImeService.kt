@@ -505,17 +505,46 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         super.onDestroy()
     }
 
-    // Panel height comes from keyboard settings (default 300dp); keep Android's
-    // own fullscreen-extract heuristic from ever engaging regardless of host
-    // app/orientation quirks (the actual measured-height bug turned out to
-    // be unrelated — see SwipeModeContainer.onMeasure — but this is still
-    // the standard, harmless precaution most custom keyboards apply).
+    // Panel content height comes from keyboard settings (stretch); optional
+    // raise adds empty space below so the whole keyboard sits higher without
+    // stretching keys. Keep Android's fullscreen-extract heuristic off.
     override fun onEvaluateFullscreenMode(): Boolean = false
 
-    /** Configured panel height in px (prefs `keyboard_height_dp`, default 300). */
+    /** Key-panel height in px (prefs `keyboard_height_dp`, default 300). */
     internal fun keyboardPanelHeightPx(): Int = panelHeightPx(this)
 
     internal fun keyboardPanelHeightDp(): Int = panelHeightDp(this)
+
+    /** Empty space below the key panel that lifts keys (prefs `keyboard_raise_dp`). */
+    internal fun keyboardRaiseHeightPx(): Int = raiseHeightPx(this)
+
+    /**
+     * Appends a bottom spacer so the fixed-size key panel sits higher on
+     * screen. Does not stretch keys — only grows the IME window downward
+     * footprint while keys keep [keyboardPanelHeightPx].
+     */
+    private fun applyKeyboardRaise(content: View): View {
+        val raisePx = keyboardRaiseHeightPx()
+        if (raisePx <= 0) return content
+        val panelPx = keyboardPanelHeightPx()
+        return RaisedKeyboardHost(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                panelPx + raisePx,
+            )
+            addView(
+                content,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, panelPx),
+            )
+            addView(
+                View(this@OpenLessImeService).apply {
+                    setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
+                },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, raisePx),
+            )
+        }
+    }
 
     override fun onCreateInputView(): View {
         refreshLanguage()
@@ -528,10 +557,22 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // this ordering fixes. The original edit-result flow only ever
         // triggered from Voice mode, so this ordering issue never showed up
         // before the clipboard flow started reusing the same panel.
-        if (editingDictationResult) return buildEditPanel()
-        if (inputMode == InputMode.ENGLISH) return wrapWithKeyPreviewOverlay(buildKeyboardView())
-        if (inputMode == InputMode.STROKE) return wrapWithKeyPreviewOverlay(if (strokeController.strokeNumberMode) strokeController.buildStrokeNumberView() else strokeController.buildStrokeView())
-        if (inputMode == InputMode.CLIPBOARD) return if (clipboardHistoryMode) buildClipboardHistoryView() else buildClipboardView()
+        val content = when {
+            editingDictationResult -> buildEditPanel()
+            inputMode == InputMode.ENGLISH -> wrapWithKeyPreviewOverlay(buildKeyboardView())
+            inputMode == InputMode.STROKE -> wrapWithKeyPreviewOverlay(
+                if (strokeController.strokeNumberMode) strokeController.buildStrokeNumberView()
+                else strokeController.buildStrokeView(),
+            )
+            inputMode == InputMode.CLIPBOARD ->
+                if (clipboardHistoryMode) buildClipboardHistoryView() else buildClipboardView()
+            else -> buildVoiceInputView()
+        }
+        return applyKeyboardRaise(content)
+    }
+
+    /** Voice panel + floating dictation-result overlay (former onCreateInputView body). */
+    private fun buildVoiceInputView(): View {
         val panel = SwipeModeContainer(this) { direction -> swipeInputMode(direction) }.apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, keyboardPanelHeightPx())
@@ -4251,6 +4292,24 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     /**
+     * Outer IME host when raise > 0: key panel on top + empty lift strip
+     * below. Forces EXACT total height the same way [SwipeModeContainer]
+     * forces the key-panel height (setInputView discards LayoutParams).
+     */
+    private class RaisedKeyboardHost(
+        context: android.content.Context,
+    ) : LinearLayout(context) {
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val total = panelHeightPx(context) + raiseHeightPx(context)
+            val exactHeightSpec = android.view.View.MeasureSpec.makeMeasureSpec(
+                total,
+                android.view.View.MeasureSpec.EXACTLY,
+            )
+            super.onMeasure(widthMeasureSpec, exactHeightSpec)
+        }
+    }
+
+    /**
      * Horizontal swipe-to-switch-mode, applied to every panel's root
      * container: a left/right drag anywhere that isn't already claimed by a
      * vertical gesture (like SwipeRail) steps the input mode toward
@@ -5580,6 +5639,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         const val DEFAULT_KEYBOARD_HEIGHT_DP = 300
         const val MIN_KEYBOARD_HEIGHT_DP = 220
         const val MAX_KEYBOARD_HEIGHT_DP = 420
+        const val PREF_KEYBOARD_RAISE_DP = "keyboard_raise_dp"
+        const val DEFAULT_KEYBOARD_RAISE_DP = 0
+        const val MIN_KEYBOARD_RAISE_DP = 0
+        const val MAX_KEYBOARD_RAISE_DP = 120
 
         fun panelHeightDp(context: android.content.Context): Int {
             return context.getSharedPreferences("openless_ime_ui", android.content.Context.MODE_PRIVATE)
@@ -5589,6 +5652,16 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
         fun panelHeightPx(context: android.content.Context): Int {
             return (panelHeightDp(context) * context.resources.displayMetrics.density).toInt()
+        }
+
+        fun raiseHeightDp(context: android.content.Context): Int {
+            return context.getSharedPreferences("openless_ime_ui", android.content.Context.MODE_PRIVATE)
+                .getInt(PREF_KEYBOARD_RAISE_DP, DEFAULT_KEYBOARD_RAISE_DP)
+                .coerceIn(MIN_KEYBOARD_RAISE_DP, MAX_KEYBOARD_RAISE_DP)
+        }
+
+        fun raiseHeightPx(context: android.content.Context): Int {
+            return (raiseHeightDp(context) * context.resources.displayMetrics.density).toInt()
         }
 
         private const val SILENCE_LEVEL_THRESHOLD = 0.02f
