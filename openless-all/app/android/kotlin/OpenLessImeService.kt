@@ -161,6 +161,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // that never show a key preview (voice, clipboard, edit); callers use
     // the safe-call operator so that's a no-op rather than a crash.
     private var keyPreviewOverlay: KeyPreviewOverlay? = null
+    // Last height_dp:raise_dp baked into the cached input view — compared in
+    // onStartInputView so leaving keyboard settings and refocusing rebuilds
+    // when the footprint prefs changed.
+    private var appliedKeyboardFootprintKey: String? = null
     // LETTERS layer's swipe-up-bearing keys (buildEnglishCharKey()'s
     // wrapper -> its symbol — row1's digits, row2's @#$%&-+(), row3's
     // :;'.,!?), so a swipe-armed drag can retarget across a row the same
@@ -519,14 +523,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     internal fun keyboardRaiseHeightPx(): Int = raiseHeightPx(this)
 
     /**
-     * Appends a bottom spacer so the fixed-size key panel sits higher on
-     * screen. Does not stretch keys — only grows the IME window downward
-     * footprint while keys keep [keyboardPanelHeightPx].
+     * Appends a bottom spacer so the key panel sits higher on screen.
+     * Always wraps (raise may be 0) so later pref changes can grow the
+     * spacer without rebuilding the whole IME view tree.
      */
     private fun applyKeyboardRaise(content: View): View {
-        val raisePx = keyboardRaiseHeightPx()
-        if (raisePx <= 0) return content
         val panelPx = keyboardPanelHeightPx()
+        val raisePx = keyboardRaiseHeightPx()
         return RaisedKeyboardHost(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = ViewGroup.LayoutParams(
@@ -540,6 +543,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             addView(
                 View(this@OpenLessImeService).apply {
                     setBackgroundColor(tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246)))
+                    visibility = if (raisePx > 0) View.VISIBLE else View.GONE
                 },
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, raisePx),
             )
@@ -568,7 +572,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 if (clipboardHistoryMode) buildClipboardHistoryView() else buildClipboardView()
             else -> buildVoiceInputView()
         }
-        return applyKeyboardRaise(content)
+        val view = applyKeyboardRaise(content)
+        appliedKeyboardFootprintKey = keyboardFootprintKey()
+        return view
     }
 
     /** Voice panel + floating dictation-result overlay (former onCreateInputView body). */
@@ -990,7 +996,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val newView = onCreateInputView()
         setInputView(newView)
         val offset = resources.displayMetrics.widthPixels.toFloat() * slideDirection
-        val container = newView as? ViewGroup ?: return
+        // RaisedKeyboardHost wraps [panel, raiseSpacer] — slide the panel's
+        // own children (skip header at 0), not the raise spacer.
+        val container = when (newView) {
+            is RaisedKeyboardHost -> newView.getChildAt(0) as? ViewGroup
+            is ViewGroup -> newView
+            else -> null
+        } ?: return
         for (index in 1 until container.childCount) {
             val child = container.getChildAt(index)
             child.translationX = offset
@@ -3260,6 +3272,22 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     }
 
+    override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
+        super.onStartInputView(info, restarting)
+        // InputMethodService caches onCreateInputView()'s result across hide/
+        // show. Keyboard settings write height/raise prefs while that cached
+        // view is still the old footprint — rebuild when they diverge so the
+        // next focus actually shows what the settings preview promised.
+        val key = keyboardFootprintKey()
+        if (appliedKeyboardFootprintKey != key) {
+            appliedKeyboardFootprintKey = key
+            refreshInputView()
+        }
+    }
+
+    private fun keyboardFootprintKey(): String =
+        "${keyboardPanelHeightDp()}:${raiseHeightDp(this)}"
+
     override fun onFinishInput() {
         if (recording) {
             runNativeAction("取消听写") { OpenLessNative.nativeCancelDictation() }
@@ -4292,17 +4320,28 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     /**
-     * Outer IME host when raise > 0: key panel on top + empty lift strip
+     * Outer IME host for stretch+raise: key panel on top + empty lift strip
      * below. Forces EXACT total height the same way [SwipeModeContainer]
      * forces the key-panel height (setInputView discards LayoutParams).
+     * Re-reads prefs on every measure so a settings change applies on the
+     * next layout even before a full view rebuild.
      */
     private class RaisedKeyboardHost(
         context: android.content.Context,
     ) : LinearLayout(context) {
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            val total = panelHeightPx(context) + raiseHeightPx(context)
+            val panel = panelHeightPx(context)
+            val raise = raiseHeightPx(context)
+            if (childCount >= 1) {
+                getChildAt(0).layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, panel)
+            }
+            if (childCount >= 2) {
+                val spacer = getChildAt(1)
+                spacer.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, raise)
+                spacer.visibility = if (raise > 0) View.VISIBLE else View.GONE
+            }
             val exactHeightSpec = android.view.View.MeasureSpec.makeMeasureSpec(
-                total,
+                panel + raise,
                 android.view.View.MeasureSpec.EXACTLY,
             )
             super.onMeasure(widthMeasureSpec, exactHeightSpec)
