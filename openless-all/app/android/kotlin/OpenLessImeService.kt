@@ -1306,7 +1306,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 listOf("z", "x", "c", "v", "b", "n", "m")
                     .zip(listOf(":", ";", "'", ".", ",", "!", "?"))
                     .forEach { (key, symbol) -> row3.addView(buildEnglishCharKey(key, 1f, swipeSymbol = symbol)) }
-                row3.addView(keyboardKey("⌫", 1.5f, action = { englishDeleteBackward() }, repeatOnLongPress = true, repeatAction = { englishDeleteBackward() }))
+                row3.addView(
+                    keyboardKey("⌫", 1.5f, action = { englishDeleteBackward() }, repeatOnLongPress = true, repeatAction = { englishDeleteBackward() }).apply {
+                        // Same cherry red as the stroke panel's own
+                        // right-side action rail, matching the Return key
+                        // right next to it.
+                        background = roundedButton(Color.rgb(153, 26, 40), dp(5))
+                        setTextColor(Color.WHITE)
+                    },
+                )
                 root.addView(row3, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
             }
             EnglishLayer.NUMBERS -> {
@@ -1418,7 +1426,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 finalizeEnglishComposingWord()
                 sendEnterKey()
             }
-        }).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) }
+        }).apply {
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            // Same cherry red as the stroke panel's own right-side action
+            // rail (Color.rgb(153, 26, 40)), per product request; fixed
+            // white text regardless of theme since keyboardKey()'s own
+            // default text color reads poorly against red in light theme.
+            background = roundedButton(Color.rgb(153, 26, 40), dp(5))
+            setTextColor(Color.WHITE)
+        }
         bottom.addView(modeButton)
         bottom.addView(spaceWrapper)
         bottom.addView(returnButton)
@@ -1459,7 +1475,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val toggleLabel = if (englishLayer == EnglishLayer.NUMBERS) "#+=" else "123"
         row.addView(keyboardKey(toggleLabel, 1.5f, action = { handleEnglishRow3ModeToggle() }))
         middleKeys.forEach { row.addView(buildEnglishCharKey(it, 1f)) }
-        row.addView(keyboardKey("⌫", 1.5f, action = { englishDeleteBackward() }, repeatOnLongPress = true, repeatAction = { englishDeleteBackward() }))
+        row.addView(
+            keyboardKey("⌫", 1.5f, action = { englishDeleteBackward() }, repeatOnLongPress = true, repeatAction = { englishDeleteBackward() }).apply {
+                background = roundedButton(Color.rgb(153, 26, 40), dp(5))
+                setTextColor(Color.WHITE)
+            },
+        )
         parent.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
     }
 
