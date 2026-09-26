@@ -237,6 +237,16 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private var dictationResultRow: LinearLayout? = null
     private var englishUi = false
     private val simplifiedToTraditional by lazy { Transliterator.getInstance("Hans-Hant") }
+    // Packaged as an asset (not a drawable resource) so it survives the
+    // gen/android scaffolding copy step the same way the stroke dictionaries do.
+    private val brandLogoBitmap: android.graphics.Bitmap? by lazy {
+        try {
+            assets.open("openless_wordmark.png").use { android.graphics.BitmapFactory.decodeStream(it) }
+        } catch (error: Exception) {
+            android.util.Log.w("OpenLessIme", "failed to load brand logo asset", error)
+            null
+        }
+    }
     // Owns everything specific to the stroke panel — encode entry, the
     // 字候选/联想候选 pipeline, and the number/symbol sub-panel — split out of
     // this class into its own file; see StrokeInputController's own doc
@@ -1106,6 +1116,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * this whole row.
      */
     internal fun buildBrandView(): View {
+        val bitmap = brandLogoBitmap
         val wrapper = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
@@ -1121,28 +1132,30 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 true
             }
         }
-        // Plain styled text instead of the old wordmark bitmap — "Open" in
-        // the same cherry red as the stroke panel's right-side action rail
-        // (Color.rgb(153, 26, 40)), "Less" in the normal brand color, per
-        // product request. A single-tint image can't color half its own
-        // glyphs differently, so this replaces the bitmap path entirely
-        // rather than trying to recolor part of it.
-        wrapper.addView(TextView(this).apply {
-            val brand = "OpenLess"
-            val openLength = "Open".length
-            text = android.text.SpannableString(brand).apply {
-                setSpan(
-                    android.text.style.ForegroundColorSpan(Color.rgb(153, 26, 40)),
-                    0, openLength, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
-                )
-                setSpan(
-                    android.text.style.ForegroundColorSpan(tone(Color.WHITE, Color.rgb(30, 30, 34))),
-                    openLength, brand.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
-                )
-            }
-            textSize = 18f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        if (bitmap != null) {
+            // Half the wordmark's previous rendered size — at full size it
+            // crowded the header row next to the mode toggle/close button.
+            val heightPx = dp(19)
+            val widthPx = (heightPx.toFloat() * bitmap.width / bitmap.height).toInt()
+            wrapper.addView(android.widget.ImageView(this).apply {
+                setImageBitmap(bitmap)
+                scaleType = android.widget.ImageView.ScaleType.FIT_XY
+                // The wordmark asset is white-on-transparent; on the light
+                // theme's light panel that would be invisible, so it's
+                // recolored dark via a tint rather than shipping a second
+                // asset.
+                if (!isDarkTheme) {
+                    colorFilter = android.graphics.PorterDuffColorFilter(Color.rgb(30, 30, 34), android.graphics.PorterDuff.Mode.SRC_IN)
+                }
+            }, LinearLayout.LayoutParams(widthPx, heightPx))
+        } else {
+            wrapper.addView(TextView(this).apply {
+                text = "OpenLess"
+                textSize = 18f
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                setTextColor(tone(Color.WHITE, Color.rgb(30, 30, 34)))
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
         // Status dot: see backendLinkIndicator's field comment. Reassigned
         // here on every panel rebuild (buildBrandView() is shared by every
         // panel's own header), then immediately colored so it never shows a
