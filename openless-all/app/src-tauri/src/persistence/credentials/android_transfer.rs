@@ -147,18 +147,20 @@ fn merge_channels(
         merge_channel(&mut next.providers.llm, channel, secrets)?;
     }
     if activate {
-        let mut metadata = credential_metadata(&next);
-        if let Some(channel) = &channels.asr {
-            metadata
-                .select_active_provider(openless_core::ProviderSlot::Asr, channel.id.clone())
-                .map_err(anyhow::Error::new)?;
+        for (slot, channel) in [
+            (openless_core::ProviderSlot::Asr, &channels.asr),
+            (openless_core::ProviderSlot::Llm, &channels.llm),
+        ] {
+            if let Some(channel) = channel {
+                let mut metadata = credential_metadata(&next);
+                metadata
+                    .select_active_provider(slot, channel.id.clone())
+                    .map_err(anyhow::Error::new)?;
+                if metadata.revision() != next.metadata_revision {
+                    apply_credential_metadata(&mut next, metadata)?;
+                }
+            }
         }
-        if let Some(channel) = &channels.llm {
-            metadata
-                .select_active_provider(openless_core::ProviderSlot::Llm, channel.id.clone())
-                .map_err(anyhow::Error::new)?;
-        }
-        apply_credential_metadata(&mut next, metadata)?;
     }
     // Reuse the existing provider/account validation without exposing sync secrets.
     export_sync_credentials_root(&next)?;
@@ -279,6 +281,41 @@ impl CredentialsVault {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activating_imported_slots_is_repeatable_for_every_selection() {
+        for (asr, llm) in [(false, false), (true, false), (false, true), (true, true)] {
+            let channels = Channels {
+                asr: asr.then(|| Channel {
+                    id: "imported-asr".into(),
+                    provider_type: "openai-compatible".into(),
+                    name: Some("Imported ASR".into()),
+                    configuration: None,
+                }),
+                llm: llm.then(|| Channel {
+                    id: "imported-llm".into(),
+                    provider_type: "deepseek".into(),
+                    name: Some("Imported LLM".into()),
+                    configuration: None,
+                }),
+            };
+            let root = CredsRoot::default();
+            let restored = merge_channels(&root, &channels, true, false).unwrap();
+            if asr {
+                assert_eq!(restored.active.asr, "imported-asr");
+            }
+            if llm {
+                assert_eq!(restored.active.llm, "imported-llm");
+            }
+            let repeated = merge_channels(&restored, &channels, true, false).unwrap();
+            assert_eq!(
+                serde_json::to_value(&restored).unwrap(),
+                serde_json::to_value(&repeated).unwrap(),
+                "asr={asr}, llm={llm}"
+            );
+        }
+    }
+
     #[test]
     fn transfer_is_bound_to_identity_and_preserves_other_channels() {
         let mut root = CredsRoot::default();
