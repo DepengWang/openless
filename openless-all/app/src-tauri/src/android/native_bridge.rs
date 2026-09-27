@@ -12,7 +12,7 @@ use openless_core::{
 };
 
 use crate::coordinator::Coordinator;
-use crate::persistence::{CredentialAccount, CredentialsSnapshot, CredentialsVault, PreferencesStore};
+use crate::persistence::CredentialsVault;
 use crate::types::{CapsulePayload, CapsuleState};
 
 static COORDINATOR: OnceLock<Arc<Coordinator>> = OnceLock::new();
@@ -58,146 +58,133 @@ pub fn register_android_coordinator(coordinator: Arc<Coordinator>) {
     let _ = COORDINATOR.set(coordinator);
 }
 
-/// Settings-export subset of [`openless_core::UserPreferences`] — just the
-/// fields the Android keyboard settings page's export/import feature covers
-/// (ASR/LLM provider selection, style pack selection). Every field is
-/// `Option` so a partial import (the settings page lets the user deselect
-/// categories before importing) can omit a field entirely rather than
-/// forcing an empty-string overwrite.
-#[derive(serde::Serialize, serde::Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct ExportedPreferencesSubset {
-    active_asr_provider: Option<String>,
-    active_llm_provider: Option<String>,
-    active_style_pack_id: Option<String>,
-    selection_polish_style_pack_id: Option<String>,
+fn export_provider_settings_json(include_credentials: bool) -> String {
+    let result = (|| -> Result<serde_json::Value, String> {
+        let backend = CORE_BACKEND.get().ok_or("backend unavailable")?;
+        let prefs = backend.get_preferences();
+        let credentials = CredentialsVault::export_android_channels(include_credentials)
+            .map_err(|e| e.to_string())?;
+        let mut channels = credentials.clone();
+        for slot in ["asr", "llm"] {
+            if let Some(channel) = channels[slot].as_object_mut() {
+                channel.remove("configuration");
+            }
+        }
+        let selection = serde_json::json!({
+            "activeAsrProvider": channels["asr"]["id"], "activeLlmProvider": channels["llm"]["id"],
+            "activeStylePackId": prefs.active_style_pack_id,
+            "selectionPolishStylePackId": prefs.selection_polish_style_pack_id,
+            "channels": channels,
+        });
+        Ok(serde_json::json!({"providerSelection":selection,"credentials":credentials}))
+    })();
+    match result {
+        Ok(payload) => serde_json::json!({"ok":true,"payload":payload}),
+        Err(error) => serde_json::json!({"ok":false,"error":error}),
+    }
+    .to_string()
 }
 
-fn export_preferences_subset_json() -> String {
-    let prefs = match PreferencesStore::new() {
-        Ok(store) => store.get(),
-        Err(error) => {
-            log::warn!("[android-native] open preferences store for settings export failed: {error:#}");
-            return "{}".to_string();
+fn import_provider_settings_json(json: &str, selection: bool, credentials: bool) -> String {
+    let mut applied = Vec::new();
+    let mut errors = serde_json::Map::new();
+    let result = (|| -> Result<(), String> {
+        let root: serde_json::Value =
+            serde_json::from_str(json).map_err(|_| "invalid settings file")?;
+        let version = root["openlessSettingsExportVersion"]
+            .as_u64()
+            .ok_or("settings version missing")?;
+        if !matches!(version, 1 | 2) {
+            return Err("unsupported settings version".into());
         }
-    };
-    let subset = ExportedPreferencesSubset {
-        active_asr_provider: Some(prefs.active_asr_provider),
-        active_llm_provider: Some(prefs.active_llm_provider),
-        active_style_pack_id: Some(prefs.active_style_pack_id),
-        selection_polish_style_pack_id: Some(prefs.selection_polish_style_pack_id),
-    };
-    serde_json::to_string(&subset).unwrap_or_else(|_| "{}".to_string())
-}
-
-/// Applies only the fields present in `json` (see
-/// [`ExportedPreferencesSubset`]'s own doc comment on why every field is
-/// optional). Syncs the credential vault's own active-ASR pointer first —
-/// see [`crate::commands::sync_active_asr_provider_to_vault`] — so the
-/// plain (non-provider-scoped) `CredentialsVault::set()` calls a caller
-/// separately makes via [`import_credentials_snapshot_json`] land in the
-/// provider slot this import just selected, not whatever the target device
-/// happened to have active before.
-fn import_preferences_subset_json(json: &str) {
-    let parsed: ExportedPreferencesSubset = match serde_json::from_str(json) {
-        Ok(value) => value,
-        Err(error) => {
-            log::warn!("[android-native] parse imported preferences subset failed: {error}");
-            return;
+        let backend = CORE_BACKEND.get().ok_or("backend unavailable")?;
+        let coord = COORDINATOR.get().ok_or("coordinator unavailable")?;
+        let prefs = &root["providerSelection"];
+        let channels = if version == 1 {
+            CredentialsVault::legacy_android_channels(
+                prefs,
+                credentials.then_some(&root["credentials"]),
+            )
+        } else {
+            Ok(if credentials {
+                root["credentials"].clone()
+            } else {
+                prefs["channels"].clone()
+            })
         }
-    };
-    let store = match PreferencesStore::new() {
-        Ok(store) => store,
-        Err(error) => {
-            log::warn!("[android-native] open preferences store for settings import failed: {error:#}");
-            return;
+        .map_err(|e| e.to_string())?;
+        if version == 2 && !channels.is_object() {
+            return Err("channel identities are missing".into());
         }
-    };
-    let mut prefs = store.get();
-    if let Some(value) = parsed.active_asr_provider {
-        if let Err(error) = crate::commands::sync_active_asr_provider_to_vault(&value) {
-            log::warn!("[android-native] sync imported ASR provider to vault failed: {error}");
+        if version == 2 && selection {
+            for (slot, field) in [("asr", "activeAsrProvider"), ("llm", "activeLlmProvider")] {
+                if prefs[field] != channels[slot]["id"]
+                    || prefs["channels"][slot]["id"] != channels[slot]["id"]
+                    || prefs["channels"][slot]["providerType"] != channels[slot]["providerType"]
+                {
+                    return Err("selection and credential channel identities disagree".into());
+                }
+            }
         }
-        prefs.active_asr_provider = value;
-    }
-    if let Some(value) = parsed.active_llm_provider {
-        prefs.active_llm_provider = value;
-    }
-    if let Some(value) = parsed.active_style_pack_id {
-        prefs.active_style_pack_id = value;
-    }
-    if let Some(value) = parsed.selection_polish_style_pack_id {
-        prefs.selection_polish_style_pack_id = value;
-    }
-    if let Err(error) = store.set(prefs) {
-        log::warn!("[android-native] save imported preferences subset failed: {error:#}");
-    }
-}
-
-fn export_credentials_snapshot_json() -> String {
-    serde_json::to_string(&CredentialsVault::snapshot()).unwrap_or_else(|_| "{}".to_string())
-}
-
-/// Restores whichever fields are present (`Some`) in the snapshot — the
-/// settings page's export always includes every field it read, but an
-/// older or hand-edited import file might only have some of them. Plain
-/// (non-provider-scoped) `CredentialsVault::set()` calls, matching
-/// `CredentialsVault::snapshot()`'s own plain reads (see that function's
-/// `credentials_snapshot()` implementation in persistence/credentials.rs) —
-/// call [`import_preferences_subset_json`] first if the import also
-/// includes a provider-selection change, so these land in the right slot.
-fn import_credentials_snapshot_json(json: &str) {
-    let snapshot: CredentialsSnapshot = match serde_json::from_str(json) {
-        Ok(value) => value,
-        Err(error) => {
-            log::warn!("[android-native] parse imported credentials snapshot failed: {error}");
-            return;
+        if !channels.is_null() {
+            CredentialsVault::import_android_channels(channels.clone(), selection, credentials)
+                .map_err(|e| e.to_string())?;
+            tauri::async_runtime::block_on(backend.refresh_and_publish_credentials())
+                .map_err(|e| e.message)?;
         }
-    };
-    let fields: [(CredentialAccount, Option<String>); 17] = [
-        (CredentialAccount::VolcengineAppKey, snapshot.volcengine_app_key),
-        (
-            CredentialAccount::VolcengineAccessKey,
-            snapshot.volcengine_access_key,
-        ),
-        (
-            CredentialAccount::VolcengineResourceId,
-            snapshot.volcengine_resource_id,
-        ),
-        (CredentialAccount::VolcengineService, snapshot.volcengine_service),
-        (
-            CredentialAccount::VolcengineAuthMode,
-            snapshot.volcengine_auth_mode,
-        ),
-        (CredentialAccount::VolcengineApiKey, snapshot.volcengine_api_key),
-        (CredentialAccount::AsrApiKey, snapshot.asr_api_key),
-        (CredentialAccount::AsrEndpoint, snapshot.asr_endpoint),
-        (CredentialAccount::AsrModel, snapshot.asr_model),
-        (CredentialAccount::XfyunAppId, snapshot.xfyun_app_id),
-        (CredentialAccount::XfyunApiKey, snapshot.xfyun_api_key),
-        (
-            CredentialAccount::TencentCloudAppId,
-            snapshot.tencent_cloud_app_id,
-        ),
-        (
-            CredentialAccount::TencentCloudSecretId,
-            snapshot.tencent_cloud_secret_id,
-        ),
-        (
-            CredentialAccount::TencentCloudSecretKey,
-            snapshot.tencent_cloud_secret_key,
-        ),
-        (CredentialAccount::ArkApiKey, snapshot.ark_api_key),
-        (CredentialAccount::ArkModelId, snapshot.ark_model_id),
-        (CredentialAccount::ArkEndpoint, snapshot.ark_endpoint),
-    ];
-    for (account, value) in fields {
-        if let Some(value) = value {
-            if let Err(error) = CredentialsVault::set(account, &value) {
-                log::warn!("[android-native] import credential field failed: {error:#}");
+        if credentials {
+            applied.push("credentials");
+        }
+        if selection {
+            let mut next = backend.get_preferences();
+            if let Some(id) = channels["asr"]["id"].as_str() {
+                next.active_asr_provider = id.into();
+            }
+            if let Some(id) = channels["llm"]["id"].as_str() {
+                next.active_llm_provider = id.into();
+            }
+            let packs = backend
+                .list_style_packs(&next.active_style_pack_id)
+                .map_err(|e| e.message)?;
+            let mut missing_style = false;
+            for (key, field) in [
+                ("activeStylePackId", &mut next.active_style_pack_id),
+                (
+                    "selectionPolishStylePackId",
+                    &mut next.selection_polish_style_pack_id,
+                ),
+            ] {
+                if let Some(id) = prefs[key].as_str() {
+                    if packs.iter().any(|pack| pack.id == id) {
+                        *field = id.into();
+                    } else {
+                        missing_style = true;
+                    }
+                }
+            }
+            crate::commands::persist_strict_settings(coord, next)?;
+            if missing_style {
+                errors.insert(
+                    "providerSelection".into(),
+                    "channel selection restored; missing style packs were kept unchanged".into(),
+                );
+            } else {
+                applied.push("providerSelection");
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        for (selected, key) in [
+            (selection, "providerSelection"),
+            (credentials, "credentials"),
+        ] {
+            if selected && !applied.contains(&key) {
+                errors.insert(key.into(), error.clone().into());
             }
         }
     }
+    serde_json::json!({"applied":applied,"errors":errors}).to_string()
 }
 
 pub fn register_android_backend(backend: Arc<OpenLessBackend>) {
@@ -302,7 +289,10 @@ pub fn ensure_main_webview_window() -> Result<(), String> {
     let result =
         tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
             .build();
-    log::info!("[android-native] ensure_main_webview_window: build ok={}", result.is_ok());
+    log::info!(
+        "[android-native] ensure_main_webview_window: build ok={}",
+        result.is_ok()
+    );
     result
         .map(|_| ())
         .map_err(|error| format!("rebuild main webview window: {error}"))
@@ -477,16 +467,172 @@ fn spawn_start_dictation(translation: bool) {
     });
 }
 
-fn spawn_start_dictation_for_ime() {
-    let Some(backend) = CORE_BACKEND.get().cloned() else {
-        log::warn!("[android-native] core backend unavailable");
-        return;
-    };
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = start_core_dictation_for_ime(&backend).await {
-            log::warn!("[android-native] start_dictation_for_ime failed: {error}");
+#[cfg(target_os = "android")]
+static IME_REQUEST: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+#[cfg(target_os = "android")]
+static IME_SESSION: std::sync::Mutex<Option<(i64, openless_core::SessionId)>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ImeCommand {
+    action: String,
+    request_id: i64,
+    #[serde(default)]
+    session_id: Option<openless_core::SessionId>,
+    #[serde(default)]
+    raw: bool,
+    #[serde(default)]
+    quick_note: bool,
+    #[serde(default)]
+    cloud: bool,
+}
+
+#[cfg(target_os = "android")]
+fn notify_ime_session(value: serde_json::Value) {
+    if matches!(value["kind"].as_str(), Some("completed" | "error")) {
+        let mut owner = IME_SESSION.lock().unwrap();
+        if owner
+            .as_ref()
+            .is_some_and(|(request, _)| Some(*request) == value["requestId"].as_i64())
+        {
+            *owner = None;
         }
+    }
+    let _ = crate::android::jni::android::with_android_env(|env, context| {
+        crate::android::jni::android::notify_ime_session_event(env, context, &value.to_string())
     });
+}
+
+#[cfg(target_os = "android")]
+fn ime_command(json: &str) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let command: ImeCommand = serde_json::from_str(json).map_err(|_| "invalid IME command")?;
+    let backend = CORE_BACKEND.get().cloned().ok_or("backend unavailable")?;
+    let request = command.request_id;
+    match command.action.as_str() {
+        "start" => {
+            IME_REQUEST.store(request, Ordering::SeqCst);
+            tauri::async_runtime::spawn(async move {
+                if IME_REQUEST.load(Ordering::SeqCst) != request {
+                    return;
+                }
+                if let Err(error) = ensure_core_started(&backend).await {
+                    notify_ime_session(
+                        serde_json::json!({"kind":"error","requestId":request,"error":format!("{:?}",error.code)}),
+                    );
+                    return;
+                }
+                let mut starting =
+                    Box::pin(backend.start_dictation_with_options(DictationStartOptions {
+                        insert_text: false,
+                        output_target: if command.cloud {
+                            openless_core::DictationOutputTarget::CloudNote
+                        } else {
+                            openless_core::DictationOutputTarget::ForegroundApp
+                        },
+                        ..Default::default()
+                    }));
+                // The first poll reserves the Core session before any async preparation.
+                // Acknowledge that identity now so gestures can classify a Starting session.
+                let initial = futures_util::poll!(&mut starting);
+                let reserved = match &initial {
+                    std::task::Poll::Ready(Ok(id)) => Some(*id),
+                    std::task::Poll::Pending => backend.snapshot().dictation.session_id,
+                    _ => None,
+                };
+                if let Some(id) = reserved {
+                    *IME_SESSION.lock().unwrap() = Some((request, id));
+                    if IME_REQUEST.load(Ordering::SeqCst) == request {
+                        notify_ime_session(
+                            serde_json::json!({"kind":"started","requestId":request,"sessionId":id}),
+                        );
+                    } else {
+                        let _ = backend.cancel_dictation(Some(id)).await;
+                    }
+                }
+                let result = match initial {
+                    std::task::Poll::Ready(result) => result,
+                    std::task::Poll::Pending => starting.await,
+                };
+                match result {
+                    Ok(id) if IME_REQUEST.load(Ordering::SeqCst) != request => {
+                        let _ = backend.cancel_dictation(Some(id)).await;
+                    }
+                    Err(error) => notify_ime_session(
+                        serde_json::json!({"kind":"error","requestId":request,"error":format!("{:?}",error.code)}),
+                    ),
+                    _ => {}
+                }
+            });
+        }
+        "cloud" => {
+            if IME_REQUEST.load(Ordering::SeqCst) != request {
+                return Err("stale IME request".into());
+            }
+            backend
+                .set_dictation_cloud_note(
+                    command.session_id.ok_or("session missing")?,
+                    command.cloud,
+                )
+                .map_err(|e| e.message)?;
+        }
+        "stop" => {
+            let id = command.session_id.ok_or("session missing")?;
+            if IME_REQUEST.load(Ordering::SeqCst) != request {
+                return Err("stale IME request".into());
+            }
+            let cloud = backend.dictation_output_target()
+                == Some(openless_core::DictationOutputTarget::CloudNote);
+            tauri::async_runtime::spawn(async move {
+                let result = backend
+                    .stop_dictation_session_with_options(
+                        Some(id),
+                        DictationStopOptions {
+                            raw_requested: Some(command.raw),
+                            quick_note: if cloud {
+                                None
+                            } else {
+                                Some(command.quick_note)
+                            },
+                            ..Default::default()
+                        },
+                        None,
+                    )
+                    .await;
+                match result {
+                    Ok(result) => notify_ime_session(
+                        serde_json::json!({"kind":"completed","requestId":request,"sessionId":id,"cloud":cloud,"quickNote":command.quick_note,"text":result.polished_text}),
+                    ),
+                    Err(error) => notify_ime_session(
+                        serde_json::json!({"kind":"error","requestId":request,"sessionId":id,"error":format!("{:?}",error.code)}),
+                    ),
+                }
+            });
+        }
+        "cancel" => {
+            let _ = IME_REQUEST.compare_exchange(request, 0, Ordering::SeqCst, Ordering::SeqCst);
+            let id = command.session_id.or_else(|| {
+                IME_SESSION
+                    .lock()
+                    .unwrap()
+                    .filter(|(owner, _)| *owner == request)
+                    .map(|(_, id)| id)
+            });
+            if let Some(id) = id {
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = backend.cancel_dictation(Some(id)).await {
+                        notify_ime_session(
+                            serde_json::json!({"kind":"error","requestId":request,"sessionId":id,"error":format!("{:?}",error.code)}),
+                        );
+                    }
+                });
+            }
+        }
+        _ => return Err("unknown IME action".into()),
+    }
+    Ok(())
 }
 
 fn spawn_stop_dictation() {
@@ -501,25 +647,6 @@ fn spawn_stop_dictation() {
     });
 }
 
-#[cfg(target_os = "android")]
-fn spawn_stop_dictation_for_ime() {
-    let Some(backend) = CORE_BACKEND.get().cloned() else {
-        log::warn!("[android-native] core backend unavailable");
-        return;
-    };
-    tauri::async_runtime::spawn(async move {
-        match stop_core_dictation(&backend, None, None).await {
-            Ok(result) => {
-                let text = result.polished_text;
-                let _ = crate::android::jni::android::with_android_env(|env, context| {
-                    crate::android::jni::android::notify_ime_text(env, context, &text)
-                });
-            }
-            Err(error) => log::warn!("[android-native] stop_dictation_for_ime failed: {error}"),
-        }
-    });
-}
-
 fn spawn_stop_dictation_with_translation(translation: bool) {
     let Some(backend) = CORE_BACKEND.get().cloned() else {
         log::warn!("[android-native] core backend unavailable");
@@ -528,30 +655,6 @@ fn spawn_stop_dictation_with_translation(translation: bool) {
     tauri::async_runtime::spawn(async move {
         if let Err(error) = stop_core_dictation(&backend, Some(translation), None).await {
             log::warn!("[android-native] stop_dictation_with_translation failed: {error}");
-        }
-    });
-}
-
-/// IME keyboard's mic-button swipe-up gesture: same "insert-as-you-go" path
-/// as spawn_stop_dictation_for_ime(), but with the ASR-only override armed
-/// (see DictationContext::with_raw_requested()'s doc comment) — the LLM
-/// polish step is skipped entirely for this utterance and the raw
-/// transcript is inserted as-is.
-#[cfg(target_os = "android")]
-fn spawn_stop_dictation_for_ime_with_raw(raw: bool) {
-    let Some(backend) = CORE_BACKEND.get().cloned() else {
-        log::warn!("[android-native] core backend unavailable");
-        return;
-    };
-    tauri::async_runtime::spawn(async move {
-        match stop_core_dictation(&backend, None, Some(raw)).await {
-            Ok(result) => {
-                let text = result.polished_text;
-                let _ = crate::android::jni::android::with_android_env(|env, context| {
-                    crate::android::jni::android::notify_ime_text(env, context, &text)
-                });
-            }
-            Err(error) => log::warn!("[android-native] stop_dictation_for_ime_with_raw failed: {error}"),
         }
     });
 }
@@ -774,19 +877,6 @@ async fn start_core_dictation(
         .map(|_| ())
 }
 
-async fn start_core_dictation_for_ime(
-    backend: &OpenLessBackend,
-) -> Result<(), BackendError> {
-    ensure_core_started(backend).await?;
-    backend
-        .start_dictation_with_options(DictationStartOptions {
-            insert_text: false,
-            ..DictationStartOptions::default()
-        })
-        .await
-        .map(|_| ())
-}
-
 async fn stop_core_dictation(
     backend: &OpenLessBackend,
     translation: Option<bool>,
@@ -872,19 +962,33 @@ mod jni_exports {
     }
 
     #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeImeCommand(
+        env: *mut JNIEnv,
+        _class: JClass,
+        json: jstring,
+    ) -> jstring {
+        let Ok(mut env) = JniEnv::from_raw(env) else {
+            return std::ptr::null_mut();
+        };
+        let input = env
+            .get_string(&JString::from_raw(json))
+            .map(|v| String::from(v));
+        let result = input
+            .map_err(|_| "invalid JNI input".to_string())
+            .and_then(|json| ime_command(&json));
+        let response = match result {
+            Ok(()) => serde_json::json!({"ok":true}),
+            Err(error) => serde_json::json!({"ok":false,"error":error}),
+        };
+        crate::android::jni::android::export_jstring(&mut env, &response.to_string())
+    }
+
+    #[no_mangle]
     pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeStartDictation(
         _env: *mut JNIEnv,
         _class: JClass,
     ) {
         spawn_start_dictation(false);
-    }
-
-    #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeStartDictationForIme(
-        _env: *mut JNIEnv,
-        _class: JClass,
-    ) {
-        spawn_start_dictation_for_ime();
     }
 
     #[no_mangle]
@@ -902,23 +1006,6 @@ mod jni_exports {
         _class: JClass,
     ) {
         spawn_stop_dictation();
-    }
-
-    #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeStopDictationForIme(
-        _env: *mut JNIEnv,
-        _class: JClass,
-    ) {
-        spawn_stop_dictation_for_ime();
-    }
-
-    #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeStopDictationForImeWithRaw(
-        _env: *mut JNIEnv,
-        _class: JClass,
-        raw: jboolean,
-    ) {
-        spawn_stop_dictation_for_ime_with_raw(raw != 0);
     }
 
     #[no_mangle]
@@ -955,7 +1042,9 @@ mod jni_exports {
         let mut jni_env = match JniEnv::from_raw(env) {
             Ok(env) => env,
             Err(error) => {
-                log::warn!("[android-native] attach JNI env for add_vocabulary_word failed: {error}");
+                log::warn!(
+                    "[android-native] attach JNI env for add_vocabulary_word failed: {error}"
+                );
                 return;
             }
         };
@@ -1026,7 +1115,9 @@ mod jni_exports {
         let mut jni_env = match JniEnv::from_raw(env) {
             Ok(env) => env,
             Err(error) => {
-                log::warn!("[android-native] attach JNI env for remove_vocabulary_word failed: {error}");
+                log::warn!(
+                    "[android-native] attach JNI env for remove_vocabulary_word failed: {error}"
+                );
                 return;
             }
         };
@@ -1165,18 +1256,13 @@ mod jni_exports {
         }
     }
 
-    /// Settings export/import (OpenLessKeyboardSettingsActivity's "导出/导入配置")
-    /// — see export_preferences_subset_json()/import_preferences_subset_json()'s
-    /// own doc comments. Synchronous (unlike the dictation lifecycle calls
-    /// above): these are plain file reads/writes on a background settings
-    /// screen, not something already running on a worker thread of its own,
-    /// so there's no separate spawn_*() wrapper to hand off to.
     #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeExportPreferencesSubset(
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeExportProviderSettings(
         env: *mut JNIEnv,
         _class: JClass,
+        include_credentials: jboolean,
     ) -> jstring {
-        let response = export_preferences_subset_json();
+        let response = export_provider_settings_json(include_credentials != 0);
         match JniEnv::from_raw(env) {
             Ok(mut env) => crate::android::jni::android::export_jstring(&mut env, &response),
             Err(_) => std::ptr::null_mut(),
@@ -1184,55 +1270,24 @@ mod jni_exports {
     }
 
     #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeImportPreferencesSubset(
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeImportProviderSettings(
         env: *mut JNIEnv,
         _class: JClass,
         json: jstring,
-    ) {
-        let mut jni_env = match JniEnv::from_raw(env) {
-            Ok(env) => env,
-            Err(error) => {
-                log::warn!("[android-native] attach JNI env for import_preferences_subset failed: {error}");
-                return;
-            }
-        };
-        let json_str: String = jni_env
-            .get_string(&JString::from_raw(json))
-            .map(|value| value.into())
-            .unwrap_or_default();
-        import_preferences_subset_json(&json_str);
-    }
-
-    #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeExportCredentialsSnapshot(
-        env: *mut JNIEnv,
-        _class: JClass,
+        selection: jboolean,
+        credentials: jboolean,
     ) -> jstring {
-        let response = export_credentials_snapshot_json();
-        match JniEnv::from_raw(env) {
-            Ok(mut env) => crate::android::jni::android::export_jstring(&mut env, &response),
-            Err(_) => std::ptr::null_mut(),
-        }
-    }
-
-    #[no_mangle]
-    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeImportCredentialsSnapshot(
-        env: *mut JNIEnv,
-        _class: JClass,
-        json: jstring,
-    ) {
-        let mut jni_env = match JniEnv::from_raw(env) {
-            Ok(env) => env,
-            Err(error) => {
-                log::warn!("[android-native] attach JNI env for import_credentials_snapshot failed: {error}");
-                return;
-            }
+        let Ok(mut env) = JniEnv::from_raw(env) else {
+            return std::ptr::null_mut();
         };
-        let json_str: String = jni_env
+        let json = env
             .get_string(&JString::from_raw(json))
-            .map(|value| value.into())
-            .unwrap_or_default();
-        import_credentials_snapshot_json(&json_str);
+            .map(|value| String::from(value));
+        let response = match json {
+            Ok(json) => import_provider_settings_json(&json, selection != 0, credentials != 0),
+            Err(_) => serde_json::json!({"applied":[],"errors":{"providerSelection":"invalid JNI input","credentials":"invalid JNI input"}}).to_string(),
+        };
+        crate::android::jni::android::export_jstring(&mut env, &response)
     }
 }
 
@@ -1301,7 +1356,9 @@ mod tests {
             serde_json::from_str(&android_backend_snapshot_response(Some(&backend))).unwrap();
         assert_eq!(ready["ok"], true);
         let translated_session = backend.snapshot().dictation.session_id.unwrap();
-        stop_core_dictation(&backend, Some(true), None).await.unwrap();
+        stop_core_dictation(&backend, Some(true), None)
+            .await
+            .unwrap();
         start_core_dictation(&backend, true).await.unwrap();
         let cancelled_session = backend.snapshot().dictation.session_id.unwrap();
         cancel_core_dictation(&backend).await.unwrap();

@@ -207,6 +207,8 @@ macro_rules! app_invoke_handler_desktop {
         tauri::generate_handler![
             commands::get_startup_snapshot,
             commands::get_settings,
+            commands::get_settings_snapshot,
+            commands::update_setting_fields,
             commands::get_default_style_system_prompts,
             commands::set_settings,
             commands::get_remote_input_status,
@@ -479,6 +481,8 @@ macro_rules! app_invoke_handler_mobile {
         tauri::generate_handler![
             $crate::commands::get_startup_snapshot,
             $crate::commands::get_settings,
+            $crate::commands::get_settings_snapshot,
+            $crate::commands::update_setting_fields,
             $crate::commands::get_default_style_system_prompts,
             $crate::commands::set_settings,
             $crate::commands::check_network,

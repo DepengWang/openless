@@ -73,7 +73,7 @@ internal class LitePinyinRepository(context: Context) {
      * weight scale (both ultimately from rime-pinyin-simp) — a phrase
      * never outranks a character on raw weight alone, only via tier 0/1.
      */
-    fun query(encoding: String, limit: Int = 20, callback: (List<String>) -> Unit) {
+    fun query(encoding: String, limit: Int = 20, personalize: Boolean = true, callback: (List<String>) -> Unit) {
         val normalized = encoding.trim().lowercase()
         if (normalized.isEmpty()) {
             callback(emptyList())
@@ -84,7 +84,7 @@ internal class LitePinyinRepository(context: Context) {
             val raw = candidateEntries(normalized)
             fun rankEntries(entries: List<CandidateEntry>): List<String> {
                 val previouslySelected = entries
-                    .filter { userFrequency.score(it.sourceKey, it.entry.text) > 0.0 }
+                    .filter { personalize && userFrequency.score(it.sourceKey, it.entry.text) > 0.0 }
                     .sortedByDescending { userFrequency.score(it.sourceKey, it.entry.text) }
                 val rest = entries.filterNot { entry ->
                     previouslySelected.any { it.entry.text == entry.entry.text }
@@ -95,7 +95,7 @@ internal class LitePinyinRepository(context: Context) {
                 rankEntries(raw.filter { it.sourceKey == normalized }) +
                     rankEntries(raw.filter { it.sourceKey != normalized })
                 ).distinct()
-            learnedPhrases.promoted(normalized)?.let { learned -> ranked = listOf(learned) + ranked.filterNot { it == learned } }
+            if (personalize) learnedPhrases.promoted(normalized)?.let { learned -> ranked = listOf(learned) + ranked.filterNot { it == learned } }
             Handler(Looper.getMainLooper()).post { callback(ranked.take(limit)) }
         }
     }

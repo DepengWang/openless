@@ -58,6 +58,7 @@ const KOTLIN_FILES = [
   'OpenLessContentReader.kt',
   'OpenLessContentWriter.kt',
   'OpenLessImeService.kt',
+  'ImeLearningPolicy.kt',
   'StrokeInputController.kt',
   'StrokeInput.kt',
   'LitePinyinController.kt',
@@ -78,6 +79,7 @@ const KOTLIN_FILES = [
 ];
 
 const KOTLIN_TEST_FILES = [
+  'ImeLearningPolicyTest.kt',
   'OpenLessContentReaderTest.kt',
   'OpenLessCredentialCipherTest.kt',
   'OpenLessShizukuBridgeTest.kt',
@@ -86,7 +88,10 @@ const KOTLIN_TEST_FILES = [
   'OpenLessPasteVerificationTest.kt',
   'OpenLessAccessibilityComponentIdsTest.kt',
 ];
-const KOTLIN_ANDROID_TEST_FILES = ['OpenLessCredentialVaultInstrumentedTest.kt'];
+const KOTLIN_ANDROID_TEST_FILES = [
+  'OpenLessCredentialVaultInstrumentedTest.kt',
+  'ImeLearningMigrationTest.kt',
+];
 
 const XML_FILES = [
   ['res/xml/openless_accessibility_config.xml', 'openless_accessibility_config.xml'],
@@ -232,7 +237,10 @@ function mergeStringsXml(dryRun) {
         'OpenLess uses accessibility to detect the keyboard and paste dictation results without switching your current keyboard.',
       openless_ime_label: 'OpenLess Voice',
     });
-    const merged = mergeMissingStringResources(generatedStrings.content, SHIZUKU_STRINGS_BY_LOCALE.values);
+    const merged = mergeMissingStringResources(
+      generatedStrings.content,
+      SHIZUKU_STRINGS_BY_LOCALE.values,
+    );
     if (!dryRun) {
       writeFileSync(stringsPath, merged.content, 'utf8');
       console.log(`Merged OpenLess strings into ${stringsPath}`);
@@ -347,7 +355,10 @@ function ensureInstrumentationRunner(dryRun) {
 function ensureMainActivityOpen(dryRun) {
   if (!existsSync(mainActivityPath)) return;
   const existing = readFileSync(mainActivityPath, 'utf8');
-  const updated = existing.replace(/(?:open\s+)*class MainActivity\s*:/, 'open class MainActivity:');
+  const updated = existing.replace(
+    /(?:open\s+)*class MainActivity\s*:/,
+    'open class MainActivity:',
+  );
   if (updated === existing) return;
   if (dryRun) {
     console.log(`[dry-run] Would make MainActivity inheritable for background warmup`);

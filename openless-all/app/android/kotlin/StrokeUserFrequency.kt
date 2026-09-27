@@ -64,8 +64,7 @@ internal class StrokeUserFrequency(context: Context) {
 
     /** Replaces the entire store with [entries] — an import wholesale-restores a backup rather than merging with whatever's already on this device. */
     fun importAll(entries: Map<String, String>) {
-        preferences.edit().clear().apply()
-        preferences.edit().apply { entries.forEach { (key, value) -> putString(key, value) } }.apply()
+        check(preferences.edit().clear().apply { entries.forEach { (key, value) -> putString(key, value) } }.commit()) { "Stroke learning save failed" }
         approxSize = entries.size
     }
 

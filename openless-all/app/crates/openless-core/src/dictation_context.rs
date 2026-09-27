@@ -29,6 +29,8 @@ pub enum DictationAudioSource {
 pub enum DictationOutputTarget {
     #[default]
     ForegroundApp,
+    /// Polished text delivered to a webhook without local history or audio retention.
+    CloudNote,
     QuickNote,
     Undecided,
     /// Finish the current recording as a question without dictation insertion or polish.
@@ -363,6 +365,12 @@ impl DictationContext {
         let mut next = self.clone();
         next.output_target = target;
         match target {
+            DictationOutputTarget::CloudNote => {
+                next.insertion.enabled = false;
+                next.insertion.streaming = false;
+                next.recording.archive_successful_recording = false;
+                next.recording.archive_required = false;
+            }
             DictationOutputTarget::Qa => {
                 next.polish.translation_active = false;
                 next.insertion.enabled = false;

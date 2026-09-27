@@ -474,6 +474,10 @@ internal class StrokeInputController(private val service: OpenLessImeService) {
 
     private fun refreshStrokeCandidates(code: String) {
         val query = ++strokeQueryEpoch
+        if (service.isSensitiveField(service.currentInputEditorInfo)) {
+            renderCandidateRow(emptyList())
+            return
+        }
         strokeRepository.searchAsync(code) { result ->
             if (query != strokeQueryEpoch || service.inputMode != OpenLessImeService.InputMode.STROKE) return@searchAsync
             lastStrokeCandidates = result
@@ -558,32 +562,30 @@ internal class StrokeInputController(private val service: OpenLessImeService) {
 
     /** Commits the current character together with any segments already marked via 分词. */
     private fun commitStrokeCandidate(candidate: String) {
-        // Picking anything other than the top-ranked result is a correction
-        // — learn it, so this code favors `candidate` from now on. Picking
-        // the top result needs no recording: it's already where it should be.
-        if (OpenLessAndroidPreferences.strokeUsageEnabled(service) &&
-            strokeCode.isNotEmpty() && candidate != lastStrokeCandidates.firstOrNull()
-        ) {
-            strokeRepository.recordPersonalPick(strokeCode, candidate)
+        val code = strokeCode
+        val correction = candidate != lastStrokeCandidates.firstOrNull()
+        if (commitWord((wordSegments + candidate).joinToString("")) && correction &&
+            service.personalizedLearningAllowed() && OpenLessAndroidPreferences.strokeUsageEnabled(service) && code.isNotEmpty()) {
+            strokeRepository.recordPersonalPick(code, candidate)
         }
-        commitWord((wordSegments + candidate).joinToString(""))
     }
 
-    private fun commitWord(word: String) {
-        if (word.isEmpty() || service.isSensitiveField(service.currentInputEditorInfo)) return
-        val connection = service.currentInputConnection ?: return
+    private fun commitWord(word: String): Boolean {
+        if (word.isEmpty() || service.isSensitiveField(service.currentInputEditorInfo)) return false
+        val connection = service.currentInputConnection ?: return false
         val contextBeforeCommit = confirmedText.takeLast(MAX_ASSOCIATION_CONTEXT)
-        if (!connection.commitText(service.outputScript(word), 1)) return
-        if (OpenLessAndroidPreferences.strokeUsageEnabled(service)) {
+        if (!connection.commitText(service.outputScript(word), 1)) return false
+        if (service.personalizedLearningAllowed() && OpenLessAndroidPreferences.strokeUsageEnabled(service)) {
             phraseRepository.recordUsage(contextBeforeCommit, word)
         }
-        confirmedText = (confirmedText + word).takeLast(MAX_ASSOCIATION_CONTEXT)
+        if (service.personalizedLearningAllowed()) confirmedText = (confirmedText + word).takeLast(MAX_ASSOCIATION_CONTEXT)
         clearStrokes()
         refreshAssociations()
+        return true
     }
 
     private fun refreshAssociations() {
-        if (!OpenLessAndroidPreferences.strokeAssociationEnabled(service)) {
+        if (!service.personalizedLearningAllowed() || !OpenLessAndroidPreferences.strokeAssociationEnabled(service)) {
             populateCandidateRow(emptyList())
             service.candidateOverlayEntries = emptyList()
             return
@@ -609,7 +611,7 @@ internal class StrokeInputController(private val service: OpenLessImeService) {
         val suffix = displayText.removePrefix(matchedContext)
         val connection = service.currentInputConnection ?: return
         if (suffix.isNotEmpty() && !connection.commitText(service.outputScript(suffix), 1)) return
-        if (OpenLessAndroidPreferences.strokeUsageEnabled(service)) {
+        if (service.personalizedLearningAllowed() && OpenLessAndroidPreferences.strokeUsageEnabled(service)) {
             phraseRepository.recordUsage(matchedContext, displayText)
         }
         confirmedText = (confirmedText + suffix).takeLast(MAX_ASSOCIATION_CONTEXT)

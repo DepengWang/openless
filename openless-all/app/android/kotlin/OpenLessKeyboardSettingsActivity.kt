@@ -625,18 +625,27 @@ class OpenLessKeyboardSettingsActivity : Activity() {
                     Toast.makeText(this, ui("没有选择任何内容", "Nothing selected"), Toast.LENGTH_SHORT).show()
                     return@setPositiveButton
                 }
-                pendingExportJson = OpenLessSettingsExport.export(this, selected)
-                val timestamp = android.text.format.DateFormat.format("yyyyMMdd-HHmm", System.currentTimeMillis())
-                val intent = android.content.Intent(android.content.Intent.ACTION_CREATE_DOCUMENT).apply {
-                    addCategory(android.content.Intent.CATEGORY_OPENABLE)
-                    type = "application/json"
-                    putExtra(android.content.Intent.EXTRA_TITLE, "openless-settings-$timestamp.json")
-                }
-                runCatching { startActivityForResult(intent, requestCodeExportSave) }
-                    .onFailure {
-                        pendingExportJson = null
-                        Toast.makeText(this, ui("找不到文件管理器", "No file manager available"), Toast.LENGTH_SHORT).show()
+                Thread {
+                    val exported = runCatching { OpenLessSettingsExport.export(this, selected) }
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        exported.onSuccess { json ->
+                            pendingExportJson = json
+                            val timestamp = android.text.format.DateFormat.format("yyyyMMdd-HHmm", System.currentTimeMillis())
+                            val intent = android.content.Intent(android.content.Intent.ACTION_CREATE_DOCUMENT).apply {
+                                addCategory(android.content.Intent.CATEGORY_OPENABLE)
+                                type = "application/json"
+                                putExtra(android.content.Intent.EXTRA_TITLE, "openless-settings-$timestamp.json")
+                            }
+                            runCatching { startActivityForResult(intent, requestCodeExportSave) }.onFailure {
+                                pendingExportJson = null
+                                Toast.makeText(this, ui("找不到文件管理器", "No file manager available"), Toast.LENGTH_LONG).show()
+                            }
+                        }.onFailure {
+                            Toast.makeText(this, ui("导出失败，请检查服务和凭据存储", "Export failed; check the service and credential store"), Toast.LENGTH_LONG).show()
+                        }
                     }
+                }.start()
             }
             .setNegativeButton(ui("取消", "Cancel"), null)
             .show()
@@ -661,7 +670,7 @@ class OpenLessKeyboardSettingsActivity : Activity() {
                 pendingExportJson = null
                 if (uri == null || json == null) return
                 val wrote = runCatching {
-                    contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray(Charsets.UTF_8)) }
+                    checkNotNull(contentResolver.openOutputStream(uri)).use { it.write(json.toByteArray(Charsets.UTF_8)) }
                 }.isSuccess
                 Toast.makeText(
                     this,
@@ -671,14 +680,15 @@ class OpenLessKeyboardSettingsActivity : Activity() {
             }
             requestCodeImportOpen -> {
                 val uri = data.data ?: return
-                val json = runCatching {
-                    contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
-                }.getOrNull()
-                if (json.isNullOrBlank()) {
-                    Toast.makeText(this, ui("读取文件失败", "Failed to read file"), Toast.LENGTH_SHORT).show()
-                    return
-                }
-                showImportCategoryDialog(json)
+                Thread {
+                    val json = OpenLessContentReader.readBytes(this, uri.toString(), 4 * 1024 * 1024)?.toString(Charsets.UTF_8)
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        if (json.isNullOrBlank()) {
+                            Toast.makeText(this, ui("读取文件失败或文件超过 4 MiB", "Read failed or file exceeds 4 MiB"), Toast.LENGTH_SHORT).show()
+                        } else showImportCategoryDialog(json)
+                    }
+                }.start()
             }
         }
     }
@@ -701,21 +711,23 @@ class OpenLessKeyboardSettingsActivity : Activity() {
                     Toast.makeText(this, ui("没有选择任何内容", "Nothing selected"), Toast.LENGTH_SHORT).show()
                     return@setPositiveButton
                 }
-                OpenLessSettingsExport.import(this, json, selected)
-                val needsRestart = OpenLessSettingsExport.importNeedsAppRestart(json, selected)
-                Toast.makeText(
-                    this,
-                    if (needsRestart) {
-                        ui(
-                            "导入完成——请完全关闭并重新打开 OpenLess 使部分设置生效",
-                            "Imported — fully close and reopen OpenLess for some settings to take effect",
-                        )
-                    } else {
-                        ui("导入完成", "Imported")
-                    },
-                    Toast.LENGTH_LONG,
-                ).show()
-                setContentView(buildContent())
+                Thread {
+                    val imported = runCatching { OpenLessSettingsExport.import(this, json, selected) }
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        val result = imported.getOrNull()
+                        val message = if (result == null) ui("配置文件无效，导入失败", "Invalid settings file; import failed")
+                        else buildString {
+                            append(ui("已导入 ${result.applied.size} 项", "Imported ${result.applied.size} categories"))
+                            for ((category, reason) in result.errors) {
+                                append('\n').append(ui(category.labelZh, category.labelEn)).append(": ").append(reason)
+                            }
+                        }
+                        android.app.AlertDialog.Builder(this).setMessage(message)
+                            .setPositiveButton(android.R.string.ok, null).show()
+                        setContentView(buildContent())
+                    }
+                }.start()
             }
             .setNegativeButton(ui("取消", "Cancel"), null)
             .show()

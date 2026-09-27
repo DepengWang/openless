@@ -19,7 +19,7 @@ import org.json.JSONObject
  * makes no attempt to protect the file's contents.
  */
 internal object OpenLessSettingsExport {
-    const val VERSION = 1
+    const val VERSION = 2
     private const val PREFS_STORE = "openless_ime_ui"
 
     /** One category = one row in the export/import checkbox dialog. Order here is the order shown. */
@@ -36,6 +36,8 @@ internal object OpenLessSettingsExport {
         val app = context.applicationContext
         val root = JSONObject()
         root.put("openlessSettingsExportVersion", VERSION)
+        root.put("learningPrivacyVersion", ImeLearningPolicy.PRIVACY_VERSION)
+        check(ImeLearningPolicy.migrate(app)) { "Learning data cleanup failed" }
         root.put(
             "exportedAt",
             java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", java.util.Locale.US).format(java.util.Date()),
@@ -67,17 +69,12 @@ internal object OpenLessSettingsExport {
         if (Category.PINYIN_LEARNED_PHRASES in selected) {
             root.put(Category.PINYIN_LEARNED_PHRASES.key, JSONObject(LitePinyinLearnedPhrases(app).exportAll()))
         }
-        if (Category.PROVIDER_SELECTION in selected) {
-            root.put(
-                Category.PROVIDER_SELECTION.key,
-                runCatching { JSONObject(OpenLessNative.nativeExportPreferencesSubset()) }.getOrDefault(JSONObject()),
-            )
-        }
-        if (Category.CREDENTIALS in selected) {
-            root.put(
-                Category.CREDENTIALS.key,
-                runCatching { JSONObject(OpenLessNative.nativeExportCredentialsSnapshot()) }.getOrDefault(JSONObject()),
-            )
+        if (Category.PROVIDER_SELECTION in selected || Category.CREDENTIALS in selected) {
+            val response = JSONObject(OpenLessNative.nativeExportProviderSettings(Category.CREDENTIALS in selected))
+            check(response.optBoolean("ok")) { response.optString("error", "Provider export failed") }
+            val payload = response.getJSONObject("payload")
+            if (Category.PROVIDER_SELECTION in selected) root.put(Category.PROVIDER_SELECTION.key, payload.getJSONObject("providerSelection"))
+            if (Category.CREDENTIALS in selected) root.put(Category.CREDENTIALS.key, payload.getJSONObject("credentials"))
         }
         return root.toString(2)
     }
@@ -85,53 +82,62 @@ internal object OpenLessSettingsExport {
     /** Which categories are actually present in a previously-exported [json] — for the import dialog's checkbox list, which only ever offers what the file really has. Empty (not a throw) for unparseable input. */
     fun categoriesPresent(json: String): Set<Category> {
         val root = runCatching { JSONObject(json) }.getOrNull() ?: return emptySet()
-        return Category.entries.filter { root.has(it.key) }.toSet()
+        if (root.optInt("openlessSettingsExportVersion", 0) !in 1..VERSION) return emptySet()
+        return Category.entries.filter { root.opt(it.key) is JSONObject }.toSet()
     }
 
-    /** Applies whichever of [selected] are actually present in [json]; anything else in [json] (or missing from [selected]) is left untouched on this device. */
-    fun import(context: Context, json: String, selected: Set<Category>) {
+    data class ImportResult(val applied: Set<Category>, val errors: Map<Category, String>)
+
+    fun import(context: Context, json: String, selected: Set<Category>): ImportResult {
         val app = context.applicationContext
         val root = JSONObject(json)
+        require(root.getInt("openlessSettingsExportVersion") in 1..VERSION) { "Unsupported settings version" }
         val prefs = app.getSharedPreferences(PREFS_STORE, Context.MODE_PRIVATE)
-
-        if (Category.CLOUD_NOTES in selected && root.has(Category.CLOUD_NOTES.key)) {
-            val cloudNotes = root.getJSONObject(Category.CLOUD_NOTES.key)
-            prefs.edit()
-                .putString("key_cloud_note_webhook_url", cloudNotes.optString("webhookUrl", ""))
-                .putString("key_cloud_note_webhook_token", cloudNotes.optString("webhookToken", ""))
-                .apply()
-        }
-        if (Category.HAPTIC in selected && root.has(Category.HAPTIC.key)) {
-            val haptic = root.getJSONObject(Category.HAPTIC.key)
-            prefs.edit()
-                .putBoolean("key_haptic_enabled", haptic.optBoolean("enabled", true))
-                .putInt("key_haptic_amplitude", haptic.optInt("amplitude", 55))
-                .putLong("key_haptic_duration_ms", haptic.optLong("durationMs", 12L))
-                .apply()
-        }
-        if (Category.STROKE_FREQUENCY in selected && root.has(Category.STROKE_FREQUENCY.key)) {
-            StrokeUserFrequency(app).importAll(root.getJSONObject(Category.STROKE_FREQUENCY.key).toStringMap())
-        }
-        if (Category.PINYIN_LEARNED_PHRASES in selected && root.has(Category.PINYIN_LEARNED_PHRASES.key)) {
-            LitePinyinLearnedPhrases(app).importAll(root.getJSONObject(Category.PINYIN_LEARNED_PHRASES.key).toStringMap())
-        }
-        if (Category.PROVIDER_SELECTION in selected && root.has(Category.PROVIDER_SELECTION.key)) {
+        val applied = mutableSetOf<Category>()
+        val errors = mutableMapOf<Category, String>()
+        val requested = selected.filter { root.has(it.key) }.toSet()
+        // Validate the shape of every requested category before any writes.
+        requested.forEach { root.getJSONObject(it.key) }
+        for (category in requested - setOf(Category.PROVIDER_SELECTION, Category.CREDENTIALS)) {
             runCatching {
-                OpenLessNative.nativeImportPreferencesSubset(root.getJSONObject(Category.PROVIDER_SELECTION.key).toString())
-            }
+                val value = root.getJSONObject(category.key)
+                when (category) {
+                    Category.CLOUD_NOTES -> {
+                        val url = value.getString("webhookUrl")
+                        val token = value.getString("webhookToken")
+                        require(url.isBlank() || java.net.URI(url).scheme in listOf("http", "https")) { "Invalid webhook URL" }
+                        check(prefs.edit().putString("key_cloud_note_webhook_url", url).putString("key_cloud_note_webhook_token", token).commit()) { "Settings save failed" }
+                    }
+                    Category.HAPTIC -> {
+                        val enabled = value.getBoolean("enabled")
+                        val amplitude = value.getInt("amplitude")
+                        val duration = value.getLong("durationMs")
+                        require(amplitude in 1..255 && duration in 1..1000) { "Invalid haptic settings" }
+                        check(prefs.edit().putBoolean("key_haptic_enabled", enabled).putInt("key_haptic_amplitude", amplitude).putLong("key_haptic_duration_ms", duration).commit()) { "Settings save failed" }
+                    }
+                    Category.STROKE_FREQUENCY -> StrokeUserFrequency(app).importAll(value.toStringMap())
+                    Category.PINYIN_LEARNED_PHRASES -> {
+                        require(root.optInt("learningPrivacyVersion", 0) >= ImeLearningPolicy.PRIVACY_VERSION) { "Legacy learned phrases cannot be safely restored" }
+                        check(ImeLearningPolicy.migrate(app)) { "Learning data cleanup failed" }
+                        LitePinyinLearnedPhrases(app).importAll(value.toStringMap())
+                    }
+                    else -> Unit
+                }
+                applied.add(category)
+            }.onFailure { errors[category] = it.message ?: "Import failed" }
         }
-        if (Category.CREDENTIALS in selected && root.has(Category.CREDENTIALS.key)) {
+        val providerCategories = requested intersect setOf(Category.PROVIDER_SELECTION, Category.CREDENTIALS)
+        if (providerCategories.isNotEmpty()) {
             runCatching {
-                OpenLessNative.nativeImportCredentialsSnapshot(root.getJSONObject(Category.CREDENTIALS.key).toString())
-            }
+                val response = JSONObject(OpenLessNative.nativeImportProviderSettings(json,
+                    Category.PROVIDER_SELECTION in requested, Category.CREDENTIALS in requested))
+                val successful = response.getJSONArray("applied")
+                for (i in 0 until successful.length()) Category.entries.find { it.key == successful.getString(i) }?.let { applied.add(it) }
+                val failed = response.getJSONObject("errors")
+                for (category in providerCategories) if (failed.has(category.key)) errors[category] = failed.getString(category.key)
+            }.onFailure { for (category in providerCategories) errors[category] = "Provider import failed" }
         }
-    }
-
-    /** True once import() has (or would have) touched anything that only takes effect after the Rust backend next reads it from disk — i.e. PROVIDER_SELECTION or CREDENTIALS were among [selected] and present in [json]. */
-    fun importNeedsAppRestart(json: String, selected: Set<Category>): Boolean {
-        val root = runCatching { JSONObject(json) }.getOrNull() ?: return false
-        return (Category.PROVIDER_SELECTION in selected && root.has(Category.PROVIDER_SELECTION.key)) ||
-            (Category.CREDENTIALS in selected && root.has(Category.CREDENTIALS.key))
+        return ImportResult(applied, errors)
     }
 
     private fun JSONObject.toStringMap(): Map<String, String> {
@@ -139,7 +145,9 @@ internal object OpenLessSettingsExport {
         val iterator = keys()
         while (iterator.hasNext()) {
             val key = iterator.next()
-            map[key] = optString(key, "")
+            val value = get(key)
+            require(value is String) { "Invalid learning entry" }
+            map[key] = value
         }
         return map
     }

@@ -52,7 +52,10 @@ pub mod android {
         let mut guard = ACTIVE_CONTEXT.lock().unwrap();
         let same = guard
             .as_ref()
-            .map(|(_, global)| env.is_same_object(global.as_obj(), activity).unwrap_or(true))
+            .map(|(_, global)| {
+                env.is_same_object(global.as_obj(), activity)
+                    .unwrap_or(true)
+            })
             .unwrap_or(false);
         if same {
             *guard = None;
@@ -447,16 +450,14 @@ pub mod android {
         plaintext: &[u8],
         aad: &[u8],
     ) -> Result<Vec<u8>, AndroidKeystoreFailure> {
-        call_credential_vault_two_arrays("seal", plaintext, aad)
-            .map_err(classify_keystore_failure)
+        call_credential_vault_two_arrays("seal", plaintext, aad).map_err(classify_keystore_failure)
     }
 
     pub(crate) fn keystore_open(
         sealed: &[u8],
         aad: &[u8],
     ) -> Result<Vec<u8>, AndroidKeystoreFailure> {
-        call_credential_vault_two_arrays("open", sealed, aad)
-            .map_err(classify_keystore_failure)
+        call_credential_vault_two_arrays("open", sealed, aad).map_err(classify_keystore_failure)
     }
 
     pub(crate) fn keystore_delete_key() -> Result<(), AndroidKeystoreFailure> {
@@ -808,7 +809,7 @@ pub mod android {
         )
     }
 
-    pub fn notify_ime_text<'local>(
+    pub fn notify_ime_session_event<'local>(
         env: &mut JNIEnv<'local>,
         context: &JObject<'local>,
         text: &str,
@@ -818,7 +819,7 @@ pub mod android {
             env,
             context,
             "com.openless.app.OpenLessOverlayBridge",
-            "onImeTextReady",
+            "onImeSessionEvent",
             "(Ljava/lang/String;)V",
             &[JValue::Object(&text_obj)],
         )

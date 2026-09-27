@@ -18,6 +18,13 @@ import android.content.Context
 internal class LitePinyinController(context: Context) {
     private val repository = LitePinyinRepository(context)
     private val encoding = StringBuilder()
+    private var learningAllowed = false
+    fun setLearningAllowed(allowed: Boolean) {
+        learningAllowed = allowed
+        clear()
+        resetAssociationContext()
+    }
+    fun shutdown() = repository.shutdown()
 
     // --- Two-step combo learning (见 LitePinyinLearnedPhrases 的文档注释) ---
     // "上次直接打拼音上屏的是什么" — separate from confirmedText above
@@ -49,7 +56,7 @@ internal class LitePinyinController(context: Context) {
     fun commitSelection(text: String, onCandidates: (List<String>) -> Unit) {
         val currentEncoding = encoding.toString()
         val sourceKey = repository.resolveSourceKey(currentEncoding, text)
-        repository.recordSelection(sourceKey, text)
+        if (learningAllowed) repository.recordSelection(sourceKey, text)
         if (sourceKey.length >= currentEncoding.length) {
             clear()
             onCandidates(emptyList())
@@ -70,6 +77,7 @@ internal class LitePinyinController(context: Context) {
      * surfaces on its own — see that class's own doc comment.
      */
     fun observeCommitForLearning(text: String) {
+        if (!learningAllowed) return
         val currentEncoding = encoding.toString()
         // A single full-pinyin syllable ("guo") contributes only its first
         // letter, matching how a real abbreviation is built one letter per
@@ -130,6 +138,7 @@ internal class LitePinyinController(context: Context) {
 
     /** Feeds just-committed on-screen text into the association context — call after every pinyin commit (a fresh candidate or an association suffix alike). */
     fun recordCommittedText(text: String) {
+        if (!learningAllowed) return
         confirmedText.append(text)
         val overflow = confirmedText.length - StrokeInputController.MAX_ASSOCIATION_CONTEXT
         if (overflow > 0) confirmedText.delete(0, overflow)
@@ -170,7 +179,7 @@ internal class LitePinyinController(context: Context) {
             return
         }
         val epoch = ++queryEpoch
-        repository.query(encoding.toString()) { results ->
+        repository.query(encoding.toString(), personalize = learningAllowed) { results ->
             if (epoch == queryEpoch) onCandidates(results)
         }
     }

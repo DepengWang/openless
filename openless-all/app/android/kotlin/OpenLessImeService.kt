@@ -48,6 +48,81 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // docs/pinyin-lite/phase-0-audit.md section 7.
     internal enum class LatinInputMode { ENGLISH, PINYIN }
 
+    private var lastCancelledImeRequest = 0L
+    private var imeRequestId = 0L
+    private var imeSessionId: String? = null
+    private var pendingCloudArm = false
+    private var pendingImeStop = false
+    private var cloudNoteDestination: Pair<String, String>? = null
+
+    private fun sendImeCommand(action: String): Boolean = try {
+        val request = org.json.JSONObject().apply {
+            put("action", action)
+            put("requestId", imeRequestId)
+            imeSessionId?.let { put("sessionId", it) }
+            put("raw", rawModeArmed)
+            put("quickNote", quickNoteArmed)
+            put("cloud", cloudNoteArmed)
+        }
+        val response = org.json.JSONObject(OpenLessNative.nativeImeCommand(request.toString()))
+        check(response.optBoolean("ok")) { response.optString("error", "IME command failed") }
+        true
+    } catch (_: Throwable) {
+        setState("error", ui("语音操作失败，请重试", "Voice operation failed; please retry"))
+        false
+    }
+
+    private fun cancelImeSession() {
+        if (imeRequestId != 0L) { lastCancelledImeRequest = imeRequestId; sendImeCommand("cancel") }
+        imeRequestId = 0L
+        imeSessionId = null
+        pendingImeStop = false
+        cloudNoteDestination = null
+        pendingCloudArm = false
+    }
+
+    private fun stopImeSession() {
+        if (imeSessionId == null) pendingImeStop = true
+        else if (!sendImeCommand("stop")) { recording = false; processing = false }
+    }
+
+    private fun onImeSessionEvent(json: String) {
+        val event = runCatching { org.json.JSONObject(json) }.getOrNull() ?: return
+        if (event.optLong("requestId") != imeRequestId || imeRequestId == 0L) {
+            if (event.optLong("requestId") == lastCancelledImeRequest && event.optString("error") == "Persistence") {
+                Toast.makeText(this, ui("录音清理失败，重新打开应用后重试", "Recording cleanup failed; reopen the app to retry"), Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+        when (event.optString("kind")) {
+            "started" -> {
+                imeSessionId = event.getString("sessionId")
+                if (pendingCloudArm) { pendingCloudArm = false; cloudNoteArmed = true }
+                if (cloudNoteArmed && !sendImeCommand("cloud")) { cancelImeSession(); return }
+                if (pendingImeStop) { pendingImeStop = false; stopImeSession() }
+            }
+            "completed" -> {
+                if (event.optString("sessionId") != imeSessionId) return
+                val destination = cloudNoteDestination
+                imeSessionId = null
+                recording = false
+                processing = false
+                cloudNoteArmed = false
+                if (event.optBoolean("cloud")) submitCloudNoteText(event.optString("text"), destination, imeRequestId)
+                else if (event.optBoolean("quickNote")) setState("done", ui("笔记已记录", "Note saved"))
+                else commitImeText(event.optString("text"))
+            }
+            "error" -> {
+                recording = false
+                processing = false
+                imeSessionId = null
+                pendingImeStop = false
+                pendingCloudArm = false
+                setState("error", ui("听写失败，请重试", "Dictation failed; please retry"))
+            }
+        }
+    }
+
     private var sessionEpoch = 0L
     // Guards the delayed "settle back to Tap to speak" callback — see
     // scheduleRevertToIdle().
@@ -61,6 +136,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // starts or is cancelled, so it never leaks into a later utterance.
     private var rawModeArmed = false
         set(value) {
+            if (value) pendingCloudArm = false
+            if (value && cloudNoteArmed) { cloudNoteArmed = false; if (cloudNoteArmed) return }
             field = value
             voiceButton?.rawModeActive = value
             // The RAW gesture changes the mode while the recording prompt is
@@ -77,20 +154,32 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // quickNoteDictation()).
     private var quickNoteArmed = false
         set(value) {
+            if (value) pendingCloudArm = false
+            if (value && cloudNoteArmed) { cloudNoteArmed = false; if (cloudNoteArmed) return }
             field = value
             voiceButton?.quickNoteActive = value
             status?.setTextColor(recordingAccentColor())
         }
-    // Armed by the mic button's swipe-right gesture, same shape as
-    // quickNoteArmed/rawModeArmed above — except the eventual stop rides the
-    // Raw stop call too (see toggleDictation()'s own rawModeArmed ||
-    // cloudNoteArmed check — verbatim ASR transcript, no LLM polish), and it's
-    // handleImeTextReady() that decides what happens to the resulting text:
-    // submitted as JSON to the webhook configured in settings
-    // (submitCloudNoteText()) instead of being committed into the input field.
+    // The Core session owns retention; this field only displays the accepted destination.
     private var cloudNoteArmed = false
         set(value) {
+            if (!value) pendingCloudArm = false
+            if (value && imeRequestId != 0L && imeSessionId == null) {
+                pendingCloudArm = true
+                updateStatus(ui("正在准备云笔记", "Preparing cloud note"))
+                return
+            }
+            if (field == value) return
+            val previous = field
             field = value
+            if (imeSessionId != null && !sendImeCommand("cloud")) { field = previous; return }
+            if (value) {
+                rawModeArmed = false
+                quickNoteArmed = false
+                val prefs = getSharedPreferences("openless_ime_ui", MODE_PRIVATE)
+                cloudNoteDestination = (prefs.getString("key_cloud_note_webhook_url", "") ?: "").trim() to
+                    (prefs.getString("key_cloud_note_webhook_token", "") ?: "").trim()
+            }
             voiceButton?.cloudNoteActive = value
             status?.setTextColor(recordingAccentColor())
         }
@@ -425,6 +514,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      */
     private fun toggleLatinInputMode() {
         englishComposingWord.clear()
+        englishCandidateQueryEpoch++
         litePinyinController.clear()
         latinInputMode = if (latinInputMode == LatinInputMode.ENGLISH) LatinInputMode.PINYIN else LatinInputMode.ENGLISH
         saveLatinInputMode(latinInputMode)
@@ -466,14 +556,21 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
     }
 
+    private var learningMigrationComplete = false
+    internal fun personalizedLearningAllowed(): Boolean {
+        val editor = currentInputEditorInfo ?: return false
+        return learningMigrationComplete && ImeLearningPolicy.allowsLearning(editor.inputType, editor.imeOptions)
+    }
+
     override fun onCreate() {
         super.onCreate()
+        learningMigrationComplete = ImeLearningPolicy.migrate(this)
         restoreInputMode()
         restoreScriptPreference()
         restoreLatinInputMode()
         activeInstance = java.lang.ref.WeakReference(this)
         OpenLessOverlayBridge.imeListener = this
-        OpenLessOverlayBridge.imeTextListener = ::handleImeTextReady
+        OpenLessOverlayBridge.imeSessionListener = ::onImeSessionEvent
         startRuntimeService()
         // Load the offline stroke dictionary and the (much larger, ~220k-
         // phrase) association dictionary while the IME is idle — the latter
@@ -486,14 +583,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     override fun onDestroy() {
+        cancelImeSession()
         if (activeInstance?.get() === this) {
             activeInstance = null
         }
         if (OpenLessOverlayBridge.imeListener === this) {
             OpenLessOverlayBridge.imeListener = null
-        }
-        if (OpenLessOverlayBridge.imeTextListener != null) {
-            OpenLessOverlayBridge.imeTextListener = null
+            OpenLessOverlayBridge.imeSessionListener = null
         }
         backendHeartbeatHandler.removeCallbacks(backendHeartbeatRunnable)
         backendLinkPulseAnimator?.cancel()
@@ -501,6 +597,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         stopRuntimeService()
         strokeController.shutdown()
         if (englishCandidateProviderLazy.isInitialized()) englishCandidateProviderLazy.value.shutdown()
+        litePinyinController.shutdown()
         // Marks this as a clean end-of-session for
         // OpenLessApplication.recordUncleanShutdownIfAny() — an abrupt
         // process kill (native crash, OOM) never reaches this line, which
@@ -712,7 +809,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                                 performDoubleKeyHaptic()
                                 updateStatus(currentMessage)
                             } else if (!recording && !processing) {
-                                toggleDictation()
+                                toggleDictation(initialCloud = true)
                                 if (recording) {
                                     cloudNoteArmed = true
                                     performDoubleKeyHaptic()
@@ -1257,6 +1354,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         saveInputMode(selected)
         englishLayer = EnglishLayer.LETTERS
         englishComposingWord.clear()
+        englishCandidateQueryEpoch++
         litePinyinController.clear()
         litePinyinController.resetAssociationContext()
         strokeController.resetForModeSwitch()
@@ -2879,7 +2977,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
     private fun commitEnglishChar(char: String) {
         if (char.isEmpty()) return
-        if (latinInputMode == LatinInputMode.PINYIN) {
+        if (latinInputMode == LatinInputMode.PINYIN && !ImeLearningPolicy.isPassword(currentInputEditorInfo?.inputType ?: 0)) {
             if (char.length == 1 && char[0].isLetter()) {
                 // Never calls commitText() — a letter only feeds the
                 // encoding buffer in Pinyin mode; see
@@ -2898,8 +2996,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             litePinyinController.clear()
             renderPinyinCandidates(emptyList())
         }
-        currentInputConnection?.commitText(char, 1)
-        if (char.length == 1 && char[0].isLetter()) {
+        if (currentInputConnection?.commitText(char, 1) != true) return
+        if (personalizedLearningAllowed() && char.length == 1 && char[0].isLetter()) {
             englishComposingWord.append(char.lowercase())
             updateEnglishCandidates()
         } else {
@@ -2919,7 +3017,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private fun finalizeEnglishComposingWord() {
         if (englishComposingWord.isNotEmpty()) {
             val word = englishComposingWord.toString()
-            if (englishSuggestionsEnabled() && word.length >= 2) {
+            if (personalizedLearningAllowed() && englishSuggestionsEnabled() && word.length >= 2) {
                 englishCandidateProvider.recordCommit(word)
             }
             englishComposingWord.clear()
@@ -3006,8 +3104,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * back after a faster subsequent keystroke already moved the prefix on.
      */
     private fun updateEnglishCandidates() {
+        val epoch = ++englishCandidateQueryEpoch
         if (englishCandidateRow == null) return
-        if (!englishSuggestionsEnabled()) {
+        if (!personalizedLearningAllowed() || !englishSuggestionsEnabled()) {
+            renderEnglishCandidates(emptyList())
             englishCandidateBarContainer?.visibility = View.GONE
             return
         }
@@ -3017,7 +3117,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             renderEnglishCandidates(emptyList())
             return
         }
-        val epoch = ++englishCandidateQueryEpoch
         englishCandidateProvider.queryTopN(prefix, ENGLISH_CANDIDATE_QUERY_LIMIT) { results ->
             if (epoch == englishCandidateQueryEpoch) renderEnglishCandidates(results)
         }
@@ -3055,6 +3154,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * sitting in front of the inserted word instead of being replaced by it.
      */
     private fun selectEnglishCandidate(word: String) {
+        if (!personalizedLearningAllowed()) return
         val connection = currentInputConnection ?: return
         val typed = englishComposingWord.toString()
         for (length in typed.length downTo 1) {
@@ -3064,7 +3164,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 break
             }
         }
-        connection.commitText("$word ", 1)
+        if (!connection.commitText("$word ", 1)) return
         englishCandidateProvider.recordCommit(word)
         englishComposingWord.clear()
         updateEnglishCandidates()
@@ -3131,7 +3231,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
     /** Candidate tap is the ONLY way a pinyin candidate reaches the field — see toggleLatinInputMode()'s doc comment on why Space deliberately never does this. */
     private fun selectPinyinCandidate(char: String) {
-        currentInputConnection?.commitText(char, 1)
+        if (ImeLearningPolicy.isPassword(currentInputEditorInfo?.inputType ?: 0)) return
+        if (currentInputConnection?.commitText(char, 1) != true) return
         // observeCommitForLearning needs the encoding still intact; commitSelection
         // then records frequency under the real sourceKey and consumes that key
         // (full buffer or first syllable) before refreshing the candidate row.
@@ -3152,7 +3253,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * checks — this is explicitly the same feature, not a parallel one.
      */
     private fun refreshPinyinAssociations() {
-        if (!OpenLessAndroidPreferences.strokeAssociationEnabled(this)) {
+        if (!personalizedLearningAllowed() || !OpenLessAndroidPreferences.strokeAssociationEnabled(this)) {
             renderPinyinAssociations(emptyList())
             return
         }
@@ -3200,7 +3301,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val suffix = candidate.text.removePrefix(candidate.matchedPrefix)
         val connection = currentInputConnection ?: return
         if (suffix.isNotEmpty() && !connection.commitText(outputScript(suffix), 1)) return
-        if (OpenLessAndroidPreferences.strokeUsageEnabled(this)) {
+        if (personalizedLearningAllowed() && OpenLessAndroidPreferences.strokeUsageEnabled(this)) {
             strokeController.phraseRepository.recordUsage(candidate.matchedPrefix, candidate.text)
         }
         litePinyinController.recordCommittedText(suffix)
@@ -3244,6 +3345,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
+        cancelImeSession()
         super.onStartInput(attribute, restarting)
         restoreInputMode()
         restoreScriptPreference()
@@ -3252,8 +3354,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         strokeController.resetForNewInputSession()
         englishLayer = EnglishLayer.LETTERS
         englishComposingWord.clear()
+        englishCandidateQueryEpoch++
         litePinyinController.clear()
         litePinyinController.resetAssociationContext()
+        litePinyinController.setLearningAllowed(personalizedLearningAllowed())
+        if (ImeLearningPolicy.isPassword(attribute?.inputType ?: 0)) {
+            inputMode = InputMode.ENGLISH
+            latinInputMode = LatinInputMode.ENGLISH
+        }
+        renderEnglishCandidates(emptyList())
         startRuntimeService()
         sessionEpoch++
         recording = false
@@ -3286,11 +3395,17 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     private fun keyboardFootprintKey(): String =
-        "${keyboardPanelHeightDp()}:${raiseHeightDp(this)}"
+        "${keyboardPanelHeightDp()}:${raiseHeightDp(this)}:$inputMode:$latinInputMode:${personalizedLearningAllowed()}"
 
     override fun onFinishInput() {
+        cancelImeSession()
+        englishCandidateQueryEpoch++
+        englishComposingWord.clear()
+        litePinyinController.clear()
+        litePinyinController.resetAssociationContext()
+        strokeController.resetForNewInputSession()
         if (recording) {
-            runNativeAction("取消听写") { OpenLessNative.nativeCancelDictation() }
+            cancelImeSession()
         }
         recording = false
         processing = false
@@ -3348,7 +3463,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         invalidateDictationResultIfTextChanged()
     }
 
-    internal fun toggleDictation() {
+    internal fun toggleDictation(initialCloud: Boolean = false) {
+        if (processing) return
         if (isSensitiveField(currentInputEditorInfo)) {
             updateStatus("敏感字段，禁止听写")
             return
@@ -3374,35 +3490,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 refreshInputView()
             }
             setState("thinking", "正在思考")
-            // rawModeArmed is set by the mic button's own swipe-up gesture
-            // (see onCreateInputView()'s voice-panel branch) while this
-            // recording was still in progress — recording itself keeps
-            // going after that swipe, only the eventual stop (here, however
-            // it's triggered) skips the LLM polish step and inserts the ASR
-            // transcript as-is. Mirrors the existing "swipe left on the
-            // overlay to finish+translate" gesture contract
-            // (OpenLessOverlayService.kt), just decided earlier (at the
-            // swipe) instead of at this exact call. cloudNoteArmed
-            // deliberately does NOT ride this raw stop — per later product
-            // request, the webhook gets the same LLM-polished text a normal
-            // commit would, not the verbatim ASR transcript — so it falls
-            // through to the plain stop call below; handleImeTextReady() is
-            // what actually routes the resulting (polished) text to the
-            // webhook instead of the input field.
-            if (rawModeArmed) {
-                runNativeAction("停止听写") { OpenLessNative.nativeStopDictationForImeWithRaw(true) }
-            } else {
-                runNativeAction("停止听写") { OpenLessNative.nativeStopDictationForIme() }
-            }
+            stopImeSession()
         } else {
-            // nativeStartDictationForIme() itself never throws when the
-            // Rust backend isn't registered yet — that side just logs a
-            // warning and no-ops — so runNativeAction()'s catch never fired
-            // for this case either: tapping the mic on a cold backend
-            // silently did nothing while the UI still claimed "recording".
-            // Checking readiness first, before touching any UI state, means
-            // a cold tap now honestly says so and kicks off warmup, instead
-            // of pretending to record.
             if (!isBackendReady()) {
                 if (!awaitingBackendReadyRecheck) {
                     backendRecheckStartedAtMs = android.os.SystemClock.elapsedRealtime()
@@ -3442,7 +3531,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 lastDictationText = null
             }
             setState("speaking", "再次点击结束 · 下划取消")
-            runNativeAction("开始听写") { OpenLessNative.nativeStartDictationForIme() }
+            imeRequestId = 0L
+            imeSessionId = null
+            cloudNoteArmed = initialCloud
+            imeRequestId = nextImeRequest.incrementAndGet()
+            pendingImeStop = false
+            if (!sendImeCommand("start")) { recording = false; processing = false }
         }
     }
 
@@ -3453,33 +3547,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         quickNoteArmed = false
         cloudNoteArmed = false
         invalidateSession("已取消")
-        runNativeAction("取消听写") { OpenLessNative.nativeCancelDictation() }
+        cancelImeSession()
     }
 
-    /**
-     * Ends the current recording and archives it as a standalone note
-     * instead of inserting anything — armed by the mic button's own
-     * swipe-left gesture (quickNoteArmed), then triggered by the next tap
-     * that would otherwise stop a normal recording (see toggleDictation()'s
-     * own quickNoteArmed check up top). Mirrors cancelDictation()'s shape:
-     * settles local state immediately rather than waiting on a native
-     * round-trip, since nativeStopDictationAsQuickNote() never calls back
-     * with a message of its own (the Rust side deliberately skips
-     * notify_ime_text for this path — see native_bridge.rs's
-     * spawn_stop_dictation_as_quick_note()).
-     */
     private fun quickNoteDictation() {
         recording = false
-        processing = false
-        rawModeArmed = false
-        quickNoteArmed = false
-        if (editingDictationResult) {
-            editingDictationResult = false
-            refreshInputView()
-        }
-        performDoubleKeyHaptic()
-        setState("done", "笔记已记录", QUICK_NOTE_CONFIRMATION_DELAY_MS)
-        runNativeAction("速记") { OpenLessNative.nativeStopDictationAsQuickNote() }
+        processing = true
+        setState("thinking", ui("正在保存笔记", "Saving note"))
+        stopImeSession()
     }
 
     // Also requires a registered Activity Context (see
@@ -3756,50 +3831,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         return !((state == "speaking" || state == "thinking") && !rawModeArmed && !quickNoteArmed && !cloudNoteArmed)
     }
 
-    /**
-     * Dispatches a just-finished dictation's text to whichever destination
-     * the mic's own swipe gesture armed for this session — an ordinary
-     * commit into the input field, or (cloudNoteArmed) a JSON POST to the
-     * webhook configured in settings, never both. Wired up as
-     * OpenLessOverlayBridge.imeTextListener in onCreate() — every stop this
-     * function ever sees has gone through the plain (LLM-polished) pipeline,
-     * since toggleDictation() only routes to the Raw stop for rawModeArmed,
-     * not cloudNoteArmed (per product request, Cloud notes gets the same
-     * polished text a normal commit would); quick note's stop uses a
-     * completely separate JNI call/callback that never reaches this
-     * function at all (see quickNoteDictation()).
-     */
-    private fun handleImeTextReady(text: String) {
-        if (cloudNoteArmed) {
-            cloudNoteArmed = false
-            submitCloudNoteText(text)
-        } else {
-            commitImeText(text)
-        }
-    }
-
-    /**
-     * POSTs the LLM-polished transcript (see handleImeTextReady()'s own doc
-     * comment on why this is never the verbatim Raw one) to the URL/token
-     * configured in the native settings page's "云笔记提交" section
-     * (OpenLessKeyboardSettingsActivity) — never inserted into the input
-     * field, never archived locally either (contrast quickNoteDictation(),
-     * which does both of those things quick note's own way). Runs the
-     * request off the main thread (a plain background Thread, not the
-     * shared LitePinyin-style executor — this fires at most once per
-     * dictation, not per keystroke) and settles the status bubble once it
-     * resolves either way.
-     */
-    private fun submitCloudNoteText(text: String) {
+    /** The request owns its destination; delayed network callbacks cannot affect a later recording. */
+    private fun submitCloudNoteText(text: String, destination: Pair<String, String>?, requestId: Long) {
         if (text.isBlank()) {
             recording = false
             processing = false
             setState("error", "没有识别到文字")
             return
         }
-        val preferences = getSharedPreferences("openless_ime_ui", MODE_PRIVATE)
-        val url = preferences.getString("key_cloud_note_webhook_url", null)?.trim().orEmpty()
-        val token = preferences.getString("key_cloud_note_webhook_token", null)?.trim().orEmpty()
+        val (url, token) = destination ?: ("" to "")
         recording = false
         processing = false
         if (url.isEmpty() || token.isEmpty()) {
@@ -3809,13 +3849,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         setState("thinking", "正在提交云笔记")
         Thread {
             val mainHandler = android.os.Handler(Looper.getMainLooper())
+            var connection: java.net.HttpURLConnection? = null
             try {
                 val body = org.json.JSONObject().apply {
                     put("token", token)
                     put("content", text)
                     put("client", "input_method")
                 }.toString()
-                val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+                connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
                     requestMethod = "POST"
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
                     doOutput = true
@@ -3824,8 +3865,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 }
                 connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
                 val code = connection.responseCode
-                connection.disconnect()
                 mainHandler.post {
+                    if (requestId != imeRequestId) return@post
                     if (code in 200..299) {
                         setState("done", "已提交云笔记", QUICK_NOTE_CONFIRMATION_DELAY_MS)
                     } else {
@@ -3833,11 +3874,11 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                     }
                 }
             } catch (error: Throwable) {
-                android.util.Log.w("OpenLessImeService", "cloud note webhook submit failed", error)
+                android.util.Log.w("OpenLessImeService", "cloud note webhook submit failed: ${error.javaClass.simpleName}")
                 mainHandler.post {
-                    setState("error", "云笔记提交失败，请检查网络")
+                    if (requestId == imeRequestId) setState("error", "云笔记提交失败，请检查网络")
                 }
-            }
+            } finally { connection?.disconnect() }
         }.start()
     }
 
@@ -3987,7 +4028,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     /** Backs out of the edit sub-view without applying any correction. */
     private fun closeEditDictationResult() {
         if (recording) {
-            runNativeAction("取消听写") { OpenLessNative.nativeCancelDictation() }
+            cancelImeSession()
         }
         recording = false
         processing = false
@@ -5677,6 +5718,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     companion object {
+        private val nextImeRequest = java.util.concurrent.atomic.AtomicLong()
         const val PREF_KEYBOARD_HEIGHT_DP = "keyboard_height_dp"
         const val DEFAULT_KEYBOARD_HEIGHT_DP = 300
         const val MIN_KEYBOARD_HEIGHT_DP = 220

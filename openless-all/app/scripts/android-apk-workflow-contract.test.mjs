@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { load } from 'js-yaml';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -115,6 +116,21 @@ try {
 
 // --- workflow contract (#1103) ---
 const workflow = readFileSync(workflowPath, 'utf8');
+const parsed = load(workflow);
+assert.deepEqual(Object.keys(parsed.on).sort(), ['push', 'workflow_dispatch']);
+assert.equal(typeof parsed.concurrency.group, 'string');
+assert.equal(parsed.jobs['build-android-apk'].steps[0].with.submodules, false);
+assert.equal(parsed.on.workflow_dispatch.inputs.signed_debug.type, 'boolean');
+for (const job of Object.values(parsed.jobs)) {
+  for (const step of job.steps ?? []) {
+    if (!step.run) continue;
+    // The workflow's interpolations are GitHub expressions, not shell syntax.
+    const script = step.run.replace(/\$\{\{[\s\S]*?\}\}/g, 'fixture');
+    const checked = spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' });
+    assert.equal(checked.status, 0, `${step.name}: ${checked.stderr}`);
+    assert.doesNotMatch(checked.stderr, /here-document/, step.name);
+  }
+}
 assert.match(workflow, /prefix-key:\s*v1-rust-android-1103/);
 assert.doesNotMatch(workflow, /Free disk before artifact upload/);
 assert.doesNotMatch(workflow, /rm -rf src-tauri\/target/);
@@ -135,4 +151,3 @@ assert.match(workflow, /download-artifact/);
 assert.match(workflow, /Rust cache/);
 
 console.log('android-apk-workflow-contract checks passed');
-

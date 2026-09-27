@@ -170,55 +170,37 @@ function mergeApplicationChildren(manifestXml) {
   return { content, changed };
 }
 
-/**
- * Moves the LAUNCHER intent-filter off Tauri's generated bare `.MainActivity`
- * and onto `.OpenLessBackendWarmupActivity` instead. Tapping the app icon
- * used to open bare MainActivity directly — a second, untracked Tauri host
- * distinct from the one every other entry point (settings, IME warmup)
- * targets — which re-runs Tauri's setup() (meant to run exactly once per
- * process) and left that second Activity's WebView with nothing attached
- * (a black window), confirmed on-device. Idempotent: once MainActivity no
- * longer has the intent-filter, this is a no-op on later runs.
- */
+/** Move only the launcher filter, including repair of previously generated manifests. */
 function moveLauncherIntentFilterToWarmupActivity(manifestXml) {
-  const mainActivityMatch = manifestXml.match(
-    /<activity\b([^>]*android:name="\.MainActivity"[^>]*)>([\s\S]*?)<\/activity>/,
-  );
-  if (!mainActivityMatch) {
-    return { content: manifestXml, changed: false };
+  const activities = /<activity\b([^>]*?)(?:\/>|>([\s\S]*?)<\/activity>)/g;
+  const filters = /<intent-filter\b[^>]*>[\s\S]*?<\/intent-filter>/g;
+  const isLauncher = (filter) =>
+    filter.includes('"android.intent.action.MAIN"') &&
+    filter.includes('"android.intent.category.LAUNCHER"');
+  const hosts = new Set([
+    '.MainActivity',
+    '.OpenLessBackendWarmupActivity',
+    '.MicrophonePermissionActivity',
+  ]);
+  const nameOf = (attrs) => attrs.match(/android:name="([^"]+)"/)?.[1];
+  let launcher;
+  for (const [, attrs, body = ''] of manifestXml.matchAll(activities)) {
+    if (hosts.has(nameOf(attrs)))
+      launcher ??= [...body.matchAll(filters)].map(([filter]) => filter).find(isLauncher);
   }
-  const [fullMatch, attrs, body] = mainActivityMatch;
-  const intentFilterMatch = body.match(/<intent-filter>[\s\S]*?<\/intent-filter>/);
-  if (!intentFilterMatch) {
-    // Already moved on a previous run.
-    return { content: manifestXml, changed: false };
-  }
-  const intentFilter = intentFilterMatch[0];
-
-  const remainingBody = body.replace(intentFilter, '').trim();
-  const newMainActivity = remainingBody
-    ? `<activity${attrs}>\n${remainingBody}\n        </activity>`
-    : `<activity${attrs} />`;
-  let content = manifestXml.replace(fullMatch, newMainActivity);
-
-  const warmupMatch = content.match(
-    /<activity\s+android:name="\.OpenLessBackendWarmupActivity"([\s\S]*?)\/>/,
-  );
-  if (!warmupMatch) {
-    throw new Error(
-      'OpenLessBackendWarmupActivity entry not found — expected mergeApplicationChildren() to have added it first',
-    );
-  }
-  // An Activity carrying an intent-filter for an implicit LAUNCHER intent
-  // must be exported, or the manifest merger rejects the build.
-  const warmupAttrs = warmupMatch[1].replace('android:exported="false"', 'android:exported="true"');
-  const newWarmup =
-    `<activity android:name=".OpenLessBackendWarmupActivity"${warmupAttrs}>\n` +
-    `            ${intentFilter}\n` +
-    `        </activity>`;
-  content = content.replace(warmupMatch[0], newWarmup);
-
-  return { content, changed: true };
+  if (!launcher) return { content: manifestXml, changed: false };
+  const content = manifestXml.replace(activities, (original, attrs, body = '') => {
+    const name = nameOf(attrs);
+    if (!hosts.has(name)) return original;
+    const remaining = body.replace(filters, (filter) => (isLauncher(filter) ? '' : filter)).trim();
+    if (name === '.OpenLessBackendWarmupActivity') {
+      attrs = attrs.replace(/android:exported="[^"]*"/, 'android:exported="true"').trimEnd();
+      return `<activity${attrs}>${remaining}${launcher}</activity>`;
+    }
+    if (remaining === body.trim()) return original;
+    return `<activity${attrs.trimEnd()}>${remaining}</activity>`;
+  });
+  return { content, changed: content !== manifestXml };
 }
 
 function main() {
