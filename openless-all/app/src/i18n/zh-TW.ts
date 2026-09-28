@@ -1374,6 +1374,8 @@ export const zhTW: typeof zhCN = {
       comboRecorded: '已錄製',
       comboClear: '清除',
       comboConflict: '此快捷鍵組合不可用',
+      shortcutSaveFailed: '儲存快捷鍵失敗',
+      mouseSideHint: '支援滑鼠側鍵 Mouse4 / Mouse5（Windows 全域）',
       allowNonTsfFallbackLabel: '允許非 TSF 兜底',
       allowNonTsfFallbackDesc:
         'Windows：TSF 失敗時使用分批 Unicode SendInput；如果仍失敗，再複製到剪貼簿。',
@@ -1930,6 +1932,11 @@ export const zhTW: typeof zhCN = {
         notWindows: '僅 Windows 可用。',
       },
     },
+    inputMethod: {
+      guidanceTitle: 'OpenLess 輸入法',
+      enableSystemIme: '請在系統設定 → 鍵盤 / 輸入法中啟用 OpenLess Voice，需要時切換到它。',
+      longPressLogo: '在 OpenLess 輸入法鍵盤中長按左上角的 logo，可開啟原生鍵盤設定。',
+    },
     advanced: {
       multimodalPipelineTitle: '多模態辨識管線',
       multimodalPipelineTitleHint:
@@ -2144,6 +2151,7 @@ export const zhTW: typeof zhCN = {
     },
     descriptions: {
       general: '選擇麥克風、設定錄音方式與文字輸入，也可連接手機輸入。',
+      inputMethod: '設定 Android 懸浮窗與輸入法，快速開始手機端輸入。',
       shortcuts: '設定各功能的觸發方式，以及選取文字後的操作。',
       services: '選擇語音辨識與文字處理服務，管理管道、本機模型和網路連線。',
       appearance: '調整主題、頁面排版和介面語言，讓閱讀更舒服。',
@@ -2153,6 +2161,7 @@ export const zhTW: typeof zhCN = {
     },
     searchKeywords: {
       general: '麥克風 錄音 輸入 手機 遠端 區域網路 PIN 膠囊 靜音 開機',
+      inputMethod: '輸入法 IME 鍵盤 懸浮窗 Android 安卓',
       shortcuts: '快捷鍵 熱鍵 組合鍵 選取 潤飾 語音編輯',
       services: 'ASR LLM API 管道 模型 雲端 本機 網路 代理 市場',
       appearance: '主題 深色 淺色 暗色 語言 字體 排版 版面 熱圖',
@@ -2164,6 +2173,7 @@ export const zhTW: typeof zhCN = {
       appearance: '外觀與語言',
       shortcuts: '快捷鍵與選取文字',
       general: '通用',
+      inputMethod: '輸入方式',
       services: '服務',
       privacy: '隱私',
       advanced: '高階',
