@@ -7,6 +7,12 @@ import { en } from './en';
 export const ja: typeof zhCN = {
   ...en,
   cloudSyncE2ee: {
+    customServerTitle: '自前の同期サーバー（上級者向け）',
+    customServerOrigin: 'サーバーアドレス（https://...）',
+    customServerToken: 'サインイン Token',
+    customServerSave: '保存',
+    customServerHint:
+      '空欄の場合は公式の同期サーバーを使用します。アドレスは https:// で始まるルート URL である必要があります。',
     protocolTitle: 'クラウド同期の同意事項とプライバシー',
     protocolIntro:
       'OpenLess と開発者はプライバシーを尊重し、データの保護に取り組んでいます。続行する前に、以下をご確認ください。',

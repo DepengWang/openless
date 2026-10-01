@@ -3,6 +3,11 @@
 
 export const zhCN = {
   cloudSyncE2ee: {
+    customServerTitle: '自建同步服务器（高级）',
+    customServerOrigin: '服务器地址（https://...）',
+    customServerToken: '登录 Token',
+    customServerSave: '保存',
+    customServerHint: '留空则使用官方同步服务器。地址必须是 https:// 开头的根地址。',
     protocolTitle: '云同步协议与隐私提醒',
     protocolIntro:
       'OpenLess 及个人开发者尊重您的隐私，并致力于保护您的资料。请阅读以下说明，再决定是否继续。',

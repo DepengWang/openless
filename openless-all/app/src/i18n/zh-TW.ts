@@ -3,6 +3,11 @@ import type { zhCN } from './zh-CN';
 // Traditional Chinese resources, sharing the same copy keys as the other seven locales.
 export const zhTW: typeof zhCN = {
   cloudSyncE2ee: {
+    customServerTitle: '自建同步伺服器（進階）',
+    customServerOrigin: '伺服器位址（https://...）',
+    customServerToken: '登入 Token',
+    customServerSave: '儲存',
+    customServerHint: '留空則使用官方同步伺服器。位址必須以 https:// 開頭的根位址。',
     protocolTitle: '雲端同步協議與隱私提醒',
     protocolIntro:
       'OpenLess 及個人開發者尊重您的隱私，並致力於保護您的資料。請閱讀以下說明，再決定是否繼續。',

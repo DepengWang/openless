@@ -567,6 +567,8 @@ export interface UserPreferences {
   /** Major-version generation marker of the splash PV (e.g. '2'). Empty = never played; advanced exclusively by
    *  the Rust-side take_splash_playback, preserved verbatim by the settings save path; the frontend is read-only. */
   splashSeenVersion?: string;
+  /** Self-hosted encrypted-sync server origin, overriding the built-in default. Empty/undefined = use the default. */
+  syncCustomServerOrigin?: string | null;
 }
 
 export interface MarketplaceListItem {

@@ -2,6 +2,12 @@ import type { zhCN } from './zh-CN';
 
 export const de: typeof zhCN = {
   cloudSyncE2ee: {
+    customServerTitle: 'Selbst gehosteter Sync-Server (erweitert)',
+    customServerOrigin: 'Server-Adresse (https://...)',
+    customServerToken: 'Anmelde-Token',
+    customServerSave: 'Speichern',
+    customServerHint:
+      'Leer lassen, um den offiziellen Sync-Server zu verwenden. Die Adresse muss mit https:// beginnen und eine Root-URL sein.',
     protocolTitle: 'Cloud-Sync: Vereinbarung und Datenschutz',
     protocolIntro:
       'OpenLess und seine unabhängigen Entwickler respektieren Ihre Privatsphäre und schützen Ihre Daten. Lesen Sie diese Hinweise, bevor Sie fortfahren.',

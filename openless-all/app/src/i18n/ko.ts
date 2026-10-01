@@ -7,6 +7,11 @@ import { en } from './en';
 export const ko: typeof zhCN = {
   ...en,
   cloudSyncE2ee: {
+    customServerTitle: '자체 동기화 서버 (고급)',
+    customServerOrigin: '서버 주소 (https://...)',
+    customServerToken: '로그인 Token',
+    customServerSave: '저장',
+    customServerHint: '비워두면 공식 동기화 서버를 사용합니다. 주소는 https://로 시작하는 루트 URL이어야 합니다.',
     protocolTitle: '클라우드 동기화 약관 및 개인정보 안내',
     protocolIntro:
       'OpenLess와 독립 개발자는 개인정보를 존중하고 데이터를 보호하기 위해 노력합니다. 계속하기 전에 아래 안내를 읽어 주세요.',

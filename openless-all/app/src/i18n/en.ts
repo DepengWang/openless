@@ -5,6 +5,11 @@ import type { zhCN } from './zh-CN';
 // Type-level guarantee that en mirrors the zh-CN shape.
 export const en: typeof zhCN = {
   cloudSyncE2ee: {
+    customServerTitle: 'Self-hosted sync server (advanced)',
+    customServerOrigin: 'Server address (https://...)',
+    customServerToken: 'Sign-in token',
+    customServerSave: 'Save',
+    customServerHint: 'Leave blank to use the official sync server. The address must start with https:// and be a root URL.',
     protocolTitle: 'Cloud sync agreement and privacy notice',
     protocolIntro:
       'OpenLess and its independent developers respect your privacy and work to protect your data. Read this notice before continuing.',

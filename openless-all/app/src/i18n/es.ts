@@ -2,6 +2,12 @@ import type { zhCN } from './zh-CN';
 
 export const es: typeof zhCN = {
   cloudSyncE2ee: {
+    customServerTitle: 'Servidor de sincronización propio (avanzado)',
+    customServerOrigin: 'Dirección del servidor (https://...)',
+    customServerToken: 'Token de acceso',
+    customServerSave: 'Guardar',
+    customServerHint:
+      'Déjelo en blanco para usar el servidor de sincronización oficial. La dirección debe comenzar con https:// y ser una URL raíz.',
     protocolTitle: 'Acuerdo de sincronización y privacidad',
     protocolIntro:
       'OpenLess y sus desarrolladores independientes respetan tu privacidad y protegen tus datos. Lee este aviso antes de continuar.',
