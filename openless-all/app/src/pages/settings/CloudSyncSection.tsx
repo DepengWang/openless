@@ -650,7 +650,9 @@ export function CloudSyncSection() {
             <span>{t('cloudSyncE2ee.account')}</span>
             <strong dir="auto">
               {status?.account?.login
-                ? `@${status.account.login}`
+                ? customServerOrigin.trim()
+                  ? `${status.account.login}@${customServerOrigin.trim().replace(/^[a-z]+:\/\//i, '').replace(/\/$/, '')}`
+                  : `@${status.account.login}`
                 : loginHint
                   ? `@${loginHint}`
                   : 'GitHub'}
