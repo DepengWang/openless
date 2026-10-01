@@ -52,6 +52,11 @@ pub(crate) trait SyncServiceData: Send + Sync {
     ) -> BoxFuture<'_, SyncResult<()>>;
     fn generation(&self) -> SyncResult<Revision>;
     fn device(&self) -> SourceDevice;
+    /// Live read of the user's self-hosted server preference. A Settings-page
+    /// save must take effect on the next connection attempt, never only after
+    /// a full process restart — this is the one thing `SyncServiceConfig.origin`
+    /// (a fixed snapshot from backend construction) cannot provide by itself.
+    fn custom_server_origin(&self) -> Option<String>;
     fn changes(
         &self,
     ) -> tokio::sync::watch::Receiver<crate::cloud_sync_e2ee_store::gate::SyncChange>;
@@ -151,7 +156,11 @@ impl EncryptedSyncService {
         credential_store: Arc<dyn CredentialStore>,
         events: BackendEventPublisher,
     ) -> Self {
-        let status = EncryptedSyncStatus::initial(config.origin.clone());
+        let initial_origin = data
+            .custom_server_origin()
+            .filter(|origin| !origin.trim().is_empty())
+            .unwrap_or_else(|| config.origin.clone());
+        let status = EncryptedSyncStatus::initial(initial_origin);
         Self(Arc::new(Shared {
             config,
             marketplace,
@@ -180,6 +189,17 @@ impl EncryptedSyncService {
         }))
     }
 
+    /// Live origin for every new connection attempt. Never cache this past a
+    /// single call — a Settings-page save must take effect immediately, not
+    /// only after a process restart.
+    fn origin(&self) -> String {
+        self.0
+            .data
+            .custom_server_origin()
+            .filter(|origin| !origin.trim().is_empty())
+            .unwrap_or_else(|| self.0.config.origin.clone())
+    }
+
     pub(crate) fn status(&self) -> EncryptedSyncStatus {
         let mut value = self
             .0
@@ -188,6 +208,7 @@ impl EncryptedSyncService {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         value.sequence = self.0.sequence.load(Ordering::Acquire).to_string();
+        value.service_origin = self.origin();
         match self.0.data.generation() {
             Ok(generation) => value.local_generation = generation.as_str().into(),
             Err(_) => {
@@ -412,7 +433,7 @@ impl EncryptedSyncService {
         // through a system/env proxy that may not even be running.
         let use_system_proxy =
             self.read_custom_token().await.is_none() && crate::net::use_system_proxy();
-        let proxy_policy = ProxyPolicy::for_origin(&self.0.config.origin, use_system_proxy);
+        let proxy_policy = ProxyPolicy::for_origin(&self.origin(), use_system_proxy);
         log::warn!(
             "[e2ee-token] connect: use_system_proxy={use_system_proxy} proxy_policy={proxy_policy:?} env HTTPS_PROXY={:?} HTTP_PROXY={:?} ALL_PROXY={:?} NO_PROXY={:?}",
             std::env::var("HTTPS_PROXY").ok(),
@@ -432,9 +453,10 @@ impl EncryptedSyncService {
         // the user explicitly opted into self-hosted mode by setting it, and a
         // session can only ever be bound to one credential at a time.
         let custom_token = self.read_custom_token().await;
+        let origin = self.origin();
         log::warn!(
             "[e2ee-token] connect_with_proxy_policy: origin={} custom_token_present={} has_cached_connection={}",
-            self.0.config.origin,
+            origin,
             custom_token.is_some(),
             runtime.connection.is_some()
         );
@@ -458,12 +480,8 @@ impl EncryptedSyncService {
             return Ok(());
         }
         #[cfg(not(test))]
-        let transport = match Transport::new(
-            &self.0.config.origin,
-            &self.0.config.github_client_id,
-            proxy_policy,
-        )
-        .await
+        let transport = match Transport::new(&origin, &self.0.config.github_client_id, proxy_policy)
+            .await
         {
             Ok(transport) => transport,
             Err(e) => {
@@ -472,26 +490,18 @@ impl EncryptedSyncService {
             }
         };
         #[cfg(test)]
-        let transport = if self.0.config.origin.starts_with("http://127.0.0.1:") {
-            Transport::for_test_with_proxy_policy(
-                &self.0.config.origin,
-                &self.0.config.github_client_id,
-                proxy_policy,
-            )
-            .await
-            .map_err(protocol_error)?
+        let transport = if origin.starts_with("http://127.0.0.1:") {
+            Transport::for_test_with_proxy_policy(&origin, &self.0.config.github_client_id, proxy_policy)
+                .await
+                .map_err(protocol_error)?
         } else {
-            Transport::new(
-                &self.0.config.origin,
-                &self.0.config.github_client_id,
-                proxy_policy,
-            )
-            .await
-            .map_err(protocol_error)?
+            Transport::new(&origin, &self.0.config.github_client_id, proxy_policy)
+                .await
+                .map_err(protocol_error)?
         };
         let (session, credential, account) = if let Some(token) = custom_token {
             self.check_cancelled()?;
-            log::warn!("[e2ee-token] calling exchange_with_token against {}", self.0.config.origin);
+            log::warn!("[e2ee-token] calling exchange_with_token against {}", origin);
             let session = match transport.exchange_with_token(token.expose_secret()).await {
                 Ok(session) => {
                     log::warn!("[e2ee-token] exchange_with_token succeeded");
@@ -502,9 +512,7 @@ impl EncryptedSyncService {
                     return Err(protocol_error(e));
                 }
             };
-            if transport.service_origin().trim_end_matches('/')
-                != self.0.config.origin.trim_end_matches('/')
-            {
+            if transport.service_origin().trim_end_matches('/') != origin.trim_end_matches('/') {
                 return Err(error("account_changed"));
             }
             let account = session.account().clone();
@@ -522,8 +530,7 @@ impl EncryptedSyncService {
                 .await
                 .map_err(protocol_error)?;
             if session.account().github_id != account.github_id
-                || transport.service_origin().trim_end_matches('/')
-                    != self.0.config.origin.trim_end_matches('/')
+                || transport.service_origin().trim_end_matches('/') != origin.trim_end_matches('/')
             {
                 return Err(error("account_changed"));
             }
@@ -592,7 +599,7 @@ impl EncryptedSyncService {
         let mut runtime = self.0.runtime.lock().await;
         self.initialize(&mut runtime).await?;
         self.check_cancelled()?;
-        let policy = ProxyPolicy::for_origin(&self.0.config.origin, use_system_proxy);
+        let policy = ProxyPolicy::for_origin(&self.origin(), use_system_proxy);
         self.connect_with_proxy_policy(&mut runtime, policy).await
     }
 
@@ -1298,7 +1305,7 @@ impl EncryptedSyncService {
 
     fn scope(&self, runtime: &Runtime, vault: &str, key: &str) -> SyncResult<SyncScope> {
         Ok(SyncScope {
-            service_origin: self.0.config.origin.clone(),
+            service_origin: self.origin(),
             owner_github_id: self.owner(runtime)?.into(),
             vault_id: vault.into(),
             key_id: key.into(),

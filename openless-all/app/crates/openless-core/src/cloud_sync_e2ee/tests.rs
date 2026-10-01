@@ -256,6 +256,9 @@ impl SyncServiceData for Data {
     fn device(&self) -> SourceDevice {
         self.documents.lock().unwrap().source_device.clone()
     }
+    fn custom_server_origin(&self) -> Option<String> {
+        None
+    }
     fn changes(&self) -> tokio::sync::watch::Receiver<SyncChange> {
         self.changes.subscribe()
     }

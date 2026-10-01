@@ -320,6 +320,9 @@ impl SyncServiceData for CoreSyncStore {
     fn device(&self) -> SourceDevice {
         CoreSyncStore::device(self)
     }
+    fn custom_server_origin(&self) -> Option<String> {
+        CoreSyncStore::custom_server_origin(self)
+    }
     fn changes(&self) -> tokio::sync::watch::Receiver<SyncChange> {
         CoreSyncStore::changes(self)
     }
