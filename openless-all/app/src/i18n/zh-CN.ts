@@ -29,7 +29,7 @@ export const zhCN = {
     setupPromptLater: '暂不开启',
     setupPromptOpen: '了解加密同步',
     title: '加密云同步',
-    description: '在本机加密后，通过 GitHub 账号跨设备同步。',
+    description: '在本机加密后，通过 GitHub 账号或 Token 跨设备同步。',
     enable: '启用加密同步',
     setPassword: '设置同步密码',
     stepEnableTitle: '第 1 步，共 3 步：开启同步',

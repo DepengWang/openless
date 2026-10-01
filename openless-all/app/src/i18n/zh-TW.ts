@@ -29,7 +29,7 @@ export const zhTW: typeof zhCN = {
     setupPromptLater: '暫不開啟',
     setupPromptOpen: '了解加密同步',
     title: '加密雲端同步',
-    description: '在本機加密後，透過 GitHub 帳號跨裝置同步。',
+    description: '在本機加密後，透過 GitHub 帳號或 Token 跨裝置同步。',
     enable: '啟用加密同步',
     setPassword: '設定同步密碼',
     stepEnableTitle: '第 1 步，共 3 步：開啟同步',
