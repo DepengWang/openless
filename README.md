@@ -384,6 +384,8 @@ When on, each dictation reads a few hundred characters around your cursor **in t
 
 On Windows, cursor context is read via UI Automation from the focused text control: it prefers `TextPattern2`'s caret range, with a `TextPattern` selection fallback for controls that only support collapsed selections. When the caret cannot be reliably located, it is skipped rather than guessed — wrong context is worse than none, and dictation continues normally either way.
 
+Chromium-based editors (VS Code, Electron apps) only keep their accessibility tree's caret position in sync once they detect an active accessibility client, so with default settings the position UI Automation reads back can be stale. In VS Code, set `editor.accessibilitySupport` to `on` (Settings → search "accessibility support"; a window reload may be needed) to get accurate cursor context; the same applies to other Electron-based editors with similar settings. Plain Chrome/Edge text fields do not need this.
+
 Cursor context excludes password fields, macOS Secure Input (or the Windows UIA password-control flag), known password managers and terminals. Turning it off stops reading cursor context for polishing; other authorized accessibility features, including local vocabulary learning and insertion, work independently. Turning vocabulary learning off stops observation and clears pending suggestions.
 
 The main window is organized as Home / History / Dictionary / Settings. The Dictionary tab opens a separate editor window when you click "New". The Home tab shows total dictation time, total characters, average characters per minute, estimated time saved, and dictionary participation statistics.

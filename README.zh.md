@@ -391,6 +391,8 @@ OpenLess 的润色模型只重塑文本。它不回答问题、不执行任务�
 
 Windows 使用 UI Automation 读取当前焦点文本控件的光标附近内容：优先使用 `TextPattern2` 的 caret range；控件不支持 `TextPattern2` 时，兼容使用 `TextPattern` 的 collapsed selection。无法可靠定位 caret 时直接跳过，不会猜测光标位置，也不会影响正常听写。
 
+基于 Chromium 的编辑器（VS Code、Electron 应用）只有在检测到有无障碍客户端在用时，才会实时同步无障碍树里的光标位置，默认设置下 UI Automation 读到的位置可能是过时的。VS Code 里需要把 `editor.accessibilitySupport` 设为 `on`（设置里搜"accessibility support"，改完可能需要重新加载窗口）才能拿到准确的光标上下文；其他基于 Electron 的编辑器一般也有类似设置。普通的 Chrome/Edge 文本框不需要这一步。
+
 光标上下文排除密码输入框、macOS Secure Input（Windows 上为 UIA 密码控件标记）、已知密码管理器和终端。关闭此开关后不会为润色读取光标上下文；其他已授权的辅助功能（如手改学词或插入）独立工作。手改学词关闭后会停止观察并清空待确认建议。
 
 主窗口组织为 首页 / 历史 / 词典 / 设置。点击“新建”时,词典页会打开一个独立的编辑窗口。首页展示总听写时长、总字数、平均每分钟字数、估算节省的时间,以及词典参与统计。

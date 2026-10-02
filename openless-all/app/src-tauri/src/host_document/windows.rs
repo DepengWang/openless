@@ -341,8 +341,9 @@ unsafe fn observe(request: &Request) -> Result<()> {
 
 /// Outcome of locating a usable caret [`IUIAutomationTextRange`].
 enum CaretLookup {
-    /// A zero-length (collapsed) range at the insertion point.
-    Found(IUIAutomationTextRange),
+    /// A zero-length (collapsed) range at the insertion point, tagged with which pattern
+    /// produced it (diagnostic only — never logged with document content).
+    Found(IUIAutomationTextRange, &'static str),
     /// `TextPattern::GetSelection()` fallback found a real (non-collapsed) selection. Per
     /// §8 of the design doc, the first version never guesses which end is the caret —
     /// "selection rewrite" is a separate future feature, not folded into dictation context.
@@ -368,7 +369,9 @@ unsafe fn find_caret_range(element: &IUIAutomationElement) -> CaretLookup {
     {
         let mut is_active = BOOL(0);
         match pattern2.GetCaretRange(&mut is_active) {
-            Ok(range) if is_active.as_bool() => return CaretLookup::Found(range),
+            Ok(range) if is_active.as_bool() => {
+                return CaretLookup::Found(range, "textPattern2")
+            }
             Ok(_) => return CaretLookup::Unavailable("caret is not active"),
             // GetCaretRange itself failed even though the pattern exists; fall through and
             // try the TextPattern/GetSelection compatibility path below.
@@ -406,7 +409,7 @@ unsafe fn find_caret_range(element: &IUIAutomationElement) -> CaretLookup {
         &range,
         TextPatternRangeEndpoint_End,
     ) {
-        Ok(0) => CaretLookup::Found(range),
+        Ok(0) => CaretLookup::Found(range, "textPattern"),
         Ok(_) => CaretLookup::NonCollapsedSelection,
         Err(_) => CaretLookup::Unavailable("selection endpoint comparison failed"),
     }
@@ -416,8 +419,8 @@ unsafe fn find_caret_range(element: &IUIAutomationElement) -> CaretLookup {
 /// context.** Never reads the full document (§7 of the design doc): the range is expanded
 /// from the caret by `MoveEndpointByUnit`, not sliced out of `DocumentRange()`.
 unsafe fn read_document(element: &IUIAutomationElement, budget_chars: usize) -> super::ReadOutcome {
-    let caret = match find_caret_range(element) {
-        CaretLookup::Found(range) => range,
+    let (caret, source) = match find_caret_range(element) {
+        CaretLookup::Found(range, source) => (range, source),
         CaretLookup::NonCollapsedSelection => {
             return super::ReadOutcome::Unavailable("non-collapsed selection")
         }
@@ -439,11 +442,13 @@ unsafe fn read_document(element: &IUIAutomationElement, budget_chars: usize) -> 
     let Ok(before_range) = caret.Clone() else {
         return super::ReadOutcome::Unavailable("caret range clone failed");
     };
-    let _ = before_range.MoveEndpointByUnit(
-        TextPatternRangeEndpoint_Start,
-        TextUnit_Character,
-        -before_want,
-    );
+    let before_moved = before_range
+        .MoveEndpointByUnit(
+            TextPatternRangeEndpoint_Start,
+            TextUnit_Character,
+            -before_want,
+        )
+        .unwrap_or(0);
     let Ok(before_text) = before_range.GetText(text_cap) else {
         return super::ReadOutcome::Unavailable("caret range text unavailable");
     };
@@ -451,15 +456,30 @@ unsafe fn read_document(element: &IUIAutomationElement, budget_chars: usize) -> 
     let Ok(after_range) = caret.Clone() else {
         return super::ReadOutcome::Unavailable("caret range clone failed");
     };
-    let _ =
-        after_range.MoveEndpointByUnit(TextPatternRangeEndpoint_End, TextUnit_Character, after_want);
+    let after_moved = after_range
+        .MoveEndpointByUnit(TextPatternRangeEndpoint_End, TextUnit_Character, after_want)
+        .unwrap_or(0);
     let Ok(after_text) = after_range.GetText(text_cap) else {
         return super::ReadOutcome::Unavailable("caret range text unavailable");
     };
 
-    let mut text = before_text.to_string();
+    let before_text = before_text.to_string();
+    let after_text = after_text.to_string();
+    // Diagnostic only: how far the provider actually let each endpoint move vs. what was
+    // requested, and how many chars that text turned out to hold. No document content.
+    // `moved` vs the resulting char count diverging a lot (e.g. moved=-1200 but
+    // before_text has only a handful of chars) points at a provider whose "character" unit
+    // or caret tracking doesn't match the visible cursor (seen on Chromium-based UIA: VS
+    // Code, Chrome) rather than a bug in this redistribution math.
+    log::info!(
+        "[cursor-context] source={source} before_want={before_want} before_moved={before_moved} before_chars={} after_want={after_want} after_moved={after_moved} after_chars={}",
+        before_text.chars().count(),
+        after_text.chars().count(),
+    );
+
+    let mut text = before_text;
     let cursor = text.chars().count();
-    text.push_str(&after_text.to_string());
+    text.push_str(&after_text);
 
     super::ReadOutcome::Window(super::window_around_cursor(&text, cursor, budget_chars))
 }
