@@ -55,7 +55,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private var pendingImeStop = false
     private var cloudNoteDestination: Pair<String, String>? = null
 
-    private fun sendImeCommand(action: String): Boolean = try {
+    private fun sendImeCommand(action: String, cursorContext: AndroidCursorContext? = null): Boolean = try {
         val request = org.json.JSONObject().apply {
             put("action", action)
             put("requestId", imeRequestId)
@@ -63,6 +63,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             put("raw", rawModeArmed)
             put("quickNote", quickNoteArmed)
             put("cloud", cloudNoteArmed)
+            // Core builds the prompt envelope; only the session's "start" carries the snapshot.
+            if (action == "start" && cursorContext != null) {
+                cursorContext.packageName?.let { put("frontApp", it) }
+                put("cursorBefore", cursorContext.before)
+                put("cursorAfter", cursorContext.after)
+            }
         }
         val response = org.json.JSONObject(OpenLessNative.nativeImeCommand(request.toString()))
         check(response.optBoolean("ok")) { response.optString("error", "IME command failed") }
@@ -70,6 +76,21 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     } catch (_: Throwable) {
         setState("error", ui("语音操作失败，请重试", "Voice operation failed; please retry"))
         false
+    }
+
+    /** Snapshot of the text around the caret for this recording; must run when recording starts, never at stop. Logs metadata only. */
+    private fun captureCursorContext(): AndroidCursorContext? {
+        if (!OpenLessAndroidPreferences.cursorContextEnabled(this)) return null
+        val started = android.os.SystemClock.elapsedRealtime()
+        val editor = currentInputEditorInfo
+        val connection = currentInputConnection
+        val captured = if (editor == null || connection == null) null else ImePrivacyPolicy.captureCursorContext(
+            enabled = true, inputType = editor.inputType, imeOptions = editor.imeOptions, packageName = editor.packageName,
+            readBefore = { connection.getTextBeforeCursor(it, 0) }, readAfter = { connection.getTextAfterCursor(it, 0) })
+        android.util.Log.i("OpenLessImeService", "cursor-context android status=${if (captured == null) "none" else "ok"} " +
+            "source=input_connection before_chars=${captured?.before?.length ?: 0} after_chars=${captured?.after?.length ?: 0} " +
+            "package=${editor?.packageName} elapsed_ms=${android.os.SystemClock.elapsedRealtime() - started}")
+        return captured
     }
 
     private fun cancelImeSession() {
@@ -3551,7 +3572,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             cloudNoteArmed = initialCloud
             imeRequestId = nextImeRequest.incrementAndGet()
             pendingImeStop = false
-            if (!sendImeCommand("start")) { recording = false; processing = false }
+            if (!sendImeCommand("start", captureCursorContext())) { recording = false; processing = false }
         }
     }
 
