@@ -1298,7 +1298,7 @@ export const es: typeof zhCN = {
       desc: 'Historial de conversaciones y contexto guardados en este dispositivo.',
       cursorContextLabel: 'Contexto del cursor (experimental)',
       cursorContextDesc:
-        'Envía el texto cercano al cursor al modelo para pulirlo (solo macOS). Es independiente del aprendizaje local. Se excluyen contraseñas y aplicaciones sensibles conocidas.',
+        'Envía un fragmento breve del texto cercano al cursor al modelo como referencia para nombres propios, homófonos y pronombres al pulir (macOS / Android). El dictado, las notas rápidas y las notas en la nube lo usan, pero el contexto en sí nunca se guarda en notas, historial ni registros; con un modelo en la nube se envía a ese proveedor junto con la solicitud de pulido. Es independiente del aprendizaje local. Se excluyen contraseñas, terminales y aplicaciones sensibles conocidas.',
     },
     codingConsole: {
       title: 'Consola de Claude',

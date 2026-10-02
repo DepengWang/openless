@@ -1304,7 +1304,7 @@ export const de: typeof zhCN = {
       desc: 'Gesprächsverlauf und Kontext, die auf diesem Gerät gespeichert werden.',
       cursorContextLabel: 'Cursorkontext (experimentell)',
       cursorContextDesc:
-        'Text rund um den Cursor zur Überarbeitung an das Modell senden (nur macOS). Diese Einstellung ist vom lokalen Lernen getrennt. Passwortfelder und bekannte sensible Apps sind ausgeschlossen.',
+        'Einen kurzen Textabschnitt rund um den Cursor als Referenz für Eigennamen, Homophone und Bezüge mit der Überarbeitung an das Modell senden (macOS / Android). Diktat, Schnellnotizen und Cloud-Notizen nutzen ihn, der Kontext selbst wird aber nie in Notizen, Verlauf oder Protokolle geschrieben; bei einem Cloud-Modell wird er mit der Überarbeitungsanfrage an diesen Anbieter gesendet. Diese Einstellung ist vom lokalen Lernen getrennt. Passwortfelder, Terminals und bekannte sensible Apps sind ausgeschlossen.',
     },
     codingConsole: {
       title: 'Claude-Konsole',

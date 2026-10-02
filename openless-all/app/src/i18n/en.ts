@@ -1281,7 +1281,7 @@ export const en: typeof zhCN = {
       desc: 'Conversation history and context kept on this device.',
       cursorContextLabel: 'Cursor context (experimental)',
       cursorContextDesc:
-        'Send nearby document text with polish requests (macOS only). This switch is separate from local vocabulary learning. Password fields and known sensitive apps are excluded.',
+        'Send a short stretch of text around the cursor with polish requests as reference for names, homophones and pronouns (macOS / Android). Dictation, quick notes and cloud notes all use it, but the context itself is never written to notes, history or logs; with a cloud model it is sent to that provider with the polish request. This switch is separate from local vocabulary learning. Password fields, terminals and known sensitive apps are excluded.',
     },
     codingConsole: {
       title: 'Claude Console',

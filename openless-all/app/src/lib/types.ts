@@ -509,7 +509,8 @@ export interface UserPreferences {
   streamingInsertSaveClipboard: boolean;
   /** Whether to send the text near the cursor in the document the user is writing to LLM polish as context.
    *  Default false — when on, every dictation reads the foreground app's body text and sends part of it to the LLM provider.
-   *  macOS only; password fields / Secure Input / password managers / terminals are always hard-blocked. */
+   *  macOS and Android (IME) only; password fields / Secure Input (macOS) / password and
+   *  no-personalized-learning editors (Android) / password managers / terminals are always hard-blocked. */
   cursorContextEnabled: boolean;
   vocabularyLearningEnabled: boolean;
   vocabularyLearningSettings: {
