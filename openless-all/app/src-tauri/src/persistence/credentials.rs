@@ -1470,14 +1470,11 @@ fn keyring_entry_for(account: &str) -> Result<keyring::Entry> {
 
 #[cfg(target_os = "android")]
 fn android_credentials_path() -> Result<PathBuf> {
-    // Use the directory cached at startup. A live lookup goes through Tao's
-    // Activity registry, which is empty whenever the Tauri Activity is not in the
-    // foreground — i.e. for nearly all IME use. A sync restore that touched the
-    // vault in that state failed, stayed pending, and left the write gate
-    // rejecting every later write with `recovery_required`.
-    let data_dir = super::android_storage::android_data_dir()
-        .context("resolve Android credential directory")?;
-    Ok(data_dir.join(ANDROID_CREDENTIALS_FILE))
+    let files_dir = crate::android::jni::android::app_files_dir()
+        .map_err(|error| anyhow::anyhow!("resolve Android credential directory: {error}"))?;
+    Ok(PathBuf::from(files_dir)
+        .join("OpenLess")
+        .join(ANDROID_CREDENTIALS_FILE))
 }
 
 #[cfg(target_os = "android")]
