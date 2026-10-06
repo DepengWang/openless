@@ -236,8 +236,11 @@ pub mod android {
         // ndk-context, so use Tao's non-panicking activity registry first. The
         // Context registered by the Application / runtime service returns the
         // same directory and stays valid with no Activity in the foreground.
-        let path = with_tao_android_env(files_dir)
-            .or_else(|tao_error| with_android_env(files_dir).map_err(|_| tao_error))?;
+        let path = with_tao_android_env(files_dir).or_else(|tao_error| {
+            with_android_env(files_dir).map_err(|fallback_error| {
+                format!("{tao_error}; registered Android Context fallback failed: {fallback_error}")
+            })
+        })?;
         Ok(FILES_DIR.get_or_init(|| path).clone())
     }
 
