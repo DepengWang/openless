@@ -63,6 +63,7 @@ pub struct MergePreview {
     conflicts: Vec<RedactedConflict>,
     active_choices: BTreeMap<SyncNamespace, Option<String>>,
     active_conflicts: BTreeMap<String, (SyncNamespace, Option<String>, Option<String>)>,
+    agreed_tie_order: BTreeMap<DocumentKind, Option<BTreeMap<String, usize>>>,
 }
 
 impl fmt::Debug for MergePreview {
@@ -148,7 +149,7 @@ impl MergePreview {
                 return Err(DocumentError::ConflictChoiceRequired);
             }
         }
-        normalize_merged_collection_order(&mut self.source)?;
+        normalize_merged_collection_order(&mut self.source, &self.agreed_tie_order)?;
         validate_sync_documents(self.source, self.revision)
     }
 }
@@ -162,6 +163,14 @@ pub fn diff_sync_documents(
     let base = baseline.map(|set| units(&set.set));
     let left = units(&local.set);
     let right = units(&remote.set);
+    let agreed_tie_order = [
+        DocumentKind::Dictionary,
+        DocumentKind::Corrections,
+        DocumentKind::History,
+    ]
+    .into_iter()
+    .map(|kind| (kind, agreed_collection_order(&local.set, &remote.set, kind)))
+    .collect();
     let keys: BTreeSet<_> = base
         .iter()
         .flat_map(|map| map.keys())
@@ -177,6 +186,7 @@ pub fn diff_sync_documents(
         conflicts: Vec::new(),
         active_choices: BTreeMap::new(),
         active_conflicts: BTreeMap::new(),
+        agreed_tie_order,
     };
     for key in keys {
         let ancestor = base.as_ref().and_then(|map| map.get(&key));
@@ -323,6 +333,63 @@ fn units(set: &DocumentSet) -> UnitMap {
             .insert(key, Entry::Deleted(tombstone.clone()));
     }
     result
+}
+
+fn collection_order(set: &DocumentSet, kind: DocumentKind) -> Vec<String> {
+    let mut documents: Vec<_> = set
+        .documents
+        .iter()
+        .filter(|doc| doc.kind == kind)
+        .collect();
+    documents.sort_by_key(|doc| {
+        doc.value
+            .get("sortIndex")
+            .and_then(Value::as_u64)
+            .unwrap_or(u64::MAX)
+    });
+    documents.into_iter().map(|doc| doc.id.clone()).collect()
+}
+
+fn agreed_collection_order(
+    local: &DocumentSet,
+    remote: &DocumentSet,
+    kind: DocumentKind,
+) -> Option<BTreeMap<String, usize>> {
+    let local_order = collection_order(local, kind);
+    let remote_order = collection_order(remote, kind);
+    let remote_ids: BTreeSet<_> = remote_order.iter().collect();
+    let local_common: Vec<_> = local_order
+        .iter()
+        .filter(|id| remote_ids.contains(id))
+        .cloned()
+        .collect();
+    let local_ids: BTreeSet<_> = local_order.iter().collect();
+    let remote_common: Vec<_> = remote_order
+        .iter()
+        .filter(|id| local_ids.contains(id))
+        .cloned()
+        .collect();
+    let order = if local_common.is_empty() {
+        if local_order <= remote_order {
+            local_order.into_iter().chain(remote_order).collect()
+        } else {
+            remote_order.into_iter().chain(local_order).collect()
+        }
+    } else if local_common == remote_common {
+        local_common
+    } else {
+        return None;
+    };
+    if order.is_empty() {
+        return None;
+    }
+    Some(
+        order
+            .into_iter()
+            .enumerate()
+            .map(|(index, id)| (id, index))
+            .collect(),
+    )
 }
 
 fn unit_key(key: &DocumentKey) -> DocumentKey {

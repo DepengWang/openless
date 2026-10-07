@@ -620,6 +620,28 @@ fn history_set(rows: &[(&str, &str, &str)]) -> ValidatedSyncDocuments {
     export_snapshot(data).unwrap().documents
 }
 
+fn correction_row(id: &str, pattern: &str, replacement: &str, created_at: &str) -> SecretJson {
+    SecretJson::new(json!({
+        "id": id,
+        "pattern": pattern,
+        "replacement": replacement,
+        "enabled": true,
+        "createdAt": created_at,
+        "source": "manual"
+    }))
+}
+
+fn corrections_set(rows: &[(&str, &str, &str, &str)]) -> ValidatedSyncDocuments {
+    let mut data = snapshot();
+    data.corrections = rows
+        .iter()
+        .map(|(id, pattern, replacement, created_at)| {
+            correction_row(id, pattern, replacement, created_at)
+        })
+        .collect();
+    export_snapshot(data).unwrap().documents
+}
+
 fn dictionary_set(rows: Vec<Value>) -> ValidatedSyncDocuments {
     let mut data = snapshot();
     data.dictionary = rows.into_iter().map(SecretJson::new).collect();
@@ -739,6 +761,71 @@ fn equal_or_undated_history_records_converge_with_stable_ties() {
 }
 
 #[test]
+fn agreed_legacy_correction_order_survives_merge() {
+    let local = corrections_set(&[("z", "foo", "bar", ""), ("a", "bar", "baz", "")]);
+    let remote = corrections_set(&[("z", "foo", "bar", ""), ("a", "bar", "baz", "")]);
+
+    let merged = diff_sync_documents(None, &local, &remote)
+        .unwrap()
+        .resolve(&[])
+        .unwrap();
+
+    assert_eq!(ids_in_order(&merged, DocumentKind::Corrections), ["z", "a"]);
+}
+
+#[test]
+fn shared_legacy_correction_order_survives_one_sided_addition() {
+    let local = corrections_set(&[
+        ("new", "new", "value", ""),
+        ("z", "foo", "bar", ""),
+        ("a", "bar", "baz", ""),
+    ]);
+    let remote = corrections_set(&[("z", "foo", "bar", ""), ("a", "bar", "baz", "")]);
+
+    let forward = diff_sync_documents(None, &local, &remote)
+        .unwrap()
+        .resolve(&[])
+        .unwrap();
+    let mirrored = diff_sync_documents(None, &remote, &local)
+        .unwrap()
+        .resolve(&[])
+        .unwrap();
+
+    assert_eq!(
+        ids_in_order(&forward, DocumentKind::Corrections),
+        ["z", "a", "new"]
+    );
+    assert_eq!(
+        ids_in_order(&forward, DocumentKind::Corrections),
+        ids_in_order(&mirrored, DocumentKind::Corrections)
+    );
+}
+
+#[test]
+fn one_sided_legacy_correction_order_survives_merge() {
+    let empty = corrections_set(&[]);
+    let remote = corrections_set(&[("z", "cat", "dog", ""), ("a", "dog", "fox", "")]);
+
+    let forward = diff_sync_documents(None, &empty, &remote)
+        .unwrap()
+        .resolve(&[])
+        .unwrap();
+    let mirrored = diff_sync_documents(None, &remote, &empty)
+        .unwrap()
+        .resolve(&[])
+        .unwrap();
+
+    assert_eq!(
+        ids_in_order(&forward, DocumentKind::Corrections),
+        ["z", "a"]
+    );
+    assert_eq!(
+        ids_in_order(&forward, DocumentKind::Corrections),
+        ids_in_order(&mirrored, DocumentKind::Corrections)
+    );
+}
+
+#[test]
 fn records_that_differ_only_in_list_position_merge_without_a_baseline() {
     let local = history_set(&[
         ("only-local", "2026-09-27T10:00:00Z", "local"),
@@ -816,10 +903,10 @@ fn dictionary_hits_keep_the_highest_count_instead_of_conflicting() {
 }
 
 #[test]
-fn collection_order_follows_the_records_not_a_device_list_position() {
+fn collection_order_is_canonicalized_only_after_merge() {
     let learned = crate::shared_types::LEARNED_VOCAB_NOTE;
     let entry = |id: &str, note: Option<&str>, created_at: &str| json!({"id":id,"phrase":id,"note":note,"enabled":true,"hits":0,"createdAt":created_at});
-    // Deliberately listed in the wrong order.
+    // Direct validation preserves the order exported by the local store.
     let set = dictionary_set(vec![
         entry("learned-new", Some(learned), "2026-09-28T00:00:00Z"),
         entry("manual-old", None, "2026-09-28T17:00:00Z"),
@@ -827,9 +914,24 @@ fn collection_order_follows_the_records_not_a_device_list_position() {
         entry("learned-old", Some(learned), "2026-09-27T00:00:00Z"),
         entry("manual-new", None, "2026-09-29T00:00:00+08:00"),
     ]);
-    // The offset makes manual-old one hour newer as an instant despite its earlier wall-clock date.
     assert_eq!(
         ids_in_order(&set, DocumentKind::Dictionary),
+        [
+            "learned-new",
+            "manual-old",
+            "undated",
+            "learned-old",
+            "manual-new"
+        ]
+    );
+
+    // Merge validation canonicalizes by record data, including the offset instant.
+    let merged = diff_sync_documents(None, &set, &set)
+        .unwrap()
+        .resolve(&[])
+        .unwrap();
+    assert_eq!(
+        ids_in_order(&merged, DocumentKind::Dictionary),
         [
             "manual-old",
             "manual-new",
@@ -843,8 +945,12 @@ fn collection_order_follows_the_records_not_a_device_list_position() {
         ("morning", "2026-09-27T08:00:00Z", "m"),
         ("evening", "2026-09-27T20:00:00Z", "e"),
     ]);
+    let merged = diff_sync_documents(None, &history, &history)
+        .unwrap()
+        .resolve(&[])
+        .unwrap();
     assert_eq!(
-        ids_in_order(&history, DocumentKind::History),
+        ids_in_order(&merged, DocumentKind::History),
         ["evening", "morning"]
     );
 }

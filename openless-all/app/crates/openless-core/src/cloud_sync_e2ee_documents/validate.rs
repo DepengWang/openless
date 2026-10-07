@@ -747,22 +747,27 @@ fn collection_rank(kind: DocumentKind, value: &Value) -> (bool, bool, i64) {
     }
 }
 
-/// `sortIndex` stays on the wire as a dense index so older clients keep restoring in order,
-/// but it is rewritten here from [`collection_rank`]; the incoming value only breaks ties.
+/// `sortIndex` stays on the wire as a dense index so older clients and the local stores keep
+/// their existing order. Merge results opt into [`collection_rank`] separately.
 fn normalize_collection_order(set: &mut DocumentSet) -> DocumentResult<()> {
-    normalize_collection_order_with_tie(set, false)
+    let merge_tie_order = BTreeMap::new();
+    normalize_collection_order_with_ties(set, &merge_tie_order, false)
 }
 
-/// Canonicalize merged records with a device-independent tie-breaker. Directly validated
-/// snapshots retain their incoming position for legacy-client compatibility; merged snapshots
-/// must not carry either side's device-local position forward.
-pub(crate) fn normalize_merged_collection_order(set: &mut DocumentSet) -> DocumentResult<()> {
-    normalize_collection_order_with_tie(set, true)
-}
-
-fn normalize_collection_order_with_tie(
+/// Normalize merged records with a device-independent tie-breaker for records whose relative
+/// order was not agreed by both inputs. Shared records with an agreed order retain that order;
+/// records present on only one side sort after them by ID when their collection rank ties.
+pub(crate) fn normalize_merged_collection_order(
     set: &mut DocumentSet,
-    stable_ties: bool,
+    merge_tie_order: &BTreeMap<DocumentKind, Option<BTreeMap<String, usize>>>,
+) -> DocumentResult<()> {
+    normalize_collection_order_with_ties(set, merge_tie_order, true)
+}
+
+fn normalize_collection_order_with_ties(
+    set: &mut DocumentSet,
+    merge_tie_order: &BTreeMap<DocumentKind, Option<BTreeMap<String, usize>>>,
+    use_collection_rank: bool,
 ) -> DocumentResult<()> {
     for kind in [
         DocumentKind::Dictionary,
@@ -787,15 +792,32 @@ fn normalize_collection_order_with_tie(
         }
         indices.sort_by_cached_key(|index| {
             let doc = &set.documents[*index];
-            let tie = if stable_ties {
-                0
-            } else {
-                doc.value
-                    .get("sortIndex")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(u64::MAX)
+            let tie_order = merge_tie_order.get(&kind);
+            let (tie_group, tie_index, tie_id) = match tie_order {
+                Some(Some(order)) => match order.get(&doc.id) {
+                    Some(index) => (
+                        0u8,
+                        u64::try_from(*index).unwrap_or(u64::MAX),
+                        String::new(),
+                    ),
+                    None => (1u8, 0, doc.id.clone()),
+                },
+                Some(None) => (0u8, 0, doc.id.clone()),
+                None => (
+                    0u8,
+                    doc.value
+                        .get("sortIndex")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(u64::MAX),
+                    doc.id.clone(),
+                ),
             };
-            (collection_rank(kind, &doc.value), tie, doc.id.clone())
+            let rank = if use_collection_rank {
+                collection_rank(kind, &doc.value)
+            } else {
+                (false, false, 0)
+            };
+            (rank, tie_group, tie_index, tie_id)
         });
         for (order, index) in indices.into_iter().enumerate() {
             set.documents[index]
