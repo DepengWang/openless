@@ -750,6 +750,20 @@ fn collection_rank(kind: DocumentKind, value: &Value) -> (bool, bool, i64) {
 /// `sortIndex` stays on the wire as a dense index so older clients keep restoring in order,
 /// but it is rewritten here from [`collection_rank`]; the incoming value only breaks ties.
 fn normalize_collection_order(set: &mut DocumentSet) -> DocumentResult<()> {
+    normalize_collection_order_with_tie(set, false)
+}
+
+/// Canonicalize merged records with a device-independent tie-breaker. Directly validated
+/// snapshots retain their incoming position for legacy-client compatibility; merged snapshots
+/// must not carry either side's device-local position forward.
+pub(crate) fn normalize_merged_collection_order(set: &mut DocumentSet) -> DocumentResult<()> {
+    normalize_collection_order_with_tie(set, true)
+}
+
+fn normalize_collection_order_with_tie(
+    set: &mut DocumentSet,
+    stable_ties: bool,
+) -> DocumentResult<()> {
     for kind in [
         DocumentKind::Dictionary,
         DocumentKind::Corrections,
@@ -773,14 +787,15 @@ fn normalize_collection_order(set: &mut DocumentSet) -> DocumentResult<()> {
         }
         indices.sort_by_cached_key(|index| {
             let doc = &set.documents[*index];
-            (
-                collection_rank(kind, &doc.value),
+            let tie = if stable_ties {
+                0
+            } else {
                 doc.value
                     .get("sortIndex")
                     .and_then(Value::as_u64)
-                    .unwrap_or(u64::MAX),
-                doc.id.clone(),
-            )
+                    .unwrap_or(u64::MAX)
+            };
+            (collection_rank(kind, &doc.value), tie, doc.id.clone())
         });
         for (order, index) in indices.into_iter().enumerate() {
             set.documents[index]

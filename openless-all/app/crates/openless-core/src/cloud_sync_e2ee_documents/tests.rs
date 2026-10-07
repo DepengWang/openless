@@ -675,6 +675,70 @@ fn dictating_on_two_devices_between_syncs_is_not_a_conflict() {
 }
 
 #[test]
+fn equal_or_undated_history_records_converge_with_stable_ties() {
+    let assert_converges = |created_at: &str| {
+        let local = history_set(&[
+            ("first", created_at, "first"),
+            ("second", created_at, "second"),
+        ]);
+        let remote = history_set(&[
+            ("second", created_at, "second"),
+            ("first", created_at, "first"),
+        ]);
+
+        assert_eq!(
+            ids_in_order(&local, DocumentKind::History),
+            ["first", "second"]
+        );
+        assert_eq!(
+            ids_in_order(&remote, DocumentKind::History),
+            ["second", "first"]
+        );
+
+        let forward = diff_sync_documents(None, &local, &remote)
+            .unwrap()
+            .resolve(&[])
+            .unwrap();
+        let mirrored = diff_sync_documents(None, &remote, &local)
+            .unwrap()
+            .resolve(&[])
+            .unwrap();
+        assert_eq!(
+            ids_in_order(&forward, DocumentKind::History),
+            ids_in_order(&mirrored, DocumentKind::History)
+        );
+        assert_eq!(
+            ids_in_order(&forward, DocumentKind::History),
+            ["first", "second"]
+        );
+
+        let third = history_set(&[
+            ("second", created_at, "second"),
+            ("first", created_at, "first"),
+        ]);
+        let forward_again = diff_sync_documents(None, &forward, &third)
+            .unwrap()
+            .resolve(&[])
+            .unwrap();
+        let mirrored_again = diff_sync_documents(None, &mirrored, &third)
+            .unwrap()
+            .resolve(&[])
+            .unwrap();
+        assert_eq!(
+            ids_in_order(&forward_again, DocumentKind::History),
+            ids_in_order(&mirrored_again, DocumentKind::History)
+        );
+        assert_eq!(
+            ids_in_order(&forward_again, DocumentKind::History),
+            ["first", "second"]
+        );
+    };
+
+    assert_converges("2026-09-27T10:00:00Z");
+    assert_converges("");
+}
+
+#[test]
 fn records_that_differ_only_in_list_position_merge_without_a_baseline() {
     let local = history_set(&[
         ("only-local", "2026-09-27T10:00:00Z", "local"),
@@ -758,18 +822,17 @@ fn collection_order_follows_the_records_not_a_device_list_position() {
     // Deliberately listed in the wrong order.
     let set = dictionary_set(vec![
         entry("learned-new", Some(learned), "2026-09-28T00:00:00Z"),
-        entry("manual-old", None, "2026-09-26T00:00:00Z"),
+        entry("manual-old", None, "2026-09-28T17:00:00Z"),
         entry("undated", None, ""),
         entry("learned-old", Some(learned), "2026-09-27T00:00:00Z"),
         entry("manual-new", None, "2026-09-29T00:00:00+08:00"),
     ]);
-    // Manual entries newest first, then learned entries oldest first — how the store adds
-    // them. Offsets are compared as instants, and undated rows close their group.
+    // The offset makes manual-old one hour newer as an instant despite its earlier wall-clock date.
     assert_eq!(
         ids_in_order(&set, DocumentKind::Dictionary),
         [
-            "manual-new",
             "manual-old",
+            "manual-new",
             "undated",
             "learned-old",
             "learned-new"

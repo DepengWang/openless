@@ -12,7 +12,7 @@ use crate::cloud_sync_e2ee_protocol::types::{
 };
 
 use super::types::*;
-use super::validate::{timestamp, validate_sync_documents};
+use super::validate::{normalize_merged_collection_order, timestamp, validate_sync_documents};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -148,6 +148,7 @@ impl MergePreview {
                 return Err(DocumentError::ConflictChoiceRequired);
             }
         }
+        normalize_merged_collection_order(&mut self.source)?;
         validate_sync_documents(self.source, self.revision)
     }
 }
