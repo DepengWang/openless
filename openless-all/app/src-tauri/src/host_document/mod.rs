@@ -55,6 +55,10 @@ use serde::Serialize;
 /// significantly inflating the prompt.
 pub const DEFAULT_BUDGET_CHARS: usize = 600;
 
+/// Hard upper bound for all cursor-context reads, including the debug command. Keeping this
+/// bounded also makes conversions to UIA's signed `maxLength`/move-count parameters safe.
+pub const MAX_BUDGET_CHARS: usize = 4_000;
+
 /// Timeout for a single AX message. 200ms is far above a normal AX round-trip (single-digit
 /// ms); it only catches hung apps.
 #[cfg(target_os = "macos")]
@@ -249,16 +253,36 @@ pub async fn read_around_cursor(budget_chars: usize) -> Option<DocumentWindow> {
     probe_around_cursor(budget_chars).await.window
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub(crate) async fn read_around_cursor_for_target(
+    budget_chars: usize,
+    target: crate::selection::SelectionInsertionTarget,
+) -> Option<DocumentWindow> {
+    #[cfg(target_os = "windows")]
+    {
+        return windows_probe(budget_chars.min(MAX_BUDGET_CHARS), Some(target))
+            .await
+            .window;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos_probe(budget_chars.min(MAX_BUDGET_CHARS), Some(target))
+            .await
+            .window
+    }
+}
+
 /// Read with diagnostics. Used by the debug command; during installation verification
 /// `status` / `reason` show the real per-app coverage.
 pub async fn probe_around_cursor(budget_chars: usize) -> HostDocumentReadResult {
+    let budget_chars = budget_chars.min(MAX_BUDGET_CHARS);
     #[cfg(target_os = "macos")]
     {
-        macos_probe(budget_chars).await
+        macos_probe(budget_chars, None).await
     }
     #[cfg(target_os = "windows")]
     {
-        windows_probe(budget_chars).await
+        windows_probe(budget_chars, None).await
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
@@ -271,9 +295,18 @@ pub async fn probe_around_cursor(budget_chars: usize) -> HostDocumentReadResult 
 }
 
 #[cfg(target_os = "macos")]
-async fn macos_probe(budget_chars: usize) -> HostDocumentReadResult {
+async fn macos_probe(
+    budget_chars: usize,
+    target: Option<crate::selection::SelectionInsertionTarget>,
+) -> HostDocumentReadResult {
     let started = std::time::Instant::now();
-    let (app_name, bundle_id) = crate::selection::current_front_app_parts();
+    let (app_name, bundle_id) = match target.as_ref() {
+        Some(target) => (
+            crate::selection::front_app_for_target(target),
+            crate::selection::bundle_id_for_target(target),
+        ),
+        None => crate::selection::current_front_app_parts(),
+    };
 
     let finish = |mut result: HostDocumentReadResult| {
         result.app_name = app_name.clone();
@@ -294,8 +327,9 @@ async fn macos_probe(budget_chars: usize) -> HostDocumentReadResult {
     }
 
     // AX is a synchronous blocking API: it must leave the tokio worker, or one hung app stalls the whole runtime.
-    let handle =
-        tokio::task::spawn_blocking(move || macos::read_around_cursor_blocking(budget_chars, gate));
+    let handle = tokio::task::spawn_blocking(move || {
+        macos::read_around_cursor_blocking(budget_chars, gate, target)
+    });
 
     match tokio::time::timeout(READ_TIMEOUT, handle).await {
         Ok(Ok(ReadOutcome::Window(window))) => finish(HostDocumentReadResult {
@@ -331,9 +365,15 @@ fn blocked_result(reason: BlockReason) -> HostDocumentReadResult {
 /// `windows::read_around_cursor_blocking` because it needs the live focused element, unlike
 /// macOS where the bundle-id-only pre-check can run before leaving the async worker.
 #[cfg(target_os = "windows")]
-async fn windows_probe(budget_chars: usize) -> HostDocumentReadResult {
+async fn windows_probe(
+    budget_chars: usize,
+    target: Option<crate::selection::SelectionInsertionTarget>,
+) -> HostDocumentReadResult {
     let started = std::time::Instant::now();
-    let (app_name, _) = crate::selection::current_front_app_parts();
+    let app_name = target
+        .as_ref()
+        .and_then(crate::selection::front_app_for_target)
+        .or_else(crate::selection::current_front_app);
 
     let finish = |mut result: HostDocumentReadResult| {
         result.app_name = app_name.clone();
@@ -341,7 +381,9 @@ async fn windows_probe(budget_chars: usize) -> HostDocumentReadResult {
         result
     };
 
-    let handle = tokio::task::spawn_blocking(move || windows::read_around_cursor_blocking(budget_chars));
+    let handle = tokio::task::spawn_blocking(move || {
+        windows::read_around_cursor_blocking(budget_chars, target)
+    });
 
     match tokio::time::timeout(WINDOWS_READ_TIMEOUT, handle).await {
         Ok(Ok(ReadOutcome::Window(window))) => finish(HostDocumentReadResult {

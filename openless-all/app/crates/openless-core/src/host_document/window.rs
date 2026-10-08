@@ -16,7 +16,8 @@ pub fn plan_window(len: usize, cursor: usize, budget: usize) -> WindowSpan {
             cursor_in_span: 0,
         };
     }
-    let before = cursor.min(budget * 4 / 5);
+    let before_budget = budget / 5 * 4 + (budget % 5) * 4 / 5;
+    let before = cursor.min(before_budget);
     let after = (len - cursor).min(budget - before);
     let before = cursor.min(budget - after);
     WindowSpan {
@@ -56,7 +57,10 @@ mod tests {
         let long = "字".repeat(2000);
         let span = plan_window(long.chars().count(), 1000, 600);
         assert!(span.cursor_in_span <= 480, "before 不应超过预算的 80%");
-        assert!(span.len - span.cursor_in_span <= 120, "after 不应超过预算的 20%");
+        assert!(
+            span.len - span.cursor_in_span <= 120,
+            "after 不应超过预算的 20%"
+        );
         assert!(span.len <= 600);
     }
 
@@ -91,6 +95,13 @@ mod tests {
         assert_eq!(window.after(), "后文");
         // 两个 emoji 字符仍然完整，没有产生孤立的 surrogate / 替换字符。
         assert!(window.text.chars().all(|c| c != '\u{FFFD}'));
+    }
+
+    #[test]
+    fn extreme_budget_does_not_overflow() {
+        let span = plan_window(usize::MAX, usize::MAX / 2, usize::MAX);
+        assert_eq!(span.len, usize::MAX);
+        assert!(span.cursor_in_span <= span.len);
     }
 
     #[test]
