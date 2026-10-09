@@ -498,14 +498,14 @@ try {
 
   // A failed preference write must roll back the credential written first;
   // otherwise the next attempt could pair a token with the old origin.
-  mockMarketplaceSignedIn = false;
+  mockMarketplaceSignedIn = true;
   savedOrigin = 'https://old.example.com';
   savedToken = 'old-token';
   failOriginWrite = true;
   server = {
     ...initial,
     authState: 'signed_out',
-    syncState: 'sign_in_required',
+    syncState: 'disabled',
     account: null,
     serviceOrigin: savedOrigin,
   };

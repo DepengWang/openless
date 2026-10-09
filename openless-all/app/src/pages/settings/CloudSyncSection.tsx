@@ -518,6 +518,7 @@ export function CloudSyncSection() {
     status?.authState !== 'expired' &&
     status?.syncState !== 'sign_in_required' &&
     (status?.authState === 'signed_in' || authSignedIn);
+  const canConfigureCustomServer = status?.authState !== 'signed_in';
   const working = busy || status?.syncState === 'syncing';
   const unlocked = status?.keyState === 'unlocked';
   const available = status !== null;
@@ -605,7 +606,7 @@ export function CloudSyncSection() {
             {t('cloudSyncE2ee.signIn')}
           </Btn>
         )}
-        {!loading && !signedIn && (
+        {!loading && canConfigureCustomServer && (
           <div
             className="ol-cloud-sync-account"
             style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}
