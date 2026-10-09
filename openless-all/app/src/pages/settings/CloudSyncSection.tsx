@@ -138,7 +138,7 @@ function normalizeCustomServerOrigin(value: string): string | null | undefined {
     ) {
       return undefined;
     }
-    return `${origin.origin}/`;
+    return origin.origin;
   } catch {
     return undefined;
   }

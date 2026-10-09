@@ -102,7 +102,7 @@ const factory = new Function(
   'exports',
   'require',
   '__listen',
-  `${compiled};return {CloudSyncSection,PasswordForm,ConsentForm,ProtocolWarning,RestoreReview};`,
+  `${compiled};return {CloudSyncSection,PasswordForm,ConsentForm,ProtocolWarning,RestoreReview,normalizeCustomServerOrigin};`,
 );
 
 const initial: EncryptedSyncStatus = {
@@ -217,6 +217,12 @@ const components = factory(
     return () => events.delete(name);
   },
 );
+assert.equal(
+  components.normalizeCustomServerOrigin(' https://sync.example.com/ '),
+  'https://sync.example.com',
+);
+assert.equal(components.normalizeCustomServerOrigin('https://sync.example.com/path'), undefined);
+assert.equal(components.normalizeCustomServerOrigin(''), null);
 Object.defineProperty(globalThis, 'window', { configurable: true, value: new EventTarget() });
 
 try {
