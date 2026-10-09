@@ -1,4 +1,4 @@
-import { invokeOrMock, isTauri } from './shared';
+import { invokeOrMock, isTauriNow } from './shared';
 
 export const CLOUD_SYNC_E2EE_CONSENT_VERSION = 'encrypted-full-snapshot-v1';
 
@@ -138,7 +138,7 @@ export const cloudSyncE2eeGetUiPreferences = (): Promise<{
 } | null> => invokeOrMock('cloud_sync_e2ee_get_ui_preferences', undefined, unavailable);
 
 export async function mirrorEncryptedSyncUiPreferences(): Promise<void> {
-  if (!isTauri) unavailable();
+  if (!isTauriNow()) unavailable();
   const { flushEncryptedSyncUiPreferences } = await import('../encryptedSyncUiBridge');
   await flushEncryptedSyncUiPreferences();
 }

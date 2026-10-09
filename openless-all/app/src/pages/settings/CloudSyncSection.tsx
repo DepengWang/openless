@@ -646,14 +646,45 @@ export function CloudSyncSection() {
                 }
                 setBusy(true);
                 void (async () => {
-                  await Promise.all([
-                    updatePrefs((value) => ({
+                  const previousOrigin = prefs?.syncCustomServerOrigin ?? null;
+                  const previousToken = await readCredential(CLOUD_SYNC_CUSTOM_TOKEN_ACCOUNT);
+                  let tokenWriteAttempted = false;
+                  let originWriteAttempted = false;
+                  try {
+                    // Persist the secret first. If the preference write fails,
+                    // the rollback below removes the possibility of a token
+                    // being paired with a different server origin.
+                    tokenWriteAttempted = true;
+                    await setCredential(CLOUD_SYNC_CUSTOM_TOKEN_ACCOUNT, token);
+                    originWriteAttempted = true;
+                    await updatePrefs((value) => ({
                       ...value,
                       syncCustomServerOrigin: origin,
-                    })),
-                    setCredential(CLOUD_SYNC_CUSTOM_TOKEN_ACCOUNT, token),
-                    refresh(),
-                  ]);
+                    }));
+                  } catch (error) {
+                    let rollbackFailed = false;
+                    if (originWriteAttempted) {
+                      try {
+                        await updatePrefs((value) => ({
+                          ...value,
+                          syncCustomServerOrigin: previousOrigin,
+                        }));
+                      } catch {
+                        rollbackFailed = true;
+                      }
+                    }
+                    if (tokenWriteAttempted) {
+                      try {
+                        await setCredential(CLOUD_SYNC_CUSTOM_TOKEN_ACCOUNT, previousToken ?? '');
+                      } catch {
+                        rollbackFailed = true;
+                      }
+                    }
+                    if (rollbackFailed)
+                      console.error('[cloud-sync] custom server configuration rollback failed');
+                    throw error;
+                  }
+                  await refresh();
                   if (token) {
                     acceptStatus(await cloudSyncE2eeSignInWithToken());
                   } else {
