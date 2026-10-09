@@ -214,6 +214,11 @@ const dependencies: Record<string, any> = {
     calls.push(['enable', enabled]);
     return update({ enabled });
   },
+  cloudSyncE2eeSignInWithToken: async () => update({ authState: 'signed_in', syncState: 'ready' }),
+  cloudSyncE2eeSignOut: async () => {
+    savedToken = null;
+    return update({ authState: 'signed_out', syncState: 'disabled', account: null });
+  },
   readCredential: async (_account: string) => savedToken,
   setCredential: async (account: string, value: string) => {
     calls.push(['setCredential', account, value]);
@@ -532,6 +537,19 @@ try {
       ['setCredential', 'cloud_sync.custom_token', 'new-token'],
       ['setCredential', 'cloud_sync.custom_token', 'old-token'],
     ],
+  );
+  failOriginWrite = false;
+  calls.length = 0;
+  tree = custom();
+  find(tree, (node) => node.props.children === 'cloudSyncE2ee.customServerSave').props.onClick();
+  await settle();
+  tree = custom();
+  find(tree, (node) => node.props.children === 'cloudSyncE2ee.signOut').props.onClick();
+  await settle();
+  tree = custom();
+  assert.equal(
+    find(tree, (node) => node.type === 'input' && node.props.type === 'password').props.value,
+    '',
   );
   customHooks.unmount();
   await settle();

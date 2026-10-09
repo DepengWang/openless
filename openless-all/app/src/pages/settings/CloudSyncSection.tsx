@@ -421,7 +421,18 @@ export function CloudSyncSection() {
       const next = await request();
       if (!valid() || !acceptStatus(next)) return;
       if (signOut) {
-        setAuthSignedIn(false);
+        try {
+          const auth = await marketplaceAuthStatus();
+          if (valid()) setAuthSignedIn(auth.signedIn);
+        } catch {
+          if (valid()) setAuthSignedIn(false);
+        }
+        try {
+          const token = await readCredential(CLOUD_SYNC_CUSTOM_TOKEN_ACCOUNT);
+          if (valid()) setCustomServerToken(token ?? '');
+        } catch {
+          if (valid()) setCustomServerToken('');
+        }
         await refresh();
       }
       if (next.syncState === 'conflict') {
@@ -514,11 +525,12 @@ export function CloudSyncSection() {
     }
   };
 
-  const signedIn =
+  const syncSignedIn =
+    status?.authState === 'signed_in' && status?.syncState !== 'sign_in_required';
+  const identityAvailable =
     status?.authState !== 'expired' &&
     status?.syncState !== 'sign_in_required' &&
-    (status?.authState === 'signed_in' || authSignedIn);
-  const canConfigureCustomServer = status?.authState !== 'signed_in';
+    (syncSignedIn || authSignedIn);
   const working = busy || status?.syncState === 'syncing';
   const unlocked = status?.keyState === 'unlocked';
   const available = status !== null;
@@ -527,8 +539,8 @@ export function CloudSyncSection() {
   const noticeError = notice?.error ? notice.key.replace(/^errors\./, '') : null;
   const visibleError = noticeError ?? (!notice ? lastError : null);
   const focus = status
-    ? setupFocus(status, signedIn, preparingStep, setupReached)
-    : signedIn
+    ? setupFocus(status, identityAvailable, preparingStep, setupReached)
+    : identityAvailable
       ? 'enable'
       : 'enable';
   const focusTitle =
@@ -591,12 +603,14 @@ export function CloudSyncSection() {
           <Toggle
             on={status?.enabled ?? false}
             label={t('cloudSyncE2ee.enable')}
-            disabled={!available || !signedIn || working || loading || status?.recoveryRequired}
+            disabled={
+              !available || !identityAvailable || working || loading || status?.recoveryRequired
+            }
             onToggle={(next) => (next ? begin('enable') : setDialog({ kind: 'disable' }))}
           />
         </div>
         {loading && <p role="status">{t('cloudSyncE2ee.loading')}</p>}
-        {!loading && !signedIn && (
+        {!loading && !syncSignedIn && !authSignedIn && (
           <Btn
             variant="primary"
             icon="user"
@@ -606,7 +620,7 @@ export function CloudSyncSection() {
             {t('cloudSyncE2ee.signIn')}
           </Btn>
         )}
-        {!loading && canConfigureCustomServer && (
+        {!loading && !syncSignedIn && (
           <div
             className="ol-cloud-sync-account"
             style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}
@@ -701,7 +715,7 @@ export function CloudSyncSection() {
             <p className="ol-cloud-sync-scope">{t('cloudSyncE2ee.customServerHint')}</p>
           </div>
         )}
-        {signedIn && (
+        {syncSignedIn && (
           <div className="ol-cloud-sync-account">
             <Icon name="user" size={16} />
             <span>{t('cloudSyncE2ee.account')}</span>
@@ -728,7 +742,7 @@ export function CloudSyncSection() {
             <p>{t(focusDetail)}</p>
             <div className="ol-cloud-sync-status-line">
               <span>{t(unlocked ? 'cloudSyncE2ee.keyUnlocked' : 'cloudSyncE2ee.keyLocked')}</span>
-              {!unlocked && signedIn && (
+              {!unlocked && syncSignedIn && (
                 <Btn
                   size="sm"
                   variant="blue"
@@ -751,7 +765,7 @@ export function CloudSyncSection() {
                       : 'cloudSyncE2ee.snapshotUnknown',
                 )}
               </span>
-              {status.hasCloudSnapshot === false && signedIn && unlocked && (
+              {status.hasCloudSnapshot === false && syncSignedIn && unlocked && (
                 <Btn
                   size="sm"
                   variant="blue"
@@ -771,7 +785,7 @@ export function CloudSyncSection() {
             )}
           </div>
         )}
-        {signedIn && available && (
+        {syncSignedIn && available && (
           <div className="ol-cloud-sync-actions">
             {!unlocked && status?.hasCloudSnapshot && (
               <Btn disabled={working} onClick={() => begin('unlock')}>
@@ -854,7 +868,7 @@ export function CloudSyncSection() {
             {(visibleError === 'unlock' ||
               visibleError === 'invalidPassword' ||
               visibleError === 'secureStorage') &&
-              signedIn && (
+              identityAvailable && (
                 <Btn
                   size="sm"
                   variant="blue"
