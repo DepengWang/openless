@@ -6,6 +6,43 @@ import { en } from './en';
 // 갱신해 주세요(갱신되지 않은 key 는 ...en 으로 영어로 fallback 됩니다).
 export const ko: typeof zhCN = {
   ...en,
+  voiceEdit: {
+    title: '음성 편집 세션',
+    description:
+      '초안을 음성으로 입력하거나 대상 텍스트를 불러온 뒤 음성 지시로 편집하고 확인하여 입력란에 반영합니다.',
+    targetHint: '대상 입력란에 커서를 놓거나 편집할 텍스트를 선택하세요.',
+    androidTargetHint: '오버레이 스와이프 동작에 음성 편집을 지정하세요. 대상 앱에서 녹음한 뒤 스와이프하면 미리보기가 열리며, 확인하면 원래 입력란에 반영됩니다.',
+    startDraft: '초안 음성 입력 시작',
+    status: '상태: {{phase}}',
+    turns: '지시 횟수: {{count}}',
+    draft: '초안',
+    preview: '현재 미리보기',
+    history: '지시 기록',
+    turn: '{{count}}번째 지시',
+    polishedInstruction: '다듬은 지시: {{text}}',
+    turnPreview: '미리보기: {{text}}',
+    finishDraft: '초안 완료',
+    nextInstruction: '다음 음성 지시 녹음',
+    finishInstruction: '음성 지시 완료',
+    commit: '확인 후 반영',
+    restart: '다시 시작',
+    openPanel: '패널 열기',
+    errors: {
+      voiceEditFieldChanged: '원래 입력란의 내용이 변경되었습니다. 편집을 다시 시작하세요.',
+      voiceEditTargetUnavailable:
+        '대상 입력란 또는 전체 텍스트를 읽을 수 없습니다. 대상을 다시 선택하세요.',
+    },
+    phase: {
+      dictating: '초안 음성 입력 중',
+      draft_ready: '초안 준비 완료',
+      editing: '지시 녹음 중',
+      applying: '편집 계획 적용 중',
+      preview: '확인 대기 중',
+      committing: '입력란에 반영 중',
+      completed: '반영 완료',
+      cancelled: '취소됨',
+    },
+  },
   cloudSyncE2ee: {
     protocolTitle: '클라우드 동기화 약관 및 개인정보 안내',
     protocolIntro:
@@ -2022,6 +2059,7 @@ export const ko: typeof zhCN = {
         right: '오른쪽',
       },
       androidOverlayGestureAction: {
+        voice_edit: '음성 편집',
         none: '동작 없음',
         quick_note: '속기',
         translation: '번역',

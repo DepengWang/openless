@@ -6,6 +6,43 @@ import { en } from './en';
 // (keys not updated fall back to English via ...en).
 export const ja: typeof zhCN = {
   ...en,
+  voiceEdit: {
+    title: '音声編集セッション',
+    description:
+      '下書きを音声入力するか対象のテキストを読み込み、音声指示で編集してから確認して入力欄に反映します。',
+    targetHint: '対象の入力欄にカーソルを置くか、編集するテキストを選択してください。',
+    androidTargetHint: 'オーバーレイのスワイプ操作に「音声編集」を設定してください。対象アプリで録音後にスワイプしてプレビューを開き、確認すると元の入力欄へ書き戻します。',
+    startDraft: '下書きの音声入力を開始',
+    status: '状態：{{phase}}',
+    turns: '指示回数：{{count}}',
+    draft: '下書き',
+    preview: '現在のプレビュー',
+    history: '指示履歴',
+    turn: '{{count}} 回目',
+    polishedInstruction: '整形後：{{text}}',
+    turnPreview: 'プレビュー：{{text}}',
+    finishDraft: '下書きを完了',
+    nextInstruction: '次の音声指示を録音',
+    finishInstruction: '音声指示を完了',
+    commit: '確認して反映',
+    restart: 'もう一度開始',
+    openPanel: 'パネルを開く',
+    errors: {
+      voiceEditFieldChanged: '元の入力欄の内容が変更されました。編集をやり直してください。',
+      voiceEditTargetUnavailable:
+        '対象の入力欄または全文を取得できませんでした。対象を選び直してください。',
+    },
+    phase: {
+      dictating: '下書きを音声入力中',
+      draft_ready: '下書き準備完了',
+      editing: '指示を録音中',
+      applying: '編集計画を適用中',
+      preview: '確認待ち',
+      committing: '入力欄に反映中',
+      completed: '反映済み',
+      cancelled: 'キャンセル済み',
+    },
+  },
   cloudSyncE2ee: {
     protocolTitle: 'クラウド同期の同意事項とプライバシー',
     protocolIntro:
@@ -2037,6 +2074,7 @@ export const ja: typeof zhCN = {
         right: '右',
       },
       androidOverlayGestureAction: {
+        voice_edit: '音声編集',
         none: '操作なし',
         quick_note: '速記',
         translation: '翻訳',

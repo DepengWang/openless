@@ -1,6 +1,44 @@
 import type { zhCN } from './zh-CN';
 
 export const es: typeof zhCN = {
+  voiceEdit: {
+    title: 'Sesión de edición por voz',
+    description:
+      'Dicte un borrador o cargue el texto de destino, edítelo con instrucciones de voz y confirme para insertarlo.',
+    targetHint: 'Coloque el cursor en el campo de destino o seleccione el texto que desea editar.',
+    androidTargetHint: 'Asigna la edición por voz a un gesto de la superposición. Graba en la aplicación de destino y desliza para ver la vista previa. Al confirmar, se actualiza el campo original.',
+    startDraft: 'Dictar un borrador',
+    status: 'Estado: {{phase}}',
+    turns: 'Instrucciones: {{count}}',
+    draft: 'Borrador',
+    preview: 'Vista previa actual',
+    history: 'Historial de instrucciones',
+    turn: 'Instrucción {{count}}',
+    polishedInstruction: 'Reformulación: {{text}}',
+    turnPreview: 'Vista previa: {{text}}',
+    finishDraft: 'Terminar borrador',
+    nextInstruction: 'Grabar la siguiente instrucción',
+    finishInstruction: 'Terminar instrucción',
+    commit: 'Confirmar e insertar',
+    restart: 'Volver a empezar',
+    openPanel: 'Abrir panel',
+    errors: {
+      voiceEditFieldChanged:
+        'El texto del campo original ha cambiado. Inicie una nueva sesión de edición.',
+      voiceEditTargetUnavailable:
+        'No se pudo leer el campo de destino o su texto completo. Seleccione de nuevo el destino.',
+    },
+    phase: {
+      dictating: 'Dictando borrador',
+      draft_ready: 'Borrador listo',
+      editing: 'Grabando instrucción',
+      applying: 'Aplicando el plan de edición',
+      preview: 'Esperando confirmación',
+      committing: 'Insertando en el campo',
+      completed: 'Insertado',
+      cancelled: 'Cancelado',
+    },
+  },
   cloudSyncE2ee: {
     protocolTitle: 'Acuerdo de sincronización y privacidad',
     protocolIntro:
@@ -2107,6 +2145,7 @@ export const es: typeof zhCN = {
         right: 'Derecha',
       },
       androidOverlayGestureAction: {
+        voice_edit: 'Edición por voz',
         none: 'Sin acción',
         quick_note: 'Nota rápida',
         translation: 'Traducción',

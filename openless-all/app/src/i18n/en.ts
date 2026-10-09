@@ -4,6 +4,43 @@ import type { zhCN } from './zh-CN';
 
 // Type-level guarantee that en mirrors the zh-CN shape.
 export const en: typeof zhCN = {
+  voiceEdit: {
+    title: 'Voice editing session',
+    description:
+      'Dictate a draft or load the target text, edit it with voice instructions, then confirm to write it back.',
+    targetHint: 'Place the cursor in the target input field, or select the text to edit.',
+    androidTargetHint: 'Assign Voice editing to an overlay swipe. Record in the target app, then swipe to preview. Confirmation writes back to the original field.',
+    startDraft: 'Start dictating a draft',
+    status: 'Status: {{phase}}',
+    turns: 'Turns: {{count}}',
+    draft: 'Draft',
+    preview: 'Current preview',
+    history: 'Instruction history',
+    turn: 'Turn {{count}}',
+    polishedInstruction: 'Polished: {{text}}',
+    turnPreview: 'Preview: {{text}}',
+    finishDraft: 'Finish draft',
+    nextInstruction: 'Record next instruction',
+    finishInstruction: 'Finish instruction',
+    commit: 'Confirm and write back',
+    restart: 'Start again',
+    openPanel: 'Open panel',
+    errors: {
+      voiceEditFieldChanged: 'The original field text changed. Start a new editing session.',
+      voiceEditTargetUnavailable:
+        'The target field or its full text could not be read. Select the target again.',
+    },
+    phase: {
+      dictating: 'Dictating draft',
+      draft_ready: 'Draft ready',
+      editing: 'Recording instruction',
+      applying: 'Applying edit plan',
+      preview: 'Awaiting confirmation',
+      committing: 'Writing to input field',
+      completed: 'Written',
+      cancelled: 'Cancelled',
+    },
+  },
   cloudSyncE2ee: {
     protocolTitle: 'Cloud sync agreement and privacy notice',
     protocolIntro:
@@ -2067,6 +2104,7 @@ export const en: typeof zhCN = {
         right: 'Right',
       },
       androidOverlayGestureAction: {
+        voice_edit: 'Voice editing',
         none: 'No action',
         quick_note: 'Quick note',
         translation: 'Translation',

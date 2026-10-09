@@ -1,6 +1,43 @@
 import type { zhCN } from './zh-CN';
 
 export const fr: typeof zhCN = {
+  voiceEdit: {
+    title: 'Session de modification vocale',
+    description:
+      'Dictez un brouillon ou chargez le texte cible, modifiez-le par instructions vocales, puis confirmez son insertion.',
+    targetHint: 'Placez le curseur dans le champ cible ou sélectionnez le texte à modifier.',
+    androidTargetHint: "Attribuez l’édition vocale à un geste de la superposition. Enregistrez dans l’application cible, puis balayez pour ouvrir l’aperçu. La confirmation met à jour le champ d’origine.",
+    startDraft: 'Dicter un brouillon',
+    status: 'État : {{phase}}',
+    turns: 'Instructions : {{count}}',
+    draft: 'Brouillon',
+    preview: 'Aperçu actuel',
+    history: 'Historique des instructions',
+    turn: 'Instruction {{count}}',
+    polishedInstruction: 'Reformulation : {{text}}',
+    turnPreview: 'Aperçu : {{text}}',
+    finishDraft: 'Terminer le brouillon',
+    nextInstruction: 'Enregistrer la prochaine instruction',
+    finishInstruction: 'Terminer l’instruction',
+    commit: 'Confirmer et insérer',
+    restart: 'Recommencer',
+    openPanel: 'Ouvrir le panneau',
+    errors: {
+      voiceEditFieldChanged: 'Le texte du champ d’origine a changé. Recommencez la modification.',
+      voiceEditTargetUnavailable:
+        'Le champ cible ou son texte complet est inaccessible. Sélectionnez à nouveau la cible.',
+    },
+    phase: {
+      dictating: 'Dictée du brouillon',
+      draft_ready: 'Brouillon prêt',
+      editing: 'Enregistrement de l’instruction',
+      applying: 'Application du plan de modification',
+      preview: 'En attente de confirmation',
+      committing: 'Insertion dans le champ',
+      completed: 'Inséré',
+      cancelled: 'Annulé',
+    },
+  },
   cloudSyncE2ee: {
     protocolTitle: 'Accord de synchronisation et confidentialité',
     protocolIntro:
@@ -2136,6 +2173,7 @@ export const fr: typeof zhCN = {
         right: 'Droite',
       },
       androidOverlayGestureAction: {
+        voice_edit: 'Édition vocale',
         none: 'Aucune action',
         quick_note: 'Note rapide',
         translation: 'Traduction',

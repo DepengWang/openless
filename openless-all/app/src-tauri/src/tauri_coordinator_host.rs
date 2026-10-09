@@ -1520,6 +1520,24 @@ impl TauriCoordinatorHost {
         }
     }
 
+    pub(crate) fn set_voice_edit_interactive(&self, interactive: bool) {
+        if let Some(app) = self.app() {
+            crate::set_voice_edit_interactive(&app, interactive);
+        }
+    }
+
+    pub(crate) fn show_voice_edit(&self) {
+        if let Some(app) = self.app() {
+            crate::show_voice_edit_window(&app);
+        }
+    }
+
+    pub(crate) fn hide_voice_edit(&self) {
+        if let Some(app) = self.app() {
+            crate::hide_voice_edit_window(&app);
+        }
+    }
+
     pub(crate) fn hide_less_computer(&self) {
         if let Some(app) = self.app() {
             crate::hide_less_computer_window(&app);
