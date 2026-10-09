@@ -177,7 +177,7 @@ const dependencies: Record<string, any> = {
   Btn: 'button',
   Card: 'card',
   Toggle: 'toggle',
-  isTauri: true,
+  isTauriNow: () => true,
   marketplaceAuthStatus: async () => ({ signedIn: mockMarketplaceSignedIn }),
   cloudSyncE2eeStatus: async () => deferredStatus ?? { ...server },
   mirrorEncryptedSyncUiPreferences: async () => {

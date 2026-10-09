@@ -7,7 +7,7 @@ import { Btn, Card } from '../_atoms';
 import { Toggle } from './shared';
 import { useHotkeySettings } from '../../state/HotkeySettingsContext';
 import { marketplaceAuthStatus, readCredential, setCredential } from '../../lib/ipc';
-import { isTauri } from '../../lib/ipc/shared';
+import { isTauriNow } from '../../lib/ipc/shared';
 import {
   CLOUD_SYNC_E2EE_CONSENT_VERSION as CONSENT_VERSION,
   cloudSyncE2eeStatus,
@@ -294,7 +294,7 @@ export function CloudSyncSection() {
     window.addEventListener('openless:sync-ui-persistence-failed', uiPersistenceFailed);
     void (async () => {
       try {
-        if (isTauri) {
+        if (isTauriNow()) {
           const { listen } = await import('@tauri-apps/api/event');
           for (const [name, kind] of [
             ['cloud-sync-e2ee:state', 'state'],
@@ -614,7 +614,7 @@ export function CloudSyncSection() {
           <Btn
             variant="primary"
             icon="user"
-            disabled={!isTauri || !available || working}
+            disabled={!isTauriNow() || !available || working}
             onClick={() => setShowLogin(true)}
           >
             {t('cloudSyncE2ee.signIn')}
