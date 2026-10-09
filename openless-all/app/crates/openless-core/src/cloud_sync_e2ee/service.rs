@@ -189,10 +189,10 @@ impl EncryptedSyncService {
         }))
     }
 
-    /// Live origin for every new connection attempt. Never cache this past a
-    /// single call — a Settings-page save must take effect immediately, not
-    /// only after a process restart.
-    fn origin(&self) -> String {
+    /// Live remote origin for every connection attempt. The local encrypted
+    /// store intentionally keeps the stable built-in origin as its AAD/key
+    /// identity; remote collection buckets include this origin separately.
+    fn remote_origin(&self) -> String {
         self.0
             .data
             .custom_server_origin()
@@ -208,7 +208,7 @@ impl EncryptedSyncService {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         value.sequence = self.0.sequence.load(Ordering::Acquire).to_string();
-        value.service_origin = self.origin();
+        value.service_origin = self.remote_origin();
         match self.0.data.generation() {
             Ok(generation) => value.local_generation = generation.as_str().into(),
             Err(_) => {
@@ -433,7 +433,8 @@ impl EncryptedSyncService {
         // through a system/env proxy that may not even be running.
         let use_system_proxy =
             self.read_custom_token().await.is_none() && crate::net::use_system_proxy();
-        let proxy_policy = ProxyPolicy::for_origin(&self.origin(), use_system_proxy);
+        let origin = self.remote_origin();
+        let proxy_policy = ProxyPolicy::for_origin(&origin, use_system_proxy);
         log::warn!(
             "[e2ee-token] connect: use_system_proxy={use_system_proxy} proxy_policy={proxy_policy:?} env HTTPS_PROXY={:?} HTTP_PROXY={:?} ALL_PROXY={:?} NO_PROXY={:?}",
             std::env::var("HTTPS_PROXY").ok(),
@@ -453,7 +454,7 @@ impl EncryptedSyncService {
         // the user explicitly opted into self-hosted mode by setting it, and a
         // session can only ever be bound to one credential at a time.
         let custom_token = self.read_custom_token().await;
-        let origin = self.origin();
+        let origin = self.remote_origin();
         log::warn!(
             "[e2ee-token] connect_with_proxy_policy: origin={} custom_token_present={} has_cached_connection={}",
             origin,
@@ -471,6 +472,7 @@ impl EncryptedSyncService {
                 _ => false,
             };
             connection.expires_at > Instant::now() + Duration::from_secs(30)
+                && connection.transport.service_origin() == origin.as_str()
                 && connection.transport.proxy_policy() == proxy_policy
                 && credential_unchanged
         } else {
@@ -599,7 +601,8 @@ impl EncryptedSyncService {
         let mut runtime = self.0.runtime.lock().await;
         self.initialize(&mut runtime).await?;
         self.check_cancelled()?;
-        let policy = ProxyPolicy::for_origin(&self.origin(), use_system_proxy);
+        let origin = self.remote_origin();
+        let policy = ProxyPolicy::for_origin(&origin, use_system_proxy);
         self.connect_with_proxy_policy(&mut runtime, policy).await
     }
 
@@ -1305,7 +1308,7 @@ impl EncryptedSyncService {
 
     fn scope(&self, runtime: &Runtime, vault: &str, key: &str) -> SyncResult<SyncScope> {
         Ok(SyncScope {
-            service_origin: self.origin(),
+            service_origin: self.remote_origin(),
             owner_github_id: self.owner(runtime)?.into(),
             vault_id: vault.into(),
             key_id: key.into(),

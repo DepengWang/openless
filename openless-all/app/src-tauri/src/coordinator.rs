@@ -469,15 +469,14 @@ fn shared_backend_from_stores(
         hotkey_status,
         qa_context,
     );
-    let service_origin = prefs
-        .get()
-        .sync_custom_server_origin
-        .filter(|origin| !origin.trim().is_empty())
-        .unwrap_or_else(|| openless_core::cloud_sync_e2ee::DEFAULT_SYNC_SERVICE_ORIGIN.into());
     dependencies.marketplace_config = Some(
         openless_core::MarketplaceConfig::production().with_encrypted_sync(
             openless_core::cloud_sync_e2ee::EncryptedSyncConfig {
-                service_origin,
+                // The custom origin is a live remote-routing preference. Keep
+                // the adapter's local encrypted-storage identity stable across
+                // remote-server changes; the sync service reads the preference
+                // separately when it builds the transport.
+                service_origin: openless_core::cloud_sync_e2ee::DEFAULT_SYNC_SERVICE_ORIGIN.into(),
                 app_version: env!("CARGO_PKG_VERSION").into(),
             },
         ),

@@ -123,6 +123,26 @@ function setupFocus(
 function localError(reason: string): unknown {
   return { details: { reason } };
 }
+function normalizeCustomServerOrigin(value: string): string | null | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    const origin = new URL(trimmed);
+    if (
+      origin.protocol !== 'https:' ||
+      origin.username ||
+      origin.password ||
+      origin.pathname !== '/' ||
+      origin.search ||
+      origin.hash
+    ) {
+      return undefined;
+    }
+    return `${origin.origin}/`;
+  } catch {
+    return undefined;
+  }
+}
 async function prepareEncryptedSync(): Promise<EnablePreparation> {
   await mirrorEncryptedSyncUiPreferences();
   return cloudSyncE2eePrepareEnable(CONSENT_VERSION);
@@ -619,12 +639,17 @@ export function CloudSyncSection() {
               disabled={working}
               onClick={() => {
                 const token = customServerToken.trim();
+                const origin = normalizeCustomServerOrigin(customServerOrigin);
+                if (origin === undefined) {
+                  showError(localError('unsupported_protocol'));
+                  return;
+                }
                 setBusy(true);
                 void (async () => {
                   await Promise.all([
                     updatePrefs((value) => ({
                       ...value,
-                      syncCustomServerOrigin: customServerOrigin.trim() || null,
+                      syncCustomServerOrigin: origin,
                     })),
                     setCredential(CLOUD_SYNC_CUSTOM_TOKEN_ACCOUNT, token),
                     refresh(),
@@ -651,7 +676,10 @@ export function CloudSyncSection() {
             <strong dir="auto">
               {status?.account?.login
                 ? customServerOrigin.trim()
-                  ? `${status.account.login}@${customServerOrigin.trim().replace(/^[a-z]+:\/\//i, '').replace(/\/$/, '')}`
+                  ? `${status.account.login}@${customServerOrigin
+                      .trim()
+                      .replace(/^[a-z]+:\/\//i, '')
+                      .replace(/\/$/, '')}`
                   : `@${status.account.login}`
                 : loginHint
                   ? `@${loginHint}`

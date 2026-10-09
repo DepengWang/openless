@@ -118,6 +118,7 @@ struct Data {
     fail_restore: AtomicBool,
     capture_gate: Mutex<Option<Arc<crate::cloud_sync_e2ee_store::gate::SyncWriteGate>>>,
     export_attempts: AtomicU64,
+    custom_origin: Mutex<Option<String>>,
 }
 impl Data {
     fn new() -> Arc<Self> {
@@ -165,7 +166,12 @@ impl Data {
             fail_restore: AtomicBool::new(false),
             capture_gate: Mutex::new(None),
             export_attempts: AtomicU64::new(0),
+            custom_origin: Mutex::new(None),
         })
+    }
+
+    fn set_custom_server_origin(&self, origin: Option<String>) {
+        *self.custom_origin.lock().unwrap() = origin;
     }
     fn edit(&self, text: &str) {
         self.documents
@@ -257,7 +263,7 @@ impl SyncServiceData for Data {
         self.documents.lock().unwrap().source_device.clone()
     }
     fn custom_server_origin(&self) -> Option<String> {
-        None
+        self.custom_origin.lock().unwrap().clone()
     }
     fn changes(&self) -> tokio::sync::watch::Receiver<SyncChange> {
         self.changes.subscribe()
@@ -1405,6 +1411,38 @@ async fn custom_token_credential_change_forces_reconnect_not_stale_cache() {
     fixture.set_custom_token("token-b").await;
     fixture.prepare().await;
     assert_eq!(server.state.lock().unwrap().token_auth_requests, 2);
+}
+
+#[tokio::test]
+async fn custom_server_origin_change_forces_reconnect_not_stale_cache() {
+    let first_server = Server::start().await;
+    let replacement_server = Server::start().await;
+    let fixture = Fixture::new(&first_server).await;
+    fixture.set_custom_token("fixture-custom-token").await;
+    fixture.prepare().await;
+    assert_eq!(
+        first_server.state.lock().unwrap().token_auth_requests,
+        1
+    );
+
+    fixture
+        .data
+        .set_custom_server_origin(Some(replacement_server.origin.clone()));
+    fixture.service.sign_in_with_custom_token().await.unwrap();
+
+    assert_eq!(
+        replacement_server
+            .state
+            .lock()
+            .unwrap()
+            .token_auth_requests,
+        1,
+        "changing the live server origin must not reuse the old transport"
+    );
+    assert_eq!(
+        fixture.service.status().service_origin,
+        replacement_server.origin
+    );
 }
 
 #[tokio::test]
