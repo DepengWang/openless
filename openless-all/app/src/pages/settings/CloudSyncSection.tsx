@@ -651,12 +651,16 @@ export function CloudSyncSection() {
             <Btn
               size="sm"
               variant="blue"
-              disabled={working}
+              disabled={working || !prefs}
               onClick={() => {
                 const token = customServerToken.trim();
                 const origin = normalizeCustomServerOrigin(customServerOrigin);
                 if (origin === undefined) {
                   showError(localError('unsupported_protocol'));
+                  return;
+                }
+                if (!prefs) {
+                  showError(localError('unavailable'));
                   return;
                 }
                 setBusy(true);
