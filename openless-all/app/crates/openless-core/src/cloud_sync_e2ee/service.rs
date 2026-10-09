@@ -1822,12 +1822,6 @@ impl EncryptedSyncService {
         use crate::domains::MarketplaceApi;
         self.0.auto_suspended.store(true, Ordering::Release);
         self.0.cancelled.store(true, Ordering::Release);
-        // Preserve the account API's existing fail-closed guarantee immediately,
-        // even while an earlier sync task is draining its native I/O worker.
-        // Harmless to set even in custom-token mode: it only makes the
-        // marketplace's own `read_access_token` fail until the next real
-        // GitHub login, which self-heals and deletes nothing.
-        self.0.marketplace.invalidate_authentication();
         let mut runtime = self.0.runtime.lock().await;
         runtime.key = None;
         runtime.preview = None;
@@ -1854,6 +1848,10 @@ impl EncryptedSyncService {
         } else {
             // OAuth logout is independent of encrypted journal/key cleanup. Always
             // attempt it; denied sync-key deletion cannot keep GitHub authorized.
+            // Tombstone the Marketplace session only for an OAuth-backed sync
+            // session. A custom-token sign-out must leave the unrelated GitHub
+            // Marketplace session usable.
+            self.0.marketplace.invalidate_authentication();
             self.0
                 .marketplace
                 .logout()

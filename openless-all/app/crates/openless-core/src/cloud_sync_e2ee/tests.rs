@@ -460,6 +460,7 @@ impl Server {
 
 struct Fixture {
     service: EncryptedSyncService,
+    marketplace: Arc<crate::marketplace::MarketplaceService>,
     data: Arc<Data>,
     vault: Arc<Vault>,
     root: std::path::PathBuf,
@@ -510,7 +511,7 @@ impl Fixture {
                 origin: server.origin.clone(),
                 github_client_id: CLIENT.into(),
             },
-            marketplace,
+            Arc::clone(&marketplace),
             local,
             data.clone(),
             vault.clone(),
@@ -518,6 +519,7 @@ impl Fixture {
         );
         Self {
             service,
+            marketplace,
             data,
             vault,
             root,
@@ -1426,6 +1428,16 @@ async fn sign_out_with_custom_token_forgets_only_the_custom_token_not_github() {
     assert!(
         github_token.is_some(),
         "sign_out from a custom-token session must never delete an unrelated GitHub credential"
+    );
+    assert_eq!(
+        fixture
+            .marketplace
+            .read_access_token()
+            .await
+            .unwrap()
+            .expose_secret(),
+        "fixture-github-token",
+        "custom-token sign-out must not invalidate the unrelated Marketplace session"
     );
 }
 
