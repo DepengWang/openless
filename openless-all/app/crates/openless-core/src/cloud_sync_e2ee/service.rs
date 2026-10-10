@@ -142,6 +142,8 @@ struct Shared {
     auto_suspended: AtomicBool,
     sequence: AtomicU64,
     wake: tokio::sync::Notify,
+    #[cfg(test)]
+    runtime_release_count: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -186,6 +188,8 @@ impl EncryptedSyncService {
             auto_suspended: AtomicBool::new(false),
             sequence: AtomicU64::new(0),
             wake: tokio::sync::Notify::new(),
+            #[cfg(test)]
+            runtime_release_count: AtomicU64::new(0),
         }))
     }
 
@@ -198,6 +202,11 @@ impl EncryptedSyncService {
             .custom_server_origin()
             .filter(|origin| !origin.trim().is_empty())
             .unwrap_or_else(|| self.0.config.origin.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime_release_count_for_test(&self) -> u64 {
+        self.0.runtime_release_count.load(Ordering::Acquire)
     }
 
     pub(crate) fn status(&self) -> EncryptedSyncStatus {
@@ -2124,6 +2133,8 @@ impl EncryptedSyncService {
             // Pause/lock/manual work must be able to acquire the runtime during
             // the delay. Every retry revalidates the current service state.
             drop(runtime);
+            #[cfg(test)]
+            self.0.runtime_release_count.fetch_add(1, Ordering::Release);
             if !local_busy || self.0.cancelled.load(Ordering::Acquire) {
                 return;
             }
