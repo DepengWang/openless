@@ -480,10 +480,11 @@ impl EncryptedSyncService {
                 // added, or just cleared) always forces a fresh connect.
                 _ => false,
             };
-            connection.expires_at > Instant::now() + Duration::from_secs(30)
-                && connection.transport.service_origin() == origin.as_str()
-                && connection.transport.proxy_policy() == proxy_policy
-                && credential_unchanged
+            let expires = connection.expires_at > Instant::now() + Duration::from_secs(30);
+            let origin_matches = connection.transport.service_origin().trim_end_matches('/')
+                == origin.trim_end_matches('/');
+            let proxy_matches = connection.transport.proxy_policy() == proxy_policy;
+            expires && origin_matches && proxy_matches && credential_unchanged
         } else {
             false
         };
