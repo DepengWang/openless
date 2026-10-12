@@ -144,7 +144,7 @@ struct Data {
     custom_origin: Mutex<Option<String>>,
     trusted_legacy_origin: Mutex<Option<String>>,
     baseline_revision: AtomicU64,
-    origin_write_failures: AtomicU64,
+    origin_write_failures: Mutex<u64>,
 }
 impl Data {
     fn new() -> Arc<Self> {
@@ -195,7 +195,7 @@ impl Data {
             custom_origin: Mutex::new(None),
             trusted_legacy_origin: Mutex::new(None),
             baseline_revision: AtomicU64::new(0),
-            origin_write_failures: AtomicU64::new(0),
+            origin_write_failures: Mutex::new(0),
         })
     }
 
@@ -297,15 +297,12 @@ impl SyncServiceData for Data {
         self.custom_origin.lock().unwrap().clone()
     }
     fn set_custom_server_origin(&self, origin: Option<String>) -> SyncResult<()> {
-        if self
-            .origin_write_failures
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                value.checked_sub(1)
-            })
-            .is_ok()
-        {
+        let mut failures = self.origin_write_failures.lock().unwrap();
+        if *failures > 0 {
+            *failures -= 1;
             return Err(error("local_storage_unavailable"));
         }
+        drop(failures);
         Data::set_custom_server_origin(self, origin);
         Ok(())
     }
@@ -1662,10 +1659,7 @@ async fn configuration_failure_rolls_back_both_stores_and_stays_disabled() {
     fixture
         .data
         .set_custom_server_origin(Some(server.origin.clone()));
-    fixture
-        .data
-        .origin_write_failures
-        .store(1, Ordering::Release);
+    *fixture.data.origin_write_failures.lock().unwrap() = 1;
     assert_eq!(
         fixture
             .service
@@ -1695,10 +1689,7 @@ async fn failed_configuration_rollback_is_recovered_before_authentication() {
     fixture
         .data
         .set_custom_server_origin(Some(server.origin.clone()));
-    fixture
-        .data
-        .origin_write_failures
-        .store(2, Ordering::Release);
+    *fixture.data.origin_write_failures.lock().unwrap() = 2;
     assert_eq!(
         fixture
             .service
@@ -2049,10 +2040,7 @@ async fn configuration_failure_discards_cached_identity_and_memory_key() {
     let fixture = Fixture::new(&server).await;
     fixture.prepare().await;
     fixture.create(true).await.unwrap();
-    fixture
-        .data
-        .origin_write_failures
-        .store(1, Ordering::Release);
+    *fixture.data.origin_write_failures.lock().unwrap() = 1;
     fixture
         .service
         .configure_server(Some("https://new.example".into()), "new-token".into())

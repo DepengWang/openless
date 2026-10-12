@@ -1025,6 +1025,10 @@ fn error_status_matches(code: RemoteErrorCode, status: u16) -> bool {
     }
 }
 
+pub(crate) fn canonical_origin(origin: &str) -> Result<String> {
+    parse_origin(origin, cfg!(test)).map(|url| url.origin().ascii_serialization())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -2393,8 +2397,4 @@ mod tests {
         }
         assert_eq!(server.finish().await.len(), 1);
     }
-}
-
-pub(crate) fn canonical_origin(origin: &str) -> Result<String> {
-    parse_origin(origin, cfg!(test)).map(|url| url.origin().ascii_serialization())
 }
