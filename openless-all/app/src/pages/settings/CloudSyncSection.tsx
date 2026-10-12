@@ -526,12 +526,13 @@ export function CloudSyncSection() {
     }
   };
 
+  const customServerConfigured = Boolean(prefs?.syncCustomServerOrigin?.trim());
   const syncSignedIn =
     status?.authState === 'signed_in' && status?.syncState !== 'sign_in_required';
   const identityAvailable =
     status?.authState !== 'expired' &&
     status?.syncState !== 'sign_in_required' &&
-    (syncSignedIn || authSignedIn);
+    (syncSignedIn || (Boolean(prefs) && !customServerConfigured && authSignedIn));
   const working = busy || status?.syncState === 'syncing';
   const unlocked = status?.keyState === 'unlocked';
   const available = status !== null;
@@ -611,7 +612,7 @@ export function CloudSyncSection() {
           />
         </div>
         {loading && <p role="status">{t('cloudSyncE2ee.loading')}</p>}
-        {!loading && !syncSignedIn && !authSignedIn && (
+        {!loading && !customServerConfigured && !syncSignedIn && !authSignedIn && (
           <Btn
             variant="primary"
             icon="user"

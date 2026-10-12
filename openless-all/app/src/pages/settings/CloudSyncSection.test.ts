@@ -550,9 +550,26 @@ try {
     find(tree, (node) => node.type === 'input' && node.props.type === 'password').props.value,
     '',
   );
+  assert.equal(
+    find(tree, (node) => node.type === 'toggle').props.disabled,
+    true,
+    'Marketplace auth cannot enable a signed-out custom sync server',
+  );
   customHooks.unmount();
   await settle();
   assert.equal(events.size, 0);
+  mockMarketplaceSignedIn = false;
+  const signedOutCustomHooks = new Hooks();
+  const signedOutCustom = () => signedOutCustomHooks.render(() => components.CloudSyncSection());
+  signedOutCustom();
+  await settle();
+  tree = signedOutCustom();
+  assert(
+    !nodes(tree).some((node) => node.props.children === 'cloudSyncE2ee.signIn'),
+    'custom sync must not offer a GitHub sign-in button',
+  );
+  signedOutCustomHooks.unmount();
+  await settle();
 } finally {
   Reflect.deleteProperty(globalThis, 'window');
 }
