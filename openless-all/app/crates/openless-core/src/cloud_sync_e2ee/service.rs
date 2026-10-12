@@ -720,17 +720,17 @@ impl EncryptedSyncService {
     }
 
     async fn connect(&self, runtime: &mut Runtime) -> SyncResult<()> {
-        self.connect_with_settings(runtime, crate::net::use_system_proxy(), false)
+        self.initialize(runtime).await?;
+        self.connect_initialized(runtime, crate::net::use_system_proxy(), false)
             .await
     }
 
-    async fn connect_with_settings(
+    async fn connect_initialized(
         &self,
         runtime: &mut Runtime,
         use_system_proxy: bool,
         require_custom: bool,
     ) -> SyncResult<()> {
-        self.initialize(runtime).await?;
         self.check_cancelled()?;
         if runtime.retry_at.is_some_and(|at| at > Instant::now()) {
             return Err(error("rate_limited"));
@@ -916,7 +916,8 @@ impl EncryptedSyncService {
         use_system_proxy: bool,
     ) -> SyncResult<()> {
         let mut runtime = self.0.runtime.lock().await;
-        self.connect_with_settings(&mut runtime, use_system_proxy, false)
+        self.initialize(&mut runtime).await?;
+        self.connect_initialized(&mut runtime, use_system_proxy, false)
             .await
     }
 
@@ -2251,9 +2252,12 @@ impl EncryptedSyncService {
     pub(crate) async fn sign_in_with_custom_token(&self) -> SyncResult<EncryptedSyncStatus> {
         let mut runtime = self.0.runtime.try_lock().map_err(|_| error("busy"))?;
         self.begin();
-        let result = self
-            .connect_with_settings(&mut runtime, crate::net::use_system_proxy(), true)
-            .await;
+        let result = async {
+            self.initialize(&mut runtime).await?;
+            self.connect_initialized(&mut runtime, crate::net::use_system_proxy(), true)
+                .await
+        }
+        .await;
         self.finish(&mut runtime, &result);
         result.map(|()| self.status())
     }
