@@ -36,6 +36,8 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(target_os = "windows")]
+mod uia_text;
+#[cfg(target_os = "windows")]
 pub(crate) use windows::insert_with_delivery_check;
 
 #[cfg(target_os = "macos")]

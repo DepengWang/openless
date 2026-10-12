@@ -7,7 +7,7 @@ use std::sync::{
     mpsc, Arc, OnceLock,
 };
 use std::time::{Duration, Instant};
-use windows::core::{implement, Interface, Result, BSTR, PWSTR, VARIANT};
+use windows::core::{implement, Interface, Result, PWSTR, VARIANT};
 use windows::Win32::{
     Foundation::{CloseHandle, BOOL, HWND},
     System::{
@@ -711,18 +711,7 @@ fn cursor_read_plan(budget_chars: usize) -> Option<(i32, i32, i32)> {
     Some((over_fetch, over_fetch, text_cap))
 }
 
-fn decode_uia_utf16(units: &[u16]) -> std::result::Result<String, &'static str> {
-    String::from_utf16(units).map_err(|_| "UIA text contains invalid UTF-16")
-}
-
-fn decode_uia_text(text: &BSTR) -> std::result::Result<String, &'static str> {
-    decode_uia_utf16(text.as_wide())
-}
-
-/// Read one range side and verify that the provider honored the requested character movement.
-/// UIA permits a provider to substitute a larger text unit when `TextUnit_Character` is not
-/// supported; rejecting inconsistent movement/text results prevents that fallback from exposing
-/// a document-sized range as if it were cursor-local context.
+/// Keep endpoint checks separate from text length: UIA units are linguistic, not Unicode scalars.
 unsafe fn read_range_side(
     caret: &IUIAutomationTextRange,
     endpoint: TextPatternRangeEndpoint,
@@ -762,12 +751,7 @@ unsafe fn read_range_side(
     let text = range
         .GetText(text_cap)
         .map_err(|_| "caret range text unavailable")?;
-    let text = decode_uia_text(&text)?;
-    if text.encode_utf16().count() > text_cap as usize
-        || text.chars().count() > moved.unsigned_abs() as usize
-    {
-        return Err("caret range text length was inconsistent");
-    }
+    let text = super::uia_text::decode_bounded_utf16(text.as_wide(), text_cap as usize)?;
     Ok(RangeText { text, moved })
 }
 
@@ -918,12 +902,6 @@ mod cursor_context_tests {
     fn cursor_read_plan_is_bounded_and_overfetches_both_sides() {
         assert_eq!(cursor_read_plan(600), Some((1200, 1200, 2464)));
         assert_eq!(cursor_read_plan(usize::MAX), Some((8000, 8000, 16064)));
-    }
-
-    #[test]
-    fn invalid_uia_utf16_is_rejected() {
-        assert!(decode_uia_utf16(&[0xD800]).is_err());
-        assert_eq!(decode_uia_utf16(&[0xD83D, 0xDE42]).unwrap(), "🙂");
     }
 
     #[test]
