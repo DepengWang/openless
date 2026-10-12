@@ -6,7 +6,8 @@ export const fr: typeof zhCN = {
     description:
       'Dictez un brouillon ou chargez le texte cible, modifiez-le par instructions vocales, puis confirmez son insertion.',
     targetHint: 'Placez le curseur dans le champ cible ou sélectionnez le texte à modifier.',
-    androidTargetHint: "Attribuez l’édition vocale à un geste de la superposition. Enregistrez dans l’application cible, puis balayez pour ouvrir l’aperçu. La confirmation met à jour le champ d’origine.",
+    androidTargetHint:
+      'Attribuez l’édition vocale à un geste de la superposition. Enregistrez dans l’application cible, puis balayez pour ouvrir l’aperçu. La confirmation met à jour le champ d’origine.',
     startDraft: 'Dicter un brouillon',
     status: 'État : {{phase}}',
     turns: 'Instructions : {{count}}',
@@ -1356,7 +1357,7 @@ export const fr: typeof zhCN = {
       desc: 'Historique des conversations et contexte conservés sur cet appareil.',
       cursorContextLabel: 'Contexte du curseur (expérimental)',
       cursorContextDesc:
-        'Envoyer un court extrait du texte autour du curseur au modèle comme référence pour les noms propres, les homophones et les pronoms lors de la reformulation (macOS / Android). La dictée, les notes rapides et les notes cloud l’utilisent, mais le contexte lui-même n’est jamais écrit dans les notes, l’historique ou les journaux ; avec un modèle cloud, il est envoyé à ce fournisseur avec la demande de reformulation. Ce réglage est indépendant de l’apprentissage local. Les champs de mot de passe, les terminaux et les applications sensibles connues sont exclus.',
+        'Envoyer un court extrait du texte autour du curseur au modèle comme référence pour les noms propres, les homophones et les pronoms lors de la reformulation (macOS / Windows / Android). La dictée, les notes rapides et les notes cloud l’utilisent, mais le contexte lui-même n’est jamais écrit dans les notes, l’historique ou les journaux ; avec un modèle cloud, il est envoyé à ce fournisseur avec la demande de reformulation. Ce réglage est indépendant de l’apprentissage local. Les champs de mot de passe, les terminaux et les applications sensibles connues sont exclus.',
     },
     codingConsole: {
       title: 'Console Claude',

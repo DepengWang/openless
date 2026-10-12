@@ -6,7 +6,8 @@ export const es: typeof zhCN = {
     description:
       'Dicte un borrador o cargue el texto de destino, edítelo con instrucciones de voz y confirme para insertarlo.',
     targetHint: 'Coloque el cursor en el campo de destino o seleccione el texto que desea editar.',
-    androidTargetHint: 'Asigna la edición por voz a un gesto de la superposición. Graba en la aplicación de destino y desliza para ver la vista previa. Al confirmar, se actualiza el campo original.',
+    androidTargetHint:
+      'Asigna la edición por voz a un gesto de la superposición. Graba en la aplicación de destino y desliza para ver la vista previa. Al confirmar, se actualiza el campo original.',
     startDraft: 'Dictar un borrador',
     status: 'Estado: {{phase}}',
     turns: 'Instrucciones: {{count}}',
@@ -1336,7 +1337,7 @@ export const es: typeof zhCN = {
       desc: 'Historial de conversaciones y contexto guardados en este dispositivo.',
       cursorContextLabel: 'Contexto del cursor (experimental)',
       cursorContextDesc:
-        'Envía un fragmento breve del texto cercano al cursor al modelo como referencia para nombres propios, homófonos y pronombres al pulir (macOS / Android). El dictado, las notas rápidas y las notas en la nube lo usan, pero el contexto en sí nunca se guarda en notas, historial ni registros; con un modelo en la nube se envía a ese proveedor junto con la solicitud de pulido. Es independiente del aprendizaje local. Se excluyen contraseñas, terminales y aplicaciones sensibles conocidas.',
+        'Envía un fragmento breve del texto cercano al cursor al modelo como referencia para nombres propios, homófonos y pronombres al pulir (macOS / Windows / Android). El dictado, las notas rápidas y las notas en la nube lo usan, pero el contexto en sí nunca se guarda en notas, historial ni registros; con un modelo en la nube se envía a ese proveedor junto con la solicitud de pulido. Es independiente del aprendizaje local. Se excluyen contraseñas, terminales y aplicaciones sensibles conocidas.',
     },
     codingConsole: {
       title: 'Consola de Claude',

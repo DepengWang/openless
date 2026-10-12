@@ -36,11 +36,7 @@ export type PipelineMode = 'traditional' | 'multimodal';
 export type InsertStatus = 'inserted' | 'pasteSent' | 'copiedFallback' | 'failed' | 'notRequested';
 
 export type HistorySource =
-  | 'voice'
-  | 'quick_note'
-  | 'selection_polish'
-  | 'selection_voice_edit'
-  | 'voice_edit';
+  'voice' | 'quick_note' | 'selection_polish' | 'selection_voice_edit' | 'voice_edit';
 
 /** Per-day count for the Overview yearly activity heatmap (date = local date YYYY-MM-DD). */
 export interface ActivityDay {
@@ -515,9 +511,10 @@ export interface UserPreferences {
    *  When on, Cmd+V can re-paste that output, matching the one-shot path. Default true. */
   streamingInsertSaveClipboard: boolean;
   /** Whether to send the text near the cursor in the document the user is writing to LLM polish as context.
-   *  Default false — when on, every dictation reads the foreground app's body text and sends part of it to the LLM provider.
-   *  macOS and Android (IME) only; password fields / Secure Input (macOS) / password and
-   *  no-personalized-learning editors (Android) / password managers / terminals are always hard-blocked. */
+   *  Default false — when on, every dictation reads cursor-local text for the configured LLM provider.
+   *  Available on macOS, Windows and Android (IME); password fields / Secure Input (macOS) /
+   *  UIA password controls (Windows) / no-personalized-learning editors (Android) / password
+   *  managers / terminals are always hard-blocked. */
   cursorContextEnabled: boolean;
   vocabularyLearningEnabled: boolean;
   vocabularyLearningSettings: {

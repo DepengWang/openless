@@ -7,7 +7,8 @@ export const de: typeof zhCN = {
       'Diktieren Sie einen Entwurf oder laden Sie den Zieltext, bearbeiten Sie ihn per Sprache und bestätigen Sie die Übernahme.',
     targetHint:
       'Setzen Sie den Cursor in das Zielfeld oder markieren Sie den zu bearbeitenden Text.',
-    androidTargetHint: 'Weisen Sie einer Overlay-Wischgeste die Sprachbearbeitung zu. Nehmen Sie in der Ziel-App auf und wischen Sie zur Vorschau. Nach der Bestätigung wird das ursprüngliche Feld aktualisiert.',
+    androidTargetHint:
+      'Weisen Sie einer Overlay-Wischgeste die Sprachbearbeitung zu. Nehmen Sie in der Ziel-App auf und wischen Sie zur Vorschau. Nach der Bestätigung wird das ursprüngliche Feld aktualisiert.',
     startDraft: 'Entwurf diktieren',
     status: 'Status: {{phase}}',
     turns: 'Anweisungen: {{count}}',
@@ -1343,7 +1344,7 @@ export const de: typeof zhCN = {
       desc: 'Gesprächsverlauf und Kontext, die auf diesem Gerät gespeichert werden.',
       cursorContextLabel: 'Cursorkontext (experimentell)',
       cursorContextDesc:
-        'Einen kurzen Textabschnitt rund um den Cursor als Referenz für Eigennamen, Homophone und Bezüge mit der Überarbeitung an das Modell senden (macOS / Android). Diktat, Schnellnotizen und Cloud-Notizen nutzen ihn, der Kontext selbst wird aber nie in Notizen, Verlauf oder Protokolle geschrieben; bei einem Cloud-Modell wird er mit der Überarbeitungsanfrage an diesen Anbieter gesendet. Diese Einstellung ist vom lokalen Lernen getrennt. Passwortfelder, Terminals und bekannte sensible Apps sind ausgeschlossen.',
+        'Einen kurzen Textabschnitt rund um den Cursor als Referenz für Eigennamen, Homophone und Bezüge mit der Überarbeitung an das Modell senden (macOS / Windows / Android). Diktat, Schnellnotizen und Cloud-Notizen nutzen ihn, der Kontext selbst wird aber nie in Notizen, Verlauf oder Protokolle geschrieben; bei einem Cloud-Modell wird er mit der Überarbeitungsanfrage an diesen Anbieter gesendet. Diese Einstellung ist vom lokalen Lernen getrennt. Passwortfelder, Terminals und bekannte sensible Apps sind ausgeschlossen.',
     },
     codingConsole: {
       title: 'Claude-Konsole',
