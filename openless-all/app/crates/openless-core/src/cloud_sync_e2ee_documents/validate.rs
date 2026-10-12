@@ -754,9 +754,9 @@ fn normalize_collection_order(set: &mut DocumentSet) -> DocumentResult<()> {
     normalize_collection_order_with_ties(set, &merge_tie_order, false)
 }
 
-/// Normalize merged records with a device-independent tie-breaker for records whose relative
-/// order was not agreed by both inputs. Shared records with an agreed order retain that order;
-/// records present on only one side sort after them by ID when their collection rank ties.
+/// Normalize merged records with a device-independent tie-breaker. When shared records agree
+/// on order, ties retain both inputs' order, including one-sided inserts between shared records.
+/// Disagreement on shared order falls back to ID order for tied records.
 pub(crate) fn normalize_merged_collection_order(
     set: &mut DocumentSet,
     merge_tie_order: &BTreeMap<DocumentKind, Option<BTreeMap<String, usize>>>,

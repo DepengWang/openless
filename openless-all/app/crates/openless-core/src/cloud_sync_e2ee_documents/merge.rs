@@ -369,17 +369,41 @@ fn agreed_collection_order(
         .filter(|id| local_ids.contains(id))
         .cloned()
         .collect();
-    let order = if local_common.is_empty() {
-        if local_order <= remote_order {
-            local_order.into_iter().chain(remote_order).collect()
-        } else {
-            remote_order.into_iter().chain(local_order).collect()
-        }
-    } else if local_common == remote_common {
-        local_common
-    } else {
+    if local_common != remote_common {
         return None;
-    };
+    }
+    let mut order = Vec::new();
+    let (mut local_start, mut remote_start) = (0, 0);
+    // Shared anchors keep one-sided inserts in place; gap order must not depend on the device.
+    for anchor in local_common.iter().map(Some).chain(std::iter::once(None)) {
+        let local_end = anchor.map_or(local_order.len(), |anchor| {
+            local_start
+                + local_order[local_start..]
+                    .iter()
+                    .position(|id| id == anchor)
+                    .expect("shared anchor exists in local collection")
+        });
+        let remote_end = anchor.map_or(remote_order.len(), |anchor| {
+            remote_start
+                + remote_order[remote_start..]
+                    .iter()
+                    .position(|id| id == anchor)
+                    .expect("shared anchor exists in remote collection")
+        });
+        let local_gap = &local_order[local_start..local_end];
+        let remote_gap = &remote_order[remote_start..remote_end];
+        let (first, second) = if local_gap <= remote_gap {
+            (local_gap, remote_gap)
+        } else {
+            (remote_gap, local_gap)
+        };
+        order.extend(first.iter().chain(second).cloned());
+        if let Some(anchor) = anchor {
+            order.push(anchor.clone());
+            local_start = local_end + 1;
+            remote_start = remote_end + 1;
+        }
+    }
     if order.is_empty() {
         return None;
     }

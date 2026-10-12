@@ -793,7 +793,7 @@ fn shared_legacy_correction_order_survives_one_sided_addition() {
 
     assert_eq!(
         ids_in_order(&forward, DocumentKind::Corrections),
-        ["z", "a", "new"]
+        ["new", "z", "a"]
     );
     assert_eq!(
         ids_in_order(&forward, DocumentKind::Corrections),
@@ -953,4 +953,131 @@ fn collection_order_is_canonicalized_only_after_merge() {
         ids_in_order(&merged, DocumentKind::History),
         ["evening", "morning"]
     );
+}
+
+fn assert_collection_merge_is_stable(
+    baseline: Option<&ValidatedSyncDocuments>,
+    local: &ValidatedSyncDocuments,
+    remote: &ValidatedSyncDocuments,
+    kind: DocumentKind,
+    expected: &[&str],
+) -> ValidatedSyncDocuments {
+    let forward = diff_sync_documents(baseline, local, remote).unwrap();
+    assert!(forward.conflicts().is_empty());
+    let merged = forward.resolve(&[]).unwrap();
+    assert_eq!(ids_in_order(&merged, kind), expected);
+    let mirrored = diff_sync_documents(baseline, remote, local)
+        .unwrap()
+        .resolve(&[])
+        .unwrap();
+    assert!(merged.documents().documents == mirrored.documents().documents);
+    for original in [local, remote] {
+        let repeated = diff_sync_documents(None, &merged, original)
+            .unwrap()
+            .resolve(&[])
+            .unwrap();
+        assert!(merged.documents().documents == repeated.documents().documents);
+    }
+    merged
+}
+
+#[test]
+fn tied_correction_rules_keep_one_sided_execution_order() {
+    for created_at in ["", "2026-09-27T10:00:00Z"] {
+        let remote = corrections_set(&[
+            ("z", "foo", "bar", created_at),
+            ("a", "bar", "baz", created_at),
+        ]);
+        let local = corrections_set(&[
+            ("new", "start", "foo", created_at),
+            ("z", "foo", "bar", created_at),
+            ("a", "bar", "baz", created_at),
+        ]);
+        for baseline in [None, Some(&remote)] {
+            let merged = assert_collection_merge_is_stable(
+                baseline,
+                &local,
+                &remote,
+                DocumentKind::Corrections,
+                &["new", "z", "a"],
+            );
+            let apply = |set: &ValidatedSyncDocuments| {
+                let mut docs: Vec<_> = set
+                    .documents()
+                    .documents
+                    .iter()
+                    .filter(|doc| doc.kind == DocumentKind::Corrections)
+                    .collect();
+                docs.sort_by_key(|doc| doc.value["sortIndex"].as_u64().unwrap());
+                let rules: Vec<crate::types::CorrectionRule> = docs
+                    .into_iter()
+                    .map(|doc| serde_json::from_value(doc.value.clone()).unwrap())
+                    .collect();
+                crate::correction::apply_correction_rules("start", &rules)
+            };
+            assert_eq!(apply(&local), "baz");
+            assert_eq!(apply(&merged), apply(&local));
+        }
+    }
+}
+
+#[test]
+fn tied_collection_gaps_preserve_both_device_orders() {
+    let cases: &[(&[&str], &[&str], &[&str])] = &[
+        (&["new", "z", "a"], &["z", "a"], &["new", "z", "a"]),
+        (&["z", "new", "a"], &["z", "a"], &["z", "new", "a"]),
+        (&["z", "a", "new"], &["z", "a"], &["z", "a", "new"]),
+        (
+            &["l2", "l1", "z", "l4", "l3", "a", "l6", "l5"],
+            &["r2", "r1", "z", "r4", "r3", "a", "r6", "r5"],
+            &[
+                "l2", "l1", "r2", "r1", "z", "l4", "l3", "r4", "r3", "a", "l6", "l5", "r6", "r5",
+            ],
+        ),
+    ];
+    for kind in [
+        DocumentKind::Corrections,
+        DocumentKind::Dictionary,
+        DocumentKind::History,
+    ] {
+        for created_at in ["", "2026-09-27T10:00:00Z"] {
+            let collection = |ids: &[&str]| match kind {
+                DocumentKind::Corrections => corrections_set(
+                    &ids.iter()
+                        .map(|id| (*id, *id, "value", created_at))
+                        .collect::<Vec<_>>(),
+                ),
+                DocumentKind::Dictionary => dictionary_set(
+                    ids.iter()
+                        .map(|id| {
+                            json!({
+                                "id": id,
+                                "phrase": id,
+                                "note": null,
+                                "enabled": true,
+                                "hits": 0,
+                                "createdAt": created_at
+                            })
+                        })
+                        .collect(),
+                ),
+                DocumentKind::History => history_set(
+                    &ids.iter()
+                        .map(|id| (*id, created_at, *id))
+                        .collect::<Vec<_>>(),
+                ),
+                _ => unreachable!(),
+            };
+            let baseline = collection(&["z", "a"]);
+            for &(local, remote, expected) in cases {
+                assert_collection_merge_is_stable(
+                    Some(&baseline),
+                    &collection(local),
+                    &collection(remote),
+                    kind,
+                    expected,
+                );
+            }
+        }
+    }
 }
