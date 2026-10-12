@@ -739,6 +739,9 @@ pub async fn set_credential(
     provider: Option<String>,
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
+    if account == CLOUD_SYNC_CUSTOM_TOKEN_ACCOUNT {
+        return Err("Use the encrypted sync configuration transaction".into());
+    }
     let key = credential_key(&account, provider)?;
     if value.is_empty() {
         core.remove_credential(key)

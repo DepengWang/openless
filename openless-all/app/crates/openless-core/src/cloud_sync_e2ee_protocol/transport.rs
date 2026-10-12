@@ -218,6 +218,76 @@ impl fmt::Debug for PreparedOperation {
 }
 
 impl PreparedOperation {
+    pub(crate) fn from_pending_record(bytes: &[u8]) -> Result<Self> {
+        let record: PendingRecord<'static> = parse_wire(bytes, PENDING_RECORD_LIMIT)?;
+        // The HTTP exception is compiled exclusively for the loopback unit tests;
+        // production records must have an HTTPS origin just like Transport::new.
+        let origin = parse_origin(&record.origin, cfg!(test))?;
+        let if_match = StrongEtag::parse(&record.if_match)?;
+        let (expected_kind, expected_revision, expected_vault, expected_sha256) = match record
+            .method
+        {
+            MutationMethod::Upload => {
+                let upload: SnapshotUpload = parse_wire(record.body.as_bytes(), HTTP_BODY_LIMIT)?;
+                if upload.owner_github_id != record.owner_github_id {
+                    return Err(Error::AccountMismatch);
+                }
+                if upload.operation_id != record.operation_id {
+                    return Err(Error::ContextMismatch);
+                }
+                if upload.kind != UploadKind::Create && upload.base_revision.get() == 0 {
+                    return Err(Error::InvalidWire("pending upload revision"));
+                }
+                (
+                    OperationKind::from(upload.kind),
+                    upload.revision,
+                    upload.vault_id,
+                    Some(upload.ciphertext_sha256),
+                )
+            }
+            MutationMethod::Delete => {
+                let request: DeleteVaultRequest =
+                    parse_wire(record.body.as_bytes(), CONTROL_BODY_LIMIT)?;
+                if request.operation_id != record.operation_id {
+                    return Err(Error::ContextMismatch);
+                }
+                (
+                    OperationKind::Delete,
+                    request.base_revision.checked_next()?,
+                    request.expected_vault_id,
+                    None,
+                )
+            }
+        };
+        Ok(PreparedOperation {
+            origin,
+            owner: record.owner_github_id,
+            method: record.method,
+            body: record.body.into_owned().into_bytes(),
+            if_match,
+            operation_id: record.operation_id,
+            expected_kind,
+            expected_revision,
+            expected_vault,
+            expected_sha256,
+        })
+    }
+
+    pub(crate) fn migration_origin(
+        &self,
+        owner: &str,
+        operation: &str,
+        vault: &str,
+    ) -> Result<String> {
+        if self.owner.as_str() != owner
+            || self.operation_id.as_str() != operation
+            || self.expected_vault.as_str() != vault
+        {
+            return Err(Error::ContextMismatch);
+        }
+        Ok(self.origin.origin().ascii_serialization())
+    }
+
     #[cfg(test)]
     pub(crate) fn body_bytes(&self) -> &[u8] {
         &self.body
@@ -571,64 +641,9 @@ impl Transport {
         bytes: &[u8],
     ) -> Result<PreparedOperation> {
         self.check_session(session)?;
-        let record: PendingRecord<'static> = parse_wire(bytes, PENDING_RECORD_LIMIT)?;
-        // The HTTP exception is compiled exclusively for the loopback unit tests;
-        // production records must have an HTTPS origin just like Transport::new.
-        let origin = parse_origin(&record.origin, cfg!(test))?;
-        if origin != self.origin {
-            return Err(Error::ContextMismatch);
-        }
-        if &record.owner_github_id != session.account_id() {
-            return Err(Error::AccountMismatch);
-        }
-        let if_match = StrongEtag::parse(&record.if_match)?;
-        let (expected_kind, expected_revision, expected_vault, expected_sha256) = match record
-            .method
-        {
-            MutationMethod::Upload => {
-                let upload: SnapshotUpload = parse_wire(record.body.as_bytes(), HTTP_BODY_LIMIT)?;
-                if &upload.owner_github_id != session.account_id() {
-                    return Err(Error::AccountMismatch);
-                }
-                if upload.operation_id != record.operation_id {
-                    return Err(Error::ContextMismatch);
-                }
-                if upload.kind != UploadKind::Create && upload.base_revision.get() == 0 {
-                    return Err(Error::InvalidWire("pending upload revision"));
-                }
-                (
-                    OperationKind::from(upload.kind),
-                    upload.revision,
-                    upload.vault_id,
-                    Some(upload.ciphertext_sha256),
-                )
-            }
-            MutationMethod::Delete => {
-                let request: DeleteVaultRequest =
-                    parse_wire(record.body.as_bytes(), CONTROL_BODY_LIMIT)?;
-                if request.operation_id != record.operation_id {
-                    return Err(Error::ContextMismatch);
-                }
-                (
-                    OperationKind::Delete,
-                    request.base_revision.checked_next()?,
-                    request.expected_vault_id,
-                    None,
-                )
-            }
-        };
-        Ok(PreparedOperation {
-            origin,
-            owner: record.owner_github_id,
-            method: record.method,
-            body: record.body.into_owned().into_bytes(),
-            if_match,
-            operation_id: record.operation_id,
-            expected_kind,
-            expected_revision,
-            expected_vault,
-            expected_sha256,
-        })
+        let operation = PreparedOperation::from_pending_record(bytes)?;
+        self.check_operation(session, &operation)?;
+        Ok(operation)
     }
 
     /// Every error (including cancellation) leaves the borrowed operation intact.
@@ -827,10 +842,7 @@ fn bearer_header(token: &str) -> Result<HeaderValue> {
 }
 
 async fn send(request: RequestBuilder) -> Result<Response> {
-    let response = request.send().await.map_err(|e| {
-        log::warn!("[e2ee-token] raw reqwest send error: {e:?} (url={:?})", e.url());
-        Error::Transport
-    })?;
+    let response = request.send().await.map_err(|_| Error::Transport)?;
     if response.status().is_redirection() && response.status() != StatusCode::NOT_MODIFIED {
         return Err(Error::InvalidResponse("redirect refused"));
     }
@@ -2381,4 +2393,8 @@ mod tests {
         }
         assert_eq!(server.finish().await.len(), 1);
     }
+}
+
+pub(crate) fn canonical_origin(origin: &str) -> Result<String> {
+    parse_origin(origin, cfg!(test)).map(|url| url.origin().ascii_serialization())
 }

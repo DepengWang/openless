@@ -323,6 +323,22 @@ impl SyncServiceData for CoreSyncStore {
     fn custom_server_origin(&self) -> Option<String> {
         CoreSyncStore::custom_server_origin(self)
     }
+    fn set_custom_server_origin(&self, origin: Option<String>) -> SyncResult<()> {
+        CoreSyncStore::set_custom_server_origin(self, origin)
+            .map_err(|_| super::error("local_storage_unavailable"))
+    }
+    fn legacy_baseline_matches(
+        &self,
+        scope: SyncScope,
+        documents: DocumentSet,
+        revision: Revision,
+    ) -> BoxFuture<'_, SyncResult<bool>> {
+        Box::pin(async move {
+            CoreSyncStore::legacy_baseline_matches(self, scope, documents, revision)
+                .await
+                .map_err(document_error)
+        })
+    }
     fn changes(&self) -> tokio::sync::watch::Receiver<SyncChange> {
         CoreSyncStore::changes(self)
     }

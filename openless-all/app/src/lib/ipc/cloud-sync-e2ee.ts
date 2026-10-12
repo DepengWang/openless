@@ -130,6 +130,11 @@ export const cloudSyncE2eeDeleteRemote = (input: {
   invokeOrMock('cloud_sync_e2ee_delete_remote', input, unavailable);
 export const cloudSyncE2eeSignOut = (): Promise<EncryptedSyncStatus> =>
   invokeOrMock('cloud_sync_e2ee_sign_out', undefined, unavailable);
+export const cloudSyncE2eeConfigureServer = (input: {
+  origin: string | null;
+  token: string;
+}): Promise<EncryptedSyncStatus> =>
+  invokeOrMock('cloud_sync_e2ee_configure_server', input, unavailable);
 export const cloudSyncE2eeSignInWithToken = (): Promise<EncryptedSyncStatus> =>
   invokeOrMock('cloud_sync_e2ee_sign_in_with_token', undefined, unavailable);
 export const cloudSyncE2eeGetUiPreferences = (): Promise<{

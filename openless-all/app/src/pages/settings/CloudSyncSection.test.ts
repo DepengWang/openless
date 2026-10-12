@@ -220,9 +220,12 @@ const dependencies: Record<string, any> = {
     return update({ authState: 'signed_out', syncState: 'disabled', account: null });
   },
   readCredential: async (_account: string) => savedToken,
-  setCredential: async (account: string, value: string) => {
-    calls.push(['setCredential', account, value]);
-    savedToken = value.trim() ? value : null;
+  cloudSyncE2eeConfigureServer: async (input: { origin: string | null; token: string }) => {
+    calls.push(['configureServer', input]);
+    if (failOriginWrite) throw new Error('native configuration write failed');
+    savedOrigin = input.origin;
+    savedToken = input.token || null;
+    return update({ authState: 'signed_out', syncState: 'disabled', account: null });
   },
 };
 const jsx = (type: unknown, props: Record<string, unknown>) => ({ type, props });
@@ -501,8 +504,7 @@ try {
   await settle();
   assert.equal(events.size, 0);
 
-  // A failed preference write must roll back the credential written first;
-  // otherwise the next attempt could pair a token with the old origin.
+  // Configuration uses one native transaction; the UI never writes a token separately.
   mockMarketplaceSignedIn = true;
   savedOrigin = 'https://old.example.com';
   savedToken = 'old-token';
@@ -533,10 +535,7 @@ try {
   assert.equal(savedToken, 'old-token');
   assert.deepEqual(
     calls.map(([name, ...args]) => [name, ...args]),
-    [
-      ['setCredential', 'cloud_sync.custom_token', 'new-token'],
-      ['setCredential', 'cloud_sync.custom_token', 'old-token'],
-    ],
+    [['configureServer', { origin: 'https://new.example.com', token: 'new-token' }]],
   );
   failOriginWrite = false;
   calls.length = 0;

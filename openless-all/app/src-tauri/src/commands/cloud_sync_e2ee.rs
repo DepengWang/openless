@@ -184,6 +184,17 @@ pub async fn cloud_sync_e2ee_sign_out(
 }
 
 #[tauri::command]
+pub async fn cloud_sync_e2ee_configure_server(
+    window: tauri::WebviewWindow,
+    core: CoreState<'_>,
+    origin: Option<String>,
+    token: String,
+) -> Result<EncryptedSyncStatus, BackendError> {
+    require_settings_window(&window)?;
+    core.cloud_sync_e2ee_configure_server(origin, token).await
+}
+
+#[tauri::command]
 pub async fn cloud_sync_e2ee_sign_in_with_token(
     window: tauri::WebviewWindow,
     core: CoreState<'_>,

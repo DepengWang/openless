@@ -6,7 +6,7 @@ import { Modal } from '../../components/ui/Modal';
 import { Btn, Card } from '../_atoms';
 import { Toggle } from './shared';
 import { useHotkeySettings } from '../../state/HotkeySettingsContext';
-import { marketplaceAuthStatus, readCredential, setCredential } from '../../lib/ipc';
+import { marketplaceAuthStatus, readCredential } from '../../lib/ipc';
 import { isTauriNow } from '../../lib/ipc/shared';
 import {
   CLOUD_SYNC_E2EE_CONSENT_VERSION as CONSENT_VERSION,
@@ -24,6 +24,7 @@ import {
   cloudSyncE2eeDeleteRemote,
   cloudSyncE2eeSignOut,
   cloudSyncE2eeSignInWithToken,
+  cloudSyncE2eeConfigureServer,
   mirrorEncryptedSyncUiPreferences,
   encryptedSyncScope,
   encryptedSyncErrorKey,
@@ -655,7 +656,7 @@ export function CloudSyncSection() {
               onClick={() => {
                 const token = customServerToken.trim();
                 const origin = normalizeCustomServerOrigin(customServerOrigin);
-                if (origin === undefined) {
+                if (origin === undefined || Boolean(origin) !== Boolean(token)) {
                   showError(localError('unsupported_protocol'));
                   return;
                 }
@@ -665,44 +666,7 @@ export function CloudSyncSection() {
                 }
                 setBusy(true);
                 void (async () => {
-                  const previousOrigin = prefs?.syncCustomServerOrigin ?? null;
-                  const previousToken = await readCredential(CLOUD_SYNC_CUSTOM_TOKEN_ACCOUNT);
-                  let tokenWriteAttempted = false;
-                  let originWriteAttempted = false;
-                  try {
-                    // Persist the secret first. If the preference write fails,
-                    // the rollback below removes the possibility of a token
-                    // being paired with a different server origin.
-                    tokenWriteAttempted = true;
-                    await setCredential(CLOUD_SYNC_CUSTOM_TOKEN_ACCOUNT, token);
-                    originWriteAttempted = true;
-                    await updatePrefs((value) => ({
-                      ...value,
-                      syncCustomServerOrigin: origin,
-                    }));
-                  } catch (error) {
-                    let rollbackFailed = false;
-                    if (originWriteAttempted) {
-                      try {
-                        await updatePrefs((value) => ({
-                          ...value,
-                          syncCustomServerOrigin: previousOrigin,
-                        }));
-                      } catch {
-                        rollbackFailed = true;
-                      }
-                    }
-                    if (tokenWriteAttempted) {
-                      try {
-                        await setCredential(CLOUD_SYNC_CUSTOM_TOKEN_ACCOUNT, previousToken ?? '');
-                      } catch {
-                        rollbackFailed = true;
-                      }
-                    }
-                    if (rollbackFailed)
-                      console.error('[cloud-sync] custom server configuration rollback failed');
-                    throw error;
-                  }
+                  acceptStatus(await cloudSyncE2eeConfigureServer({ origin, token }));
                   await refresh();
                   if (token) {
                     acceptStatus(await cloudSyncE2eeSignInWithToken());
