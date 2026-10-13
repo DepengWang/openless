@@ -1493,7 +1493,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 val row2 = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
                 row2.addView(View(this), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.5f))
                 listOf("a", "s", "d", "f", "g", "h", "j", "k", "l")
-                    .zip(listOf("@", "#", "$", "%", "&", "-", "+", "(", ")"))
+                    .zip(listOf("~", "@", "#", "!", "%", "&", "*", "(", ")"))
                     .forEach { (key, symbol) -> row2.addView(buildEnglishCharKey(key, 1f, swipeSymbol = symbol)) }
                 row2.addView(View(this), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.5f))
                 root.addView(row2, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -1501,7 +1501,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 val row3 = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER }
                 row3.addView(keyboardKey("⇧", 1.5f, action = { cycleEnglishShift() }))
                 listOf("z", "x", "c", "v", "b", "n", "m")
-                    .zip(listOf(":", ";", "'", ".", ",", "!", "?"))
+                    .zip(listOf("'", "/", "-", "_", ":", ";", "?"))
                     .forEach { (key, symbol) -> row3.addView(buildEnglishCharKey(key, 1f, swipeSymbol = symbol)) }
                 row3.addView(
                     keyboardKey("⌫", 1.5f, action = { englishDeleteBackward() }, repeatOnLongPress = true, repeatAction = { englishDeleteBackward() }).apply {
@@ -2793,7 +2793,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
      * instead (a "sloppy key", same idea as most predictive keyboards).
      *
      * @param swipeSymbol Any key that has one — top-row digits (q..p ->
-     *   1..0), row2's @#$%&-+() and row3's :;'.,!? — swiping up commits
+     *   1..0), row2's ~@#!%&*() and row3's '/-_:;? — swiping up commits
      *   this symbol instead of the letter, same interaction as the stroke
      *   panel's own swipe-up keys (see keyboardKey()'s swipeUpAction/
      *   swipePreview). Shown as a small standalone hint pinned to the very
