@@ -3955,10 +3955,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
     /**
      * Swaps [original] for [text] in the host field, wherever the host's
-     * caret is by now. The original is looked up in the text around the
-     * caret: the occurrence at [hintStart] (where it was when the draft
-     * opened) if that is known, else the one closest to the caret. False —
-     * with the host field untouched — if it is no longer there.
+     * caret is by now; see [ImeDraftReplacement] for how the original is
+     * found. False — with the host field untouched — if it is no longer there.
      */
     private fun replaceInHost(
         host: android.view.inputmethod.InputConnection,
@@ -3967,46 +3965,18 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         hintStart: Int?,
     ): Boolean {
         val selected = host.getSelectedText(0)?.toString().orEmpty()
-        if (selected == original) return host.commitText(text, 1)
         val reach = HOST_SEARCH_REACH + original.length
         val before = host.getTextBeforeCursor(reach, 0)?.toString() ?: return false
         val after = host.getTextAfterCursor(reach, 0)?.toString().orEmpty()
-        val around = before + selected + after
-        // Index of the host caret (selection start) inside `around`.
-        val caret = before.length
-        val caretOffset = hostCaretOffset(host)
-        val wanted = if (hintStart != null && caretOffset != null) hintStart - (caretOffset - caret) else null
-        var start = -1
-        var bestDistance = Int.MAX_VALUE
-        var index = around.indexOf(original)
-        while (index >= 0) {
-            val end = index + original.length
-            val distance = when {
-                wanted != null -> kotlin.math.abs(index - wanted)
-                caret < index -> index - caret
-                caret > end -> caret - end
-                else -> 0
-            }
-            // On a tie the later occurrence wins: text just dictated ends at the caret.
-            if (distance <= bestDistance) {
-                bestDistance = distance
-                start = index
-            }
-            index = around.indexOf(original, index + 1)
-        }
-        if (start < 0) return false
-        val end = start + original.length
+        val plan = ImeDraftReplacement.plan(original, before, selected, after, hostCaretOffset(host), hintStart)
+            ?: return false
         host.beginBatchEdit()
-        val replaced = when {
-            // commitText() replaces the selection it is given.
-            caretOffset != null -> {
-                val hostStart = caretOffset - caret + start
-                host.setSelection(hostStart, hostStart + original.length) && host.commitText(text, 1)
-            }
-            // No absolute offsets: only reachable if it touches the caret.
-            selected.isEmpty() && caret in start..end ->
-                host.deleteSurroundingText(caret - start, end - caret) && host.commitText(text, 1)
-            else -> false
+        // commitText() replaces the selection it is given.
+        val replaced = when (plan) {
+            ImeDraftReplacement.ReplaceSelection -> host.commitText(text, 1)
+            is ImeDraftReplacement.SelectRange -> host.setSelection(plan.start, plan.end) && host.commitText(text, 1)
+            is ImeDraftReplacement.DeleteAroundCaret ->
+                host.deleteSurroundingText(plan.before, plan.after) && host.commitText(text, 1)
         }
         host.endBatchEdit()
         return replaced
