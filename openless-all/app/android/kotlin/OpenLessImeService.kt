@@ -135,11 +135,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             "completed" -> {
                 if (event.optString("sessionId") != imeSessionId) return
                 val destination = cloudNoteDestination
+                val reviewCloudNote = cloudNoteReviewArmed
                 imeSessionId = null
                 recording = false
                 processing = false
                 cloudNoteArmed = false
-                if (event.optBoolean("cloud")) submitCloudNoteText(event.optString("text"), destination, imeRequestId)
+                if (event.optBoolean("cloud")) {
+                    if (reviewCloudNote) openCloudNoteDraft(event.optString("text"), destination)
+                    else submitCloudNoteText(event.optString("text"), destination, imeRequestId)
+                }
                 else if (event.optBoolean("quickNote")) setState("done", ui("笔记已记录", "Note saved"))
                 else commitImeText(event.optString("text"))
             }
@@ -198,7 +202,10 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     // The Core session owns retention; this field only displays the accepted destination.
     private var cloudNoteArmed = false
         set(value) {
-            if (!value) pendingCloudArm = false
+            if (!value) {
+                pendingCloudArm = false
+                cloudNoteReviewArmed = false
+            }
             if (value && imeRequestId != 0L && imeSessionId == null) {
                 pendingCloudArm = true
                 updateStatus(ui("正在准备云笔记", "Preparing cloud note"))
@@ -218,6 +225,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             voiceButton?.cloudNoteActive = value || cloudNoteSubmitting
             status?.setTextColor(recordingAccentColor())
         }
+    // Set by a swipe up on the mic while a Cloud notes recording is in
+    // progress, which also ends that recording: the recognized text then
+    // opens in the draft bar for editing (see openCloudNoteDraft()) instead
+    // of going straight to the webhook, as it does after a plain tap.
+    // Only ever true alongside cloudNoteArmed, whose setter clears it.
+    private var cloudNoteReviewArmed = false
     // The webhook POST that follows a Cloud notes dictation (see
     // submitCloudNoteText()). cloudNoteArmed is already back to false by
     // then — the Core session it mirrors has completed — so this is what
@@ -719,7 +732,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         }
         val view = applyKeyboardRaise(content)
         appliedKeyboardFootprintKey = keyboardFootprintKey()
-        return view
+        return wrapWithCloudNoteDraft(view)
     }
 
     /** Voice panel + floating dictation-result overlay (former onCreateInputView body). */
@@ -814,7 +827,9 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                         val active = downY - event.y >= dp(30)
                         if (active != swipeUpActive) {
                             swipeUpActive = active
-                            voiceButton?.armedForRawSwipe = active
+                            // Mid Cloud-notes recording a swipe up asks for the
+                            // draft editor, not Raw — keep the orange preview off.
+                            voiceButton?.armedForRawSwipe = active && !(recording && (cloudNoteArmed || pendingCloudArm))
                             // One tick every time the threshold is
                             // crossed, either direction — entering AND
                             // leaving the armed zone both get felt, not
@@ -839,7 +854,15 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                             performDoubleKeyHaptic()
                             cancelDictation()
                         } else if (swipeUpActive) {
-                            if (recording && !rawModeArmed) {
+                            if (recording && (cloudNoteArmed || pendingCloudArm)) {
+                                // Ends the recording right here; the result opens
+                                // in the draft bar instead of being sent. The
+                                // click that may follow this release is a no-op:
+                                // toggleDictation() ignores taps while processing.
+                                cloudNoteReviewArmed = true
+                                performDoubleKeyHaptic()
+                                toggleDictation()
+                            } else if (recording && !rawModeArmed) {
                                 rawModeArmed = true
                                 performDoubleKeyHaptic()
                                 updateStatus(currentMessage)
@@ -1142,10 +1165,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         setInputView(newView)
         val offset = resources.displayMetrics.widthPixels.toFloat() * slideDirection
         // RaisedKeyboardHost wraps [panel, raiseSpacer] — slide the panel's
-        // own children (skip header at 0), not the raise spacer.
-        val container = when (newView) {
-            is RaisedKeyboardHost -> newView.getChildAt(0) as? ViewGroup
-            is ViewGroup -> newView
+        // own children (skip header at 0), not the raise spacer. The cloud
+        // note draft bar sits above that host and stays put as well.
+        val keyboard = (newView as? CloudNoteDraftHost)?.keyboard ?: newView
+        val container = when (keyboard) {
+            is RaisedKeyboardHost -> keyboard.getChildAt(0) as? ViewGroup
+            is ViewGroup -> keyboard
             else -> null
         } ?: return
         for (index in 1 until container.childCount) {
@@ -3434,7 +3459,29 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private fun keyboardFootprintKey(): String =
         "${keyboardPanelHeightDp()}:${raiseHeightDp(this)}:$inputMode:$latinInputMode:${personalizedLearningAllowed()}"
 
+    override fun onFinishInputView(finishingInput: Boolean) {
+        closeCloudNoteDraft()
+        super.onFinishInputView(finishingInput)
+    }
+
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        if (keyCode == android.view.KeyEvent.KEYCODE_BACK && cloudNoteDraftEdit != null && isInputViewShown) {
+            event.startTracking()
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        if (keyCode == android.view.KeyEvent.KEYCODE_BACK && cloudNoteDraftEdit != null && event.isTracking && !event.isCanceled) {
+            discardCloudNoteDraft()
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
     override fun onFinishInput() {
+        closeCloudNoteDraft()
         cancelImeSession()
         englishCandidateQueryEpoch++
         englishComposingWord.clear()
@@ -3838,6 +3885,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         return when {
             dictationInProgress() && rawModeArmed -> ui("原样转写", "Raw Mode")
             dictationInProgress() && quickNoteArmed -> ui("速记模式", "Quick notes")
+            dictationInProgress() && cloudNoteArmed && cloudNoteReviewArmed -> ui("云笔记 · 发送前编辑", "Cloud notes · edit before sending")
+            state == "speaking" && cloudNoteArmed -> ui("云笔记 · 上划编辑后发送", "Cloud notes · swipe up to edit first")
             dictationInProgress() && (cloudNoteArmed || cloudNoteSubmitting) -> ui("云笔记", "Cloud notes")
             else -> ui("上划RAW · 左划速记 · 右划云笔记", "Up: Raw · Left: Quick notes · Right: Cloud notes")
         }
@@ -3862,11 +3911,17 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     /** The request owns its destination; delayed network callbacks cannot affect a later recording. */
-    private fun submitCloudNoteText(text: String, destination: Pair<String, String>?, requestId: Long) {
+    private fun submitCloudNoteText(
+        text: String,
+        destination: Pair<String, String>?,
+        requestId: Long,
+        onFinished: ((success: Boolean, message: String) -> Unit)? = null,
+    ) {
         if (text.isBlank()) {
             recording = false
             processing = false
             setState("error", "没有识别到文字")
+            onFinished?.invoke(false, "没有识别到文字")
             return
         }
         val (url, token) = destination ?: ("" to "")
@@ -3874,6 +3929,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         processing = false
         if (url.isEmpty() || token.isEmpty()) {
             setState("error", "请先在设置中填写云笔记的地址/Token")
+            onFinished?.invoke(false, "请先在设置中填写云笔记的地址/Token")
             return
         }
         cloudNoteSubmitting = true
@@ -3897,20 +3953,288 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
                 val code = connection.responseCode
                 mainHandler.post {
-                    if (requestId != imeRequestId) return@post
-                    if (code in 200..299) {
-                        setState("done", "已提交云笔记", QUICK_NOTE_CONFIRMATION_DELAY_MS)
-                    } else {
-                        setState("error", "云笔记提交失败（$code）")
+                    val success = code in 200..299
+                    val message = if (success) "已提交云笔记" else "云笔记提交失败（$code）"
+                    if (requestId == imeRequestId) {
+                        if (success) setState("done", message, QUICK_NOTE_CONFIRMATION_DELAY_MS) else setState("error", message)
                     }
+                    onFinished?.invoke(success, message)
                 }
             } catch (error: Throwable) {
                 android.util.Log.w("OpenLessImeService", "cloud note webhook submit failed: ${error.javaClass.simpleName}")
                 mainHandler.post {
                     if (requestId == imeRequestId) setState("error", "云笔记提交失败，请检查网络")
+                    onFinished?.invoke(false, "云笔记提交失败，请检查网络")
                 }
             } finally { connection?.disconnect() }
         }.start()
+    }
+
+    /**
+     * Draft box of the Cloud notes confirmation bar; non-null exactly while
+     * the bar is up. The same instance is re-parented into every rebuilt
+     * input view (a mode switch rebuilds the whole panel), so the text, caret,
+     * selection and scroll position survive without being copied around.
+     */
+    private var cloudNoteDraftEdit: android.widget.EditText? = null
+    private var cloudNoteDraftConnection: android.view.inputmethod.InputConnection? = null
+    private var cloudNoteDraftDestination: Pair<String, String>? = null
+    private var cloudNoteDraftSubmitting = false
+    private var cloudNoteDraftMessage: String? = null
+    private var cloudNoteDraftMessageIsError = false
+    // Bumped whenever a draft opens or closes; a submit result only applies to the draft that sent it.
+    private var cloudNoteDraftToken = 0L
+    private var cloudNoteDraftStatusView: TextView? = null
+    private var cloudNoteDraftCancelButton: TextView? = null
+    private var cloudNoteDraftConfirmButton: TextView? = null
+
+    /**
+     * Every key, candidate, backspace and dictation commit in this service
+     * writes through currentInputConnection. While a Cloud notes draft is up
+     * that is the draft box, never the host app's field — and never a fallback
+     * to the host connection, even if the draft's own one is unavailable.
+     */
+    override fun getCurrentInputConnection(): android.view.inputmethod.InputConnection? {
+        val edit = cloudNoteDraftEdit ?: return super.getCurrentInputConnection()
+        cloudNoteDraftConnection?.let { return it }
+        val base = edit.onCreateInputConnection(EditorInfo()) ?: return null
+        return CloudNoteDraftConnection(base, edit).also { cloudNoteDraftConnection = it }
+    }
+
+    /** Composition and dictation-result state belongs to one text target; drop it when the target flips between the host field and the draft. */
+    private fun resetEditingStateForTargetChange() {
+        englishComposingWord.clear()
+        englishCandidateQueryEpoch++
+        litePinyinController.clear()
+        litePinyinController.resetAssociationContext()
+        strokeController.resetForModeSwitch()
+        clipboardSelectionMode = false
+        clipboardSelectionAnchor = -1
+        clipboardSelectionActive = -1
+        lastDictationText = null
+        dictationTextUndone = false
+        editingDictationResult = false
+        awaitingEditReplacement = false
+        editingOriginalText = null
+    }
+
+    /** A Cloud notes dictation ended by a swipe up lands here instead of being sent: the text goes into the draft box and waits for Confirm. */
+    private fun openCloudNoteDraft(text: String, destination: Pair<String, String>?) {
+        recording = false
+        processing = false
+        if (text.isBlank()) {
+            setState("error", "没有识别到文字")
+            return
+        }
+        cloudNoteDraftDestination = destination
+        cloudNoteDraftMessage = null
+        cloudNoteDraftMessageIsError = false
+        val existing = cloudNoteDraftEdit
+        if (existing != null) {
+            // Another Cloud notes dictation while a draft is still open adds to it at the caret.
+            val editable = existing.text
+            val start = existing.selectionStart.coerceAtLeast(0)
+            val end = existing.selectionEnd.coerceAtLeast(0)
+            editable.replace(minOf(start, end), maxOf(start, end), text)
+            updateCloudNoteDraftControls()
+        } else {
+            resetEditingStateForTargetChange()
+            cloudNoteDraftToken++
+            cloudNoteDraftSubmitting = false
+            cloudNoteDraftConnection = null
+            cloudNoteDraftEdit = android.widget.EditText(this).apply {
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                    InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                setSingleLine(false)
+                minLines = 2
+                maxLines = 4
+                gravity = android.view.Gravity.TOP or android.view.Gravity.START
+                textSize = 16f
+                isVerticalScrollBarEnabled = true
+                importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+                // This window never takes input focus; the keys below are the only keyboard.
+                showSoftInputOnFocus = false
+                // No floating selection/insertion toolbar from the IME window.
+                // A tap still places the caret, and the clipboard panel still
+                // selects, copies and pastes through the draft connection.
+                isLongClickable = false
+                setOnLongClickListener { true }
+                val noActionMode = object : android.view.ActionMode.Callback {
+                    override fun onCreateActionMode(mode: android.view.ActionMode?, menu: android.view.Menu?) = false
+                    override fun onPrepareActionMode(mode: android.view.ActionMode?, menu: android.view.Menu?) = false
+                    override fun onActionItemClicked(mode: android.view.ActionMode?, item: android.view.MenuItem?) = false
+                    override fun onDestroyActionMode(mode: android.view.ActionMode?) = Unit
+                }
+                customSelectionActionModeCallback = noActionMode
+                customInsertionActionModeCallback = noActionMode
+                setText(text)
+                setSelection(this.text.length)
+            }
+            refreshInputView()
+        }
+        setState("done", ui("请确认云笔记草稿", "Review the cloud note draft"))
+    }
+
+    /** Sends the edited draft, once. The bar stays up until the request finishes so a failed submit keeps the text. */
+    private fun confirmCloudNoteDraft() {
+        val edit = cloudNoteDraftEdit ?: return
+        if (cloudNoteDraftSubmitting) return
+        if (recording || processing) {
+            showCloudNoteDraftMessage(ui("请先结束当前听写", "Finish the current dictation first"), isError = true)
+            return
+        }
+        currentInputConnection?.finishComposingText()
+        val text = edit.text.toString()
+        if (text.isBlank()) {
+            showCloudNoteDraftMessage(ui("草稿为空，无法提交", "The draft is empty"), isError = true)
+            return
+        }
+        cloudNoteDraftSubmitting = true
+        showCloudNoteDraftMessage(displayStatus("正在提交云笔记"), isError = false)
+        val token = cloudNoteDraftToken
+        submitCloudNoteText(text, cloudNoteDraftDestination, imeRequestId) { success, message ->
+            if (token != cloudNoteDraftToken) return@submitCloudNoteText
+            cloudNoteDraftSubmitting = false
+            if (success) {
+                closeCloudNoteDraft()
+                // The status line only exists on the voice panel.
+                if (inputMode != InputMode.VOICE) Toast.makeText(this, displayStatus(message), Toast.LENGTH_SHORT).show()
+            } else {
+                showCloudNoteDraftMessage(
+                    if (englishUi && message.startsWith("云笔记提交失败")) "Cloud notes submit failed" else displayStatus(message),
+                    isError = true,
+                )
+            }
+        }
+    }
+
+    /** Cancel button / Back: drops the draft without sending anything. */
+    private fun discardCloudNoteDraft() {
+        if (cloudNoteDraftEdit == null || cloudNoteDraftSubmitting) return
+        closeCloudNoteDraft()
+        setState("done", ui("已丢弃云笔记草稿", "Cloud note draft discarded"))
+    }
+
+    /** Takes the bar down and hands the keys back to the host field. Never submits. */
+    private fun closeCloudNoteDraft() {
+        if (cloudNoteDraftEdit == null) return
+        cloudNoteDraftToken++
+        cloudNoteDraftEdit = null
+        cloudNoteDraftConnection = null
+        cloudNoteDraftDestination = null
+        cloudNoteDraftSubmitting = false
+        cloudNoteDraftMessage = null
+        cloudNoteDraftMessageIsError = false
+        cloudNoteDraftStatusView = null
+        cloudNoteDraftCancelButton = null
+        cloudNoteDraftConfirmButton = null
+        resetEditingStateForTargetChange()
+        refreshInputView()
+    }
+
+    private fun showCloudNoteDraftMessage(message: String?, isError: Boolean) {
+        cloudNoteDraftMessage = message
+        cloudNoteDraftMessageIsError = isError
+        updateCloudNoteDraftControls()
+    }
+
+    private fun updateCloudNoteDraftControls() {
+        cloudNoteDraftStatusView?.apply {
+            text = cloudNoteDraftMessage ?: ui("云笔记草稿", "Cloud note draft")
+            setTextColor(
+                if (cloudNoteDraftMessage != null && cloudNoteDraftMessageIsError) LINK_COLOR_CLOUD_NOTE
+                else tone(Color.rgb(190, 190, 190), Color.rgb(110, 110, 115)),
+            )
+        }
+        val enabled = !cloudNoteDraftSubmitting
+        listOf(cloudNoteDraftCancelButton, cloudNoteDraftConfirmButton).forEach { button ->
+            button?.isEnabled = enabled
+            button?.alpha = if (enabled) 1f else 0.45f
+        }
+    }
+
+    /**
+     * Stacks the Cloud notes draft bar (draft box, then Cancel / status /
+     * Confirm) on top of the regular input view while a draft is open. The
+     * keyboard panel below keeps its own height, header and mode toggle, so
+     * every input mode stays fully usable for editing the draft; the IME just
+     * grows taller by the height of the bar.
+     */
+    private fun wrapWithCloudNoteDraft(keyboard: View): View {
+        val edit = cloudNoteDraftEdit ?: return keyboard
+        (edit.parent as? ViewGroup)?.removeView(edit)
+        val panelColor = tone(Color.rgb(48, 48, 48), Color.rgb(242, 242, 246))
+        edit.setTextColor(tone(Color.WHITE, Color.rgb(28, 28, 30)))
+        edit.background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(10).toFloat()
+            setColor(tone(Color.rgb(34, 34, 34), Color.WHITE))
+            setStroke(dp(1), tone(Color.rgb(68, 68, 68), Color.rgb(215, 215, 218)))
+        }
+        edit.setPadding(dp(12), dp(8), dp(12), dp(8))
+
+        fun barButton(label: String, fill: Int, textColor: Int, action: () -> Unit) = TextView(this).apply {
+            text = label
+            textSize = 15f
+            gravity = android.view.Gravity.CENTER
+            setTextColor(textColor)
+            setTypeface(typeface, Typeface.BOLD)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(18).toFloat()
+                setColor(fill)
+            }
+            isClickable = true
+            setOnClickListener {
+                performKeyHaptic()
+                action()
+            }
+        }
+        val cancel = barButton(
+            ui("取消", "Cancel"),
+            tone(Color.rgb(60, 60, 60), Color.rgb(225, 225, 228)),
+            tone(Color.WHITE, Color.rgb(40, 40, 44)),
+        ) { discardCloudNoteDraft() }
+        val confirm = barButton(ui("确认", "Confirm"), LINK_COLOR_CLOUD_NOTE, Color.WHITE) { confirmCloudNoteDraft() }
+        val statusView = TextView(this).apply {
+            textSize = 13f
+            gravity = android.view.Gravity.CENTER
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        cloudNoteDraftCancelButton = cancel
+        cloudNoteDraftConfirmButton = confirm
+        cloudNoteDraftStatusView = statusView
+        updateCloudNoteDraftControls()
+
+        val buttons = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
+        buttons.addView(cancel, LinearLayout.LayoutParams(dp(84), dp(36)))
+        buttons.addView(statusView, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginStart = dp(8)
+            marginEnd = dp(8)
+        })
+        buttons.addView(confirm, LinearLayout.LayoutParams(dp(84), dp(36)))
+
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(10), dp(16), dp(8))
+            setBackgroundColor(panelColor)
+            // Swallow stray touches in the bar's padding so they can't reach the app underneath.
+            isClickable = true
+        }
+        bar.addView(edit, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        bar.addView(buttons, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(8)
+        })
+
+        val host = CloudNoteDraftHost(this, keyboard).apply { orientation = LinearLayout.VERTICAL }
+        host.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        host.addView(buildDivider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
+        host.addView(keyboard)
+        // View focus (not window focus) is what makes the caret draw and follow the text.
+        edit.post { edit.requestFocus() }
+        return host
     }
 
     private fun commitImeText(text: String) {
@@ -4505,6 +4829,54 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             )
             super.onMeasure(widthMeasureSpec, exactHeightSpec)
         }
+    }
+
+    /** Input view while a Cloud notes draft is open: the draft bar stacked above the regular [keyboard] view. */
+    private class CloudNoteDraftHost(
+        context: android.content.Context,
+        val keyboard: View,
+    ) : LinearLayout(context)
+
+    /**
+     * The draft box's own InputConnection, with key events turned into text
+     * edits. The IME window never has window focus, and the framework drops
+     * key events dispatched to an unfocused window — so Return, Backspace and
+     * the cursor keys sent through sendKeyEvent() would silently do nothing.
+     */
+    private class CloudNoteDraftConnection(
+        target: android.view.inputmethod.InputConnection,
+        private val edit: android.widget.EditText,
+    ) : android.view.inputmethod.InputConnectionWrapper(target, true) {
+        override fun sendKeyEvent(event: android.view.KeyEvent): Boolean {
+            if (event.action != android.view.KeyEvent.ACTION_DOWN) return true
+            val text = edit.text
+            val start = minOf(edit.selectionStart, edit.selectionEnd).coerceAtLeast(0)
+            val end = maxOf(edit.selectionStart, edit.selectionEnd).coerceAtLeast(0)
+            val layout = edit.layout
+            when (event.keyCode) {
+                android.view.KeyEvent.KEYCODE_ENTER, android.view.KeyEvent.KEYCODE_NUMPAD_ENTER -> commitText("\n", 1)
+                android.view.KeyEvent.KEYCODE_DEL ->
+                    if (start != end) commitText("", 1) else deleteSurroundingTextInCodePoints(1, 0)
+                android.view.KeyEvent.KEYCODE_FORWARD_DEL ->
+                    if (start != end) commitText("", 1) else deleteSurroundingTextInCodePoints(0, 1)
+                android.view.KeyEvent.KEYCODE_DPAD_LEFT ->
+                    if (layout != null) android.text.Selection.moveLeft(text, layout) else edit.setSelection((start - 1).coerceAtLeast(0))
+                android.view.KeyEvent.KEYCODE_DPAD_RIGHT ->
+                    if (layout != null) android.text.Selection.moveRight(text, layout) else edit.setSelection((end + 1).coerceAtMost(text.length))
+                android.view.KeyEvent.KEYCODE_DPAD_UP -> if (layout != null) android.text.Selection.moveUp(text, layout)
+                android.view.KeyEvent.KEYCODE_DPAD_DOWN -> if (layout != null) android.text.Selection.moveDown(text, layout)
+                android.view.KeyEvent.KEYCODE_MOVE_HOME -> if (layout != null) android.text.Selection.moveToLeftEdge(text, layout)
+                android.view.KeyEvent.KEYCODE_MOVE_END -> if (layout != null) android.text.Selection.moveToRightEdge(text, layout)
+                else -> {
+                    val codePoint = event.unicodeChar
+                    if (codePoint != 0 && !Character.isISOControl(codePoint)) commitText(String(Character.toChars(codePoint)), 1)
+                }
+            }
+            return true
+        }
+
+        // A multi-line draft has no editor action; the action key is a line break.
+        override fun performEditorAction(actionCode: Int): Boolean = commitText("\n", 1)
     }
 
     /**
