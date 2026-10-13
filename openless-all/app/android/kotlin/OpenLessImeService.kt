@@ -1535,9 +1535,17 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         // only these two English bottom-row labels are meant to match the
         // letters' new weight for now. Size/color/position left exactly as
         // keyboardKey() already set them.
-        val modeButton = keyboardKey(if (englishLayer == EnglishLayer.LETTERS) "123" else "ABC", 1.3f, action = {
-            handleEnglishBottomModeToggle()
-        }).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) }
+        // Swipe up on "123" for a comma and on Space for a full stop — the
+        // two marks the letter grid's own swipe-up symbols leave out. Neither
+        // key shows a hint for it; the preview bubble names the mark mid-swipe.
+        val onLetters = englishLayer == EnglishLayer.LETTERS
+        val modeButton = keyboardKey(
+            if (onLetters) "123" else "ABC",
+            1.3f,
+            action = { handleEnglishBottomModeToggle() },
+            swipeUpAction = if (onLetters) ({ commitEnglishChar(",") }) else null,
+            swipePreview = if (onLetters) "," else null,
+        ).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) }
         // "Space" stays keyboardKey()'s own plain centered label (own
         // View, own vertical centering, untouched by the hint) — per
         // real-device feedback, side-by-side (hint right-aligned next to
@@ -1556,7 +1564,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             finalizeEnglishComposingWord()
             litePinyinController.clear()
             currentInputConnection?.commitText(" ", 1)
-        }, longPressAction = { toggleLatinInputMode() }).apply {
+        }, swipeUpAction = { commitEnglishChar(".") }, swipePreview = ".", longPressAction = { toggleLatinInputMode() }).apply {
             // Same size as Return (17sp — keyboardKey()'s own special case
             // for that label), per real-device feedback.
             textSize = 17f
