@@ -2,24 +2,25 @@
 mod build_target;
 
 fn main() {
-    #[cfg(target_os = "windows")]
-    link_windows_common_controls_v6_manifest_dependency();
-
-    // build.rs 的 `#[cfg(target_os)]` 判断的是构建脚本主机，不是 Cargo 的目标平台。
-    // 优先使用 Cargo 的目标 OS；旧工具链缺失该变量时回退解析 TARGET，避免 Linux
-    // 主机交叉编译 armv7 Android 时把 qwen-asr C 后端误编进 APK。
+    // In build.rs, `#[cfg(target_os)]` tests the build-script host, not
+    // Cargo's target platform. Prefer Cargo's target OS; fall back to parsing
+    // TARGET for old toolchains missing the variable, so cross-compiling
+    // armv7 Android from a Linux host does not link desktop runtime libraries.
     let target = std::env::var("TARGET").unwrap_or_default();
     let target_os = build_target::classify_target_os(
         &target,
         std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref(),
     );
     println!("cargo:warning=OpenLess build target={target}, target_os={target_os}");
-    if matches!(target_os, "macos" | "linux") {
-        build_qwen_asr(target_os);
+    if target_os == "windows" {
+        link_windows_common_controls_v6_manifest_dependency();
     }
-
     if target_os == "macos" {
         link_macos_compiler_runtime();
+        let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+        if target_arch == "aarch64" {
+            build_experimental_gemma();
+        }
     }
 
     if target_os == "android" {
@@ -29,7 +30,51 @@ fn main() {
     tauri_build::build();
 }
 
-/// MLX uses `__builtin_available` for newer Metal APIs. Rust links with
+fn build_experimental_gemma() {
+    const SOURCE: &str = "src/asr/local/experimental/gemma.swift";
+    println!("cargo:rerun-if-changed={SOURCE}");
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let status = std::process::Command::new("xcrun")
+        .args([
+            "swiftc",
+            "-O",
+            "-parse-as-library",
+            "-emit-library",
+            "-static",
+            "-module-name",
+            "OpenlessGemma",
+            "-target",
+            "arm64-apple-macosx14.0",
+            SOURCE,
+            "-o",
+        ])
+        .arg(out.join("libOpenlessGemma.a"))
+        .status()
+        .expect("Swift compiler is required for the experimental Core ML adapter");
+    assert!(
+        status.success(),
+        "experimental Core ML adapter failed to compile"
+    );
+    let swift = std::process::Command::new("xcrun")
+        .args(["--find", "swiftc"])
+        .output()
+        .expect("find swiftc");
+    let compiler = std::path::PathBuf::from(String::from_utf8(swift.stdout).unwrap().trim());
+    let libraries = compiler
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("lib/swift/macosx");
+    println!("cargo:rustc-link-search=native={}", out.display());
+    println!("cargo:rustc-link-search=native={}", libraries.display());
+    println!("cargo:rustc-link-lib=static=OpenlessGemma");
+    println!("cargo:rustc-link-lib=framework=CoreML");
+    println!("cargo:rustc-link-lib=framework=Accelerate");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+}
+
+/// Native Apple adapters use availability checks. Rust links with
 /// `-nodefaultlibs`, so the availability helper from Apple compiler-rt must be
 /// added explicitly or Apple Silicon release links fail on macOS 14 targets.
 fn link_macos_compiler_runtime() {
@@ -49,7 +94,9 @@ fn link_macos_compiler_runtime() {
         .expect("macOS compiler resource directory was not UTF-8")
         .trim()
         .to_owned();
-    let runtime_dir = std::path::PathBuf::from(resource_dir).join("lib").join("darwin");
+    let runtime_dir = std::path::PathBuf::from(resource_dir)
+        .join("lib")
+        .join("darwin");
     if !runtime_dir.join("libclang_rt.osx.a").exists() {
         panic!(
             "macOS compiler runtime not found at {}",
@@ -61,14 +108,13 @@ fn link_macos_compiler_runtime() {
     println!("cargo:rustc-link-lib=static=clang_rt.osx");
 }
 
-/// cpal → oboe → oboe-sys 会编译 C++；最终 cdylib 需显式链接 NDK libc++。
 fn link_android_cpp_runtime() {
-    // oboe-ext 已部分静态链入 libc++；补链 c++abi 提供 __cxa_pure_virtual 等 ABI 符号。
+    // oboe-ext is partially statically linked into libc++; link c++abi as well
+    // to provide __cxa_pure_virtual and other ABI symbols.
     println!("cargo:rustc-link-lib=c++_static");
     println!("cargo:rustc-link-lib=c++abi");
 }
 
-#[cfg(target_os = "windows")]
 fn link_windows_common_controls_v6_manifest_dependency() {
     let mut source_path = std::path::PathBuf::from(
         std::env::var_os("OUT_DIR").expect("OUT_DIR must be set by Cargo"),
@@ -87,71 +133,4 @@ int openless_common_controls_v6_manifest_dependency_anchor = 0;
     println!(
         "cargo:rustc-link-arg=/INCLUDE:openless_common_controls_v6_manifest_dependency_anchor"
     );
-}
-
-/// 编译 vendored Open-Less/qwen-asr 的 C 源（macOS/Linux）。
-///
-/// 上游 Makefile `make blas` 等价配置：BLAS 加速通过 Accelerate framework，
-/// `USE_BLAS` + `ACCELERATE_NEW_LAPACK` 是必要宏。
-/// `-march=native` 这里**不**用——分发二进制要可移植，cc crate 在 release 下
-/// 默认带 `-O2`，加上 `-O3` 提一档；NEON/AVX 在源码里有 `#ifdef` 自动分派。
-fn build_qwen_asr(target_os: &str) {
-    const VENDOR: &str = "vendor/qwen-asr";
-    const SOURCES: &[&str] = &[
-        "qwen_asr.c",
-        "qwen_asr_kernels.c",
-        "qwen_asr_kernels_generic.c",
-        "qwen_asr_kernels_neon.c",
-        "qwen_asr_kernels_avx.c",
-        "qwen_asr_audio.c",
-        "qwen_asr_encoder.c",
-        "qwen_asr_decoder.c",
-        "qwen_asr_tokenizer.c",
-        "qwen_asr_safetensors.c",
-    ];
-
-    let mut build = cc::Build::new();
-    build
-        .include(VENDOR)
-        .flag("-O3")
-        .flag("-ffast-math")
-        // 上游开 `-Wall -Wextra`；我们把 qwen-asr 的代码当三方依赖，把无关警告压成静默
-        // 避免 build log 噪音淹没我们自己的告警。
-        .flag("-Wno-unused-parameter")
-        .flag("-Wno-unused-variable")
-        .flag("-Wno-unused-function")
-        .flag("-Wno-sign-compare")
-        .warnings(false);
-
-    if target_os == "macos" {
-        build
-            .define("USE_BLAS", None)
-            .define("ACCELERATE_NEW_LAPACK", None);
-    }
-
-    for src in SOURCES {
-        let path = format!("{}/{}", VENDOR, src);
-        println!("cargo:rerun-if-changed={}", path);
-        build.file(path);
-    }
-    println!("cargo:rerun-if-changed={}/qwen_asr.h", VENDOR);
-
-    build.compile("qwen_asr");
-
-    // BLAS = Accelerate
-    if target_os == "macos" {
-        println!("cargo:rustc-link-lib=framework=Accelerate");
-    }
-
-    // Linux 不依赖发行版的 OpenBLAS 开发包，先走 C 引擎自带的通用 CPU kernels。
-    if target_os == "linux" {
-        println!("cargo:rustc-link-lib=m");
-        println!("cargo:rustc-link-lib=pthread");
-    }
-
-    // Apple Speech 本地 ASR（issue #574）：apple_speech_provider 用
-    // SFSpeechRecognizer / SFSpeechURLRecognitionRequest，符号在 Speech.framework。
-    if target_os == "macos" {
-        println!("cargo:rustc-link-lib=framework=Speech");
-    }
 }

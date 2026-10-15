@@ -1,4 +1,6 @@
-import type { CSSProperties } from 'react';
+import { useRef, type CSSProperties } from 'react';
+import { useExitMount } from '../lib/useExitMount';
+import { useOverlayMotion } from '../lib/motion';
 import { useTranslation } from 'react-i18next';
 import { Icon } from './Icon';
 import type { AppTab } from '../state/useAppState';
@@ -7,6 +9,8 @@ const MORE_TABS: Array<{ id: AppTab; icon: string }> = [
   { id: 'vocab', icon: 'vocab' },
   { id: 'translation', icon: 'translate' },
   { id: 'selectionAsk', icon: 'selectionAsk' },
+  { id: 'quickNote', icon: 'history' },
+  { id: 'corrections', icon: 'filter' },
 ];
 
 interface MobileMoreSheetProps {
@@ -25,24 +29,33 @@ export function MobileMoreSheet({
   onOpenSettings,
 }: MobileMoreSheetProps) {
   const { t } = useTranslation();
-  if (!open) return null;
+  const { mounted, closing } = useExitMount(open);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  useOverlayMotion(overlayRef, closing, 'backdrop', mounted);
+  useOverlayMotion(cardRef, closing, 'sheet', mounted);
+  if (!mounted) return null;
 
   return (
     <div
-      onClick={onClose}
+      ref={overlayRef}
+      onClick={closing ? undefined : onClose}
       style={{
-        position: 'absolute',
+        position: 'fixed',
         inset: 0,
         zIndex: 60,
         background: 'rgba(15,17,22,0.32)',
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'flex-end',
-        animation: 'ol-mobile-sheet-backdrop 0.2s var(--ol-motion-soft)',
+        pointerEvents: closing ? 'none' : undefined,
       }}
     >
       <div
-        onClick={e => e.stopPropagation()}
+        ref={cardRef}
+        role="dialog"
+        aria-label={t('nav.more')}
+        onClick={(e) => e.stopPropagation()}
         style={{
           background: 'var(--ol-surface)',
           borderTopLeftRadius: 16,
@@ -50,11 +63,25 @@ export function MobileMoreSheet({
           border: '0.5px solid var(--ol-line)',
           padding: '12px 12px calc(12px + env(safe-area-inset-bottom, 0px))',
           boxShadow: '0 -8px 32px -8px rgba(15,17,22,0.18)',
-          animation: 'ol-mobile-sheet-up 0.26s var(--ol-motion-spring)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px 12px' }}>
-          <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--ol-ink)' }}>{t('nav.more')}</span>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '4px 8px 12px',
+          }}
+        >
+          <span
+            style={{
+              fontSize: 14,
+              fontWeight: 'var(--ol-font-weight-semibold)',
+              color: 'var(--ol-ink)',
+            }}
+          >
+            {t('nav.more')}
+          </span>
           <button
             type="button"
             onClick={onClose}
@@ -65,7 +92,7 @@ export function MobileMoreSheet({
           </button>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {MORE_TABS.map(item => {
+          {MORE_TABS.map((item) => {
             const active = currentTab === item.id;
             return (
               <button
@@ -79,7 +106,8 @@ export function MobileMoreSheet({
                 style={rowBtnStyle}
               >
                 <Icon name={item.icon} size={16} />
-                <span style={{ flex: 1 }}>{t(`nav.${item.id}`)}</span>
+                <span style={rowLabelStyle}>{t(`nav.${item.id}`)}</span>
+                <Icon name="chevRight" size={13} />
               </button>
             );
           })}
@@ -93,7 +121,8 @@ export function MobileMoreSheet({
             style={rowBtnStyle}
           >
             <Icon name="settings" size={16} />
-            <span style={{ flex: 1 }}>{t('shell.footer.settings')}</span>
+            <span style={rowLabelStyle}>{t('shell.footer.settings')}</span>
+            <Icon name="chevRight" size={13} />
           </button>
         </div>
       </div>
@@ -116,6 +145,10 @@ const iconBtnStyle: CSSProperties = {
 
 const rowBtnStyle: CSSProperties = {
   display: 'flex',
+  width: '100%',
+  boxSizing: 'border-box',
+  minWidth: 0,
+  flexWrap: 'nowrap',
   alignItems: 'center',
   gap: 12,
   padding: '12px 14px',
@@ -126,4 +159,12 @@ const rowBtnStyle: CSSProperties = {
   fontSize: 14,
   cursor: 'default',
   textAlign: 'left',
+};
+
+const rowLabelStyle: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
 };

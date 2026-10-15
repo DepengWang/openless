@@ -111,13 +111,7 @@ fn validated_envelope(bytes: &[u8]) -> Result<(EnvelopeV2, SealedPayload), Store
         return Err(StoreError::InvalidEnvelope);
     }
 
-    Ok((
-        envelope,
-        SealedPayload {
-            nonce,
-            ciphertext,
-        },
-    ))
+    Ok((envelope, SealedPayload { nonce, ciphertext }))
 }
 
 fn open_envelope(
@@ -128,6 +122,58 @@ fn open_envelope(
     crypto
         .open(&sealed, ENVELOPE_AAD)
         .map_err(StoreError::Crypto)
+}
+
+/// Inspect the last durable candidate without completing migrations or recovery.
+/// Startup with an E2EE recovery marker must not rename, chmod, reset a key,
+/// mark migration complete, or delete any envelope before its restore lease.
+pub(super) fn read_only(
+    path: &Path,
+    crypto: &mut impl AndroidCredentialsCrypto,
+) -> Result<ReadOutcome, StoreError> {
+    match fs::read(verified_v2_temporary_path(path)) {
+        Ok(bytes) => return open_envelope(&bytes, crypto).map(ReadOutcome::Plaintext),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(io_error("read verified recovery candidate", error)),
+    }
+    let bytes = match fs::read(path) {
+        Ok(bytes) if !bytes.is_empty() => Some(bytes),
+        Ok(_) => Some(Vec::new()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(io_error("read without migration", error)),
+    };
+    let bytes = if bytes.as_ref().is_none_or(Vec::is_empty) {
+        match fs::read(path.with_extension("legacy.tmp")) {
+            Ok(candidate) => candidate,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => match bytes {
+                Some(bytes) => bytes,
+                None => return Ok(ReadOutcome::Missing),
+            },
+            Err(error) => return Err(io_error("read legacy recovery candidate", error)),
+        }
+    } else {
+        bytes.ok_or(StoreError::InvalidEnvelope)?
+    };
+    match bytes
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+    {
+        Some(b'{') => open_envelope(&bytes, crypto).map(ReadOutcome::Plaintext),
+        Some(_) => {
+            if crypto.migration_complete().map_err(StoreError::Crypto)? {
+                return Err(StoreError::InvalidEnvelope);
+            }
+            let plaintext = base64::engine::general_purpose::STANDARD
+                .decode(&bytes)
+                .map_err(|_| StoreError::InvalidEnvelope)?;
+            if plaintext.is_empty() {
+                return Err(StoreError::InvalidEnvelope);
+            }
+            Ok(ReadOutcome::Legacy(plaintext))
+        }
+        None => Err(StoreError::InvalidEnvelope),
+    }
 }
 
 pub(super) fn read(
@@ -141,7 +187,10 @@ pub(super) fn read(
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ReadOutcome::Missing),
         Err(error) => return Err(io_error("read", error)),
     };
-    let first = bytes.iter().copied().find(|byte| !byte.is_ascii_whitespace());
+    let first = bytes
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace());
     let Some(first) = first else {
         return Err(StoreError::InvalidEnvelope);
     };
@@ -151,10 +200,7 @@ pub(super) fn read(
         // has been verified and before it can replace a legacy envelope. Once
         // present, a Base64 file is a rollback or injection attempt rather
         // than a legitimate upgrade source.
-        if crypto
-            .migration_complete()
-            .map_err(StoreError::Crypto)?
-        {
+        if crypto.migration_complete().map_err(StoreError::Crypto)? {
             return Err(StoreError::InvalidEnvelope);
         }
         let plaintext = base64::engine::general_purpose::STANDARD
@@ -258,8 +304,7 @@ fn recover_verified_sanitized_legacy(path: &Path) -> Result<(), StoreError> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(io_error("remove empty legacy recovery target", error)),
     }
-    fs::rename(&temporary, path)
-        .map_err(|error| io_error("recover sanitized legacy", error))?;
+    fs::rename(&temporary, path).map_err(|error| io_error("recover sanitized legacy", error))?;
     set_private_file_mode(path)?;
     sync_parent(path)
 }
@@ -389,8 +434,8 @@ fn rewrite_legacy_without_bearer_with_fault(
         drop(output);
         set_private_file_mode(&temporary)?;
 
-        let persisted = fs::read(&temporary)
-            .map_err(|error| io_error("reread sanitized legacy", error))?;
+        let persisted =
+            fs::read(&temporary).map_err(|error| io_error("reread sanitized legacy", error))?;
         let verified = base64::engine::general_purpose::STANDARD
             .decode(&persisted)
             .map_err(|_| StoreError::VerificationFailed)?;
@@ -482,8 +527,8 @@ fn write_verified_with_fault(
         drop(output);
         set_private_file_mode(&temporary)?;
 
-        let persisted = fs::read(&temporary)
-            .map_err(|error| io_error("reread temporary file", error))?;
+        let persisted =
+            fs::read(&temporary).map_err(|error| io_error("reread temporary file", error))?;
         let verified = open_envelope(&persisted, crypto)?;
         if verified != plaintext {
             return Err(StoreError::VerificationFailed);
@@ -512,8 +557,7 @@ fn write_verified_with_fault(
         fault(WriteStage::AfterRename)
             .map_err(|error| io_error("after replacing credential file", error))?;
         set_private_file_mode(path)?;
-        fault(WriteStage::ParentSync)
-            .map_err(|error| io_error("sync parent directory", error))?;
+        fault(WriteStage::ParentSync).map_err(|error| io_error("sync parent directory", error))?;
         sync_parent(path)
     })();
 
@@ -572,8 +616,7 @@ impl AndroidCredentialsCrypto for AndroidKeystoreCrypto {
     }
 
     fn migration_complete(&mut self) -> std::result::Result<bool, CryptoErrorKind> {
-        crate::android::jni::android::keystore_migration_complete()
-            .map_err(map_keystore_failure)
+        crate::android::jni::android::keystore_migration_complete().map_err(map_keystore_failure)
     }
 
     fn mark_migration_complete(&mut self) -> std::result::Result<(), CryptoErrorKind> {
@@ -591,12 +634,8 @@ fn map_keystore_failure(
         AndroidKeystoreFailure::AuthenticationFailed | AndroidKeystoreFailure::Malformed => {
             CryptoErrorKind::AuthenticationFailed
         }
-        AndroidKeystoreFailure::KeyMissingOrInvalidated => {
-            CryptoErrorKind::KeyMissingOrInvalidated
-        }
-        AndroidKeystoreFailure::TemporarilyUnavailable => {
-            CryptoErrorKind::TemporarilyUnavailable
-        }
+        AndroidKeystoreFailure::KeyMissingOrInvalidated => CryptoErrorKind::KeyMissingOrInvalidated,
+        AndroidKeystoreFailure::TemporarilyUnavailable => CryptoErrorKind::TemporarilyUnavailable,
     }
 }
 
@@ -690,10 +729,7 @@ impl AndroidCredentialsCrypto for TestCrypto {
             .collect::<Vec<_>>();
         let tag = self.authentication_tag(&nonce, &ciphertext, aad);
         ciphertext.extend_from_slice(&tag);
-        Ok(SealedPayload {
-            nonce,
-            ciphertext,
-        })
+        Ok(SealedPayload { nonce, ciphertext })
     }
 
     fn open(
@@ -763,17 +799,85 @@ mod tests {
     }
 
     #[test]
+    fn read_only_preserves_verified_candidates_and_invalidated_key_envelopes() {
+        let path = test_path("android-read-only-pending");
+        let pending = verified_v2_temporary_path(&path);
+        let mut crypto = TestCrypto::default();
+        write_verified(&path, b"old committed root", &mut crypto).unwrap();
+        let old = fs::read(&path).unwrap();
+        let sealed = crypto.seal(b"new verified root", ENVELOPE_AAD).unwrap();
+        let candidate = envelope_for(&sealed).unwrap();
+        fs::write(&pending, &candidate).unwrap();
+        #[cfg(unix)]
+        {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        crypto.fail_next_mark_migration = Some(CryptoErrorKind::TemporarilyUnavailable);
+        assert_eq!(
+            read_only(&path, &mut crypto).unwrap(),
+            ReadOutcome::Plaintext(b"new verified root".to_vec())
+        );
+        assert!(crypto.fail_next_mark_migration.is_some());
+        assert_eq!(fs::read(&path).unwrap(), old);
+        assert_eq!(fs::read(&pending).unwrap(), candidate);
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o644
+            );
+        }
+        crypto.fail_next_open = Some(CryptoErrorKind::KeyMissingOrInvalidated);
+        assert!(matches!(
+            read_only(&path, &mut crypto),
+            Err(StoreError::Crypto(CryptoErrorKind::KeyMissingOrInvalidated))
+        ));
+        assert_eq!(crypto.delete_key_calls, 0);
+        assert_eq!(fs::read(&path).unwrap(), old);
+        assert_eq!(fs::read(&pending).unwrap(), candidate);
+        fs::write(&pending, b"invalid candidate").unwrap();
+        assert!(read_only(&path, &mut crypto).is_err());
+        assert_eq!(fs::read(&path).unwrap(), old);
+        remove_test_parent(&path);
+    }
+
+    #[test]
+    fn read_only_legacy_recovery_never_promotes_or_marks_a_source() {
+        let path = test_path("android-read-only-legacy");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let candidate = path.with_extension("legacy.tmp");
+        let bytes = base64::engine::general_purpose::STANDARD.encode(b"legacy root");
+        fs::write(&candidate, &bytes).unwrap();
+        let mut crypto = TestCrypto::default();
+        assert_eq!(
+            read_only(&path, &mut crypto).unwrap(),
+            ReadOutcome::Legacy(b"legacy root".to_vec())
+        );
+        assert!(!path.exists());
+        assert_eq!(fs::read(&candidate).unwrap(), bytes.as_bytes());
+        assert!(!crypto.migration_complete().unwrap());
+        crypto.mark_migration_complete().unwrap();
+        assert!(matches!(
+            read_only(&path, &mut crypto),
+            Err(StoreError::InvalidEnvelope)
+        ));
+        assert!(candidate.exists());
+        remove_test_parent(&path);
+    }
+
+    #[test]
     fn v2_round_trip_hides_plaintext() {
         let path = test_path("android-v2-round-trip");
-        let plaintext = br#"{"version":1,"providers":{"llm":{"ark":{"apiKey":"sk-secret-sentinel"}}}}"#;
+        let plaintext =
+            br#"{"version":1,"providers":{"llm":{"ark":{"apiKey":"sk-secret-sentinel"}}}}"#;
         let mut crypto = TestCrypto::default();
 
         write_verified(&path, plaintext, &mut crypto).unwrap();
 
         let disk = std::fs::read(&path).unwrap();
-        assert!(!disk.windows(b"sk-secret-sentinel".len()).any(|window| {
-            window == b"sk-secret-sentinel"
-        }));
+        assert!(!disk
+            .windows(b"sk-secret-sentinel".len())
+            .any(|window| { window == b"sk-secret-sentinel" }));
         if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&disk) {
             assert!(!String::from_utf8_lossy(&decoded).contains("sk-secret-sentinel"));
         }
@@ -906,18 +1010,13 @@ mod tests {
         assert!(write_verified(&path, plaintext, &mut crypto).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), legacy);
 
-        let result = write_verified_with_fault(
-            &path,
-            plaintext,
-            &mut crypto,
-            &mut |stage| {
-                if stage == WriteStage::AfterVerification {
-                    Err(io::Error::other("injected post-verification failure"))
-                } else {
-                    Ok(())
-                }
-            },
-        );
+        let result = write_verified_with_fault(&path, plaintext, &mut crypto, &mut |stage| {
+            if stage == WriteStage::AfterVerification {
+                Err(io::Error::other("injected post-verification failure"))
+            } else {
+                Ok(())
+            }
+        });
         assert!(result.is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), legacy);
         assert_eq!(
@@ -937,18 +1036,13 @@ mod tests {
         std::fs::write(&path, &legacy).unwrap();
         let mut crypto = TestCrypto::default();
 
-        let result = write_verified_with_fault(
-            &path,
-            plaintext,
-            &mut crypto,
-            &mut |stage| {
-                if stage == WriteStage::AfterVerification {
-                    Err(io::Error::other("injected pre-rename failure"))
-                } else {
-                    Ok(())
-                }
-            },
-        );
+        let result = write_verified_with_fault(&path, plaintext, &mut crypto, &mut |stage| {
+            if stage == WriteStage::AfterVerification {
+                Err(io::Error::other("injected pre-rename failure"))
+            } else {
+                Ok(())
+            }
+        });
 
         assert!(result.is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), legacy);
@@ -994,19 +1088,16 @@ mod tests {
         .unwrap();
         let mut crypto = TestCrypto::default();
 
-        assert!(write_verified_with_fault(
-            &path,
-            plaintext,
-            &mut crypto,
-            &mut |stage| {
+        assert!(
+            write_verified_with_fault(&path, plaintext, &mut crypto, &mut |stage| {
                 if stage == WriteStage::AfterVerification {
                     Err(io::Error::other("inject pending recovery candidate"))
                 } else {
                     Ok(())
                 }
-            },
-        )
-        .is_err());
+            },)
+            .is_err()
+        );
         assert!(verified_v2_temporary_path(&path).exists());
 
         crypto.fail_next_open = Some(CryptoErrorKind::KeyMissingOrInvalidated);
@@ -1069,23 +1160,18 @@ mod tests {
             let path = test_path(&format!("android-legacy-bearer-{failed_stage:?}"));
             let token = format!("gho_legacy_{failed_stage:?}");
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let legacy_json =
-                format!(r#"{{"marketplace":{{"githubAccessToken":"{token}"}}}}"#);
+            let legacy_json = format!(r#"{{"marketplace":{{"githubAccessToken":"{token}"}}}}"#);
             let legacy = base64::engine::general_purpose::STANDARD.encode(legacy_json.as_bytes());
             std::fs::write(&path, legacy).unwrap();
             let sanitized = br#"{"version":1,"active":{"llm":"ark"}}"#;
 
-            let result = rewrite_legacy_without_bearer_with_fault(
-                &path,
-                sanitized,
-                &mut |stage| {
-                    if stage == failed_stage {
-                        Err(io::Error::other(format!("injected {stage:?}")))
-                    } else {
-                        Ok(())
-                    }
-                },
-            );
+            let result = rewrite_legacy_without_bearer_with_fault(&path, sanitized, &mut |stage| {
+                if stage == failed_stage {
+                    Err(io::Error::other(format!("injected {stage:?}")))
+                } else {
+                    Ok(())
+                }
+            });
 
             assert!(result.is_err(), "{failed_stage:?} should fail");
             assert_token_absent_from_legacy_candidates(&path, &token);
@@ -1117,8 +1203,7 @@ mod tests {
             let path = test_path(&format!("android-legacy-crash-{crash_stage:?}"));
             let token = format!("gho_crash_{crash_stage:?}");
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let legacy_json =
-                format!(r#"{{"marketplace":{{"githubAccessToken":"{token}"}}}}"#);
+            let legacy_json = format!(r#"{{"marketplace":{{"githubAccessToken":"{token}"}}}}"#);
             let legacy = base64::engine::general_purpose::STANDARD.encode(legacy_json.as_bytes());
             std::fs::write(&path, legacy).unwrap();
 

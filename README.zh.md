@@ -5,7 +5,7 @@
 <h1 align="center">OpenLess</h1>
 
 <p align="center">
-  <strong>面向 macOS 与 Windows 的开源语音输入工具</strong>
+  <strong>面向 macOS、Windows 与 Linux 的开源语音输入工具</strong>
 </p>
 
 <p align="center">
@@ -33,6 +33,7 @@
 <p align="center">
   <img alt="macOS" src="https://img.shields.io/badge/macOS-12%2B-1f425f?style=flat-square&logo=apple&logoColor=white" />
   <img alt="Windows" src="https://img.shields.io/badge/Windows-10%2B-0078d4?style=flat-square&logo=windows&logoColor=white" />
+  <img alt="Linux" src="https://img.shields.io/badge/Linux-egui-fcc624?style=flat-square&logo=linux&logoColor=black" />
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white" />
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2021-ce422b?style=flat-square&logo=rust&logoColor=white" />
 </p>
@@ -86,7 +87,7 @@
     <td align="center" width="170">
       <img src="https://github.com/HKLHaoBin.png" width="80" height="80" alt="HKLHaoBin" /><br/>
       <strong><a href="https://github.com/HKLHaoBin" target="_blank" rel="noopener">HKLHaoBin</a></strong><br/>
-      <sub>安卓版作者</sub>
+      <sub>安卓版作者 / 安卓版维护者</sub>
     </td>
     <td align="center" width="170">
       <img src="assets/people/cooper.png" width="80" height="80" alt="Cooper" /><br/>
@@ -96,7 +97,14 @@
     <td align="center" width="170">
       <img src="https://github.com/aeoform.png" width="80" height="80" alt="aeoform" /><br/>
       <strong><a href="https://github.com/aeoform" target="_blank" rel="noopener">aeoform</a></strong><br/>
-      <sub>贡献者</sub>
+      <sub>贡献者 / Linux 维护者</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="170">
+      <img src="assets/people/jimmy54.png" width="80" height="80" alt="jimmy54" /><br/>
+      <strong><a href="https://github.com/jimmy54" target="_blank" rel="noopener">jimmy54</a></strong><br/>
+      <sub>macOS 打包与开发者账号</sub>
     </td>
   </tr>
 </table>
@@ -124,7 +132,7 @@ OpenLess 做的不是“更快的听写”,而是**消灭“想法 → 干净文
 
 下面这些能力,把过去每天都要重复的协调,进一步沉降成了默认规则:
 
-- 📖 **会自己长的词典。** 在此之前,词典里只有你亲手敲进去的东西。现在,当你改掉 OpenLess 刚写出来的某个词,它会在屏幕角落弹一张小卡片问一声要不要记住,点一下就进去了。配合**光标上下文**(需手动开启,仅 macOS)——让润色模型读得到你光标周围正在写的内容——OpenLess 不再是一个靠猜同音词的转写工具,而开始成为**一个认得你的词的输入法**。每一条建议都由你过目,没有任何东西是悄悄学走的。
+- 📖 **会自己长的词典。** 在此之前,词典里只有你亲手敲进去的东西。现在,当你改掉 OpenLess 刚写出来的某个词,它会在屏幕角落弹一张小卡片问一声要不要记住,点一下就进去了。配合**光标上下文**(需手动开启,macOS / Windows)——让润色模型读得到你光标周围正在写的内容——OpenLess 不再是一个靠猜同音词的转写工具,而开始成为**一个认得你的词的输入法**。每一条建议都由你过目,没有任何东西是悄悄学走的。
 - 🎨 **风格包市场(Style Pack Marketplace)。** OpenLess 不再只内置一种固定的“润色”语气。你可以用自定义系统提示词构建自己的**风格包**,用快捷键在它们之间切换,并**一键安装社区分享的风格包**——也可以发布自己的与他人分享。当风格与你的具体任务高度契合(冷启动邮件、commit message、小红书文案、正式报告、团队语气)时,产出的文本不只是更干净,而是*明显更好*,因为模型终于在按你真正想要的方式写作。
 - ⚡ **流式插入。** 文本现在会随润色**逐字符**写入光标,而不必等待完整结果生成。感知延迟大幅下降,听写几乎和思考一样快——当某个应用无法接受流式按键时,它会自动回退为一次性粘贴。
 
@@ -196,30 +204,32 @@ OpenLess 只做一件事:**把语音变成可用的书面文字(尤其是 AI 提
 
 ## 当前状态
 
+本 Fork 的 Android 输入法架构、四个面板的使用说明、截图和从 fork 基线开始的功能时间线，见 [Android 输入法：架构、功能与 fork 演进](docs/android-ime.md)。
+
 下面每一项,都是一层已经沉降为默认、你授权一次之后就不必再操心的能力——这就是开屏之后你所站立的基础设施:
 
-- Tauri 2 后端(Rust)+ React/TypeScript 前端。macOS 14+、Windows 10+。
+- 共享 Rust 后端位于 `openless-core`。macOS 与 Windows 使用薄 Tauri 2 宿主和 React/TypeScript 前端；Android 暂时保留 Tauri mobile 宿主；Linux 使用独立原生宿主，不编译 Tauri 或 WebKitGTK。
 - 🎨 **风格包市场**——在应用内的 Marketplace 浏览、安装、点赞社区**风格包**,并发布自己的(每个包一套自定义系统提示词,可用快捷键切换)。由经过审核的市场后端支撑;上传内容公开前会经过审核。
 - ⚡ **流式插入**——润色后的文本逐字符写入光标以降低感知延迟,并带有自动的一次性粘贴回退。可在 设置 → 录音 中切换。
 - **切换式与按住说话(push-to-talk)** 两种录音模式,外加 **MediaPlayPause 触发**,让有线耳机的线控也能开始 / 停止录音。`Esc` 可在任意阶段取消,包括润色与插入。
-- **云端 ASR**:Volcengine 流式 ASR(bigasr)、讯飞实时语音转写(RTASR)、阿里云百炼(经典实时 / Qwen3 实时 / Fun-ASR-Flash 录音文件)、阶跃星辰 StepAudio(批式 + 实时)、智谱 GLM-ASR、小米 MiMo ASR、ElevenLabs Scribe、OpenAI 兼容批量转写(OpenAI Whisper / Groq / 硅基流动 SenseVoice / OpenRouter / ZenMux),以及 Apple Speech(macOS)。
+- **云端 ASR**:Volcengine 流式 ASR(bigasr)、腾讯云混元实时 ASR(Hy-ASR)、讯飞实时语音转写(RTASR)、阿里云百炼(经典实时 / Qwen3 实时 / Fun-ASR-Flash 录音文件)、阶跃星辰 StepAudio(批式 + 实时)、智谱 GLM-ASR、小米 MiMo ASR、OrcaRouter 音频输入 Gemini、ElevenLabs Scribe、OpenAI 兼容批量转写(OpenAI Whisper / Groq / 硅基流动 SenseVoice / OpenRouter / ZenMux),以及 Apple Speech(macOS)。
 - **本地 ASR**:通过 vendored 的 `Open-Less/qwen-asr` 内置 Qwen3-ASR(0.6B / 1.7B)(macOS);Windows 上的 Foundry Local Whisper 与 sherpa-onnx(实验性)变体。
-- **润色提供方**:Ark(火山方舟)、DeepSeek、OpenAI、Google Gemini、Codex OAuth、硅基流动、Atlas Cloud、小米 MiMo、CometAPI、OpenRouter、阿里云 Coding Plan、CodingPlanX、MiniMax、StepFun,以及你自带的任意 OpenAI 兼容端点。
-- **四种输出模式**:原文、轻度润色、结构化(**AI 提示词模式**)、正式。另有一个**翻译快捷键**,将语音直接转换为所配置的目标语言([#43](../../issues/43))。
-- **选区问答面板**——一个独立快捷键打开浮动面板,针对任意应用中被高亮选中的文本进行语音问答([#118](../../issues/118))。
+- **润色提供方**:Ark(火山方舟)、DeepSeek、OpenAI、Google Gemini、Codex OAuth、硅基流动、Atlas Cloud、小米 MiMo、腾讯云 TokenHub、CometAPI、OpenRouter、Requesty、API Route、OrcaRouter、阿里云 Coding Plan、CodingPlanX、MiniMax、StepFun、OpenCode Zen,以及你自带的任意 OpenAI 兼容端点。
+- **四种输出模式**:原文、轻度润色、结构化(**AI 提示词模式**)、正式。另有一个**翻译快捷键**,将语音直接转换为所配置的目标语言([#43](https://github.com/Open-Less/openless/issues/43))。
+- **选区问答面板**——一个独立快捷键打开浮动面板,针对任意应用中被高亮选中的文本进行语音问答([#118](https://github.com/Open-Less/openless/issues/118))。
 - **主窗口**:概览 / 历史 / 词典 / 风格 / 市场 / 设置。常驻托盘图标,以及一个浮于屏幕、并跟随你正在输入的显示器的迷你状态胶囊(多显示器)。
 - **本地模型管理**——在设置中管理本地 ASR 模型在磁盘上的存储。
 - **多语言界面**——设置 → 语言 可在 简体中文 / 繁體中文 / English / 日本語 / 한국어 之间切换(首次启动自动检测)。
-- **应用内自动更新**——设置 → 关于 → 检查;通过 Tauri updater 插件提供签名的更新产物。
-- **Beta 频道(可选加入)**——设置 → 关于 → 加入 Beta 频道,可下载最新预发布版本进行手动安装。Beta 版本绝不会自动推送给 Stable 用户(见[贡献流程](#贡献流程))。
-- **分发渠道**——从 [Releases](../../releases) 直接下载 DMG/EXE、Homebrew Cask(`brew install --cask openless`)、Windows 安装包。
+- **Tauri 宿主内自动更新**——macOS、Windows 与 Android 通过 设置 → 关于 → 检查 获取签名产物；Linux deb/rpm 不提供应用内更新或 AppImage 更新清单。
+- **Beta 频道(可选加入)**——设置 → 关于与更新 → 加入 Beta 频道,切换至 Beta 更新源；也可在 Releases 下载安装包。Beta 版本绝不会自动推送给 Stable 用户(见[贡献流程](#贡献流程))。
+- **分发渠道**——从 [Releases](https://github.com/Open-Less/openless/releases) 直接下载 DMG/EXE、Homebrew Cask(须先添加项目 tap，见下方安装步骤)、Windows 安装包。Linux deb/rpm 在独立真机验收后，由管理员把已验证的包附到已有 Release。
 - **单实例锁**——防止两个 OpenLess 进程争抢同一个快捷键边沿。
 - 词典条目注入到支持热词的 ASR 提供方(Volcengine 的 `context.hotwords`、StepFun 的 `hotwords`、Whisper 兼容的 `prompt`(ZenMux 除外——其 JSON 协议不携带 `prompt`/`hotwords`)、百炼的 vocabulary_id),并在润色时作为语义提示;命中次数按会话累计。讯飞实时语音转写标准版没有请求级热词参数,需在讯飞控制台配置个性化热词。
 - 平台原生全局快捷键:macOS 上为 CGEventTap,Windows 上为低级键盘钩子(`WH_KEYBOARD_LL`)。
 
 ## 下载与安装(终端用户)
 
-前往 [Releases](../../releases) 下载:
+前往 [Releases](https://github.com/Open-Less/openless/releases) 下载:
 
 - **macOS**:`OpenLess_<version>_aarch64.dmg`(Apple Silicon)或 `OpenLess_<version>_x64.dmg`(Intel)。打开后将应用拖入 `/Applications`,**然后在终端执行一次以下命令,以绕过 Gatekeeper 的“已损坏”提示**(该构建为 ad-hoc 签名,未经 Apple 公证):
   ```bash
@@ -234,6 +244,7 @@ OpenLess 只做一件事:**把语音变成可用的书面文字(尤其是 AI 提
   - 应用内更新（设置 → 关于）读取 `latest-android-{arch}.json`；Beta 用户在高级设置加入 Beta 渠道。
   - 调试包:`OpenLess-android-debug-{abi}-*.apk`（workflow_dispatch 产物）。
   - 不确定时执行 `adb shell getprop ro.product.cpu.abi`，下载对应 ABI 的包。
+- **Linux**：原 Tauri/WebView 构建已退出 Linux 路线。基于共享 Core 2.0 服务的原生 `eframe` 宿主经 CI 和 Ubuntu 真实音频、输入、安装、升级、回滚验收后，随共用 Release 提供 deb/rpm 和 `SHA256SUMS`。要求 glibc ≥ 2.39（Ubuntu 24.04 或同等级发行版）；没有 AppImage 或应用内更新。
 - **macOS(Homebrew)**:
   ```bash
   brew tap Open-Less/openless https://github.com/Open-Less/openless
@@ -261,28 +272,31 @@ OpenLess 只做一件事:**把语音变成可用的书面文字(尤其是 AI 提
 
 ## 从源码构建(开发者)
 
-活跃的代码库位于 `openless-all/app/`(Tauri 2 + Rust + React/TS)。macOS 构建会链接一个 vendored 的 C 语言 ASR 引擎([`Open-Less/qwen-asr`](https://github.com/Open-Less/qwen-asr),fork 自 `antirez/qwen-asr`),它作为 git 子模块位于 `src-tauri/vendor/qwen-asr/`,因此首次克隆时需初始化子模块。**递归初始化子模块在所有平台都是必需的**——macOS-only 的 `qwen3-asr-rs` path 依赖在 Windows/Linux 上也会被 Cargo 解析器读取(跳过它会让 `cargo check` 在解析阶段硬失败),Linux 构建还要编译 vendored C 引擎。
+活跃 workspace 位于 `openless-all/app/`：`crates/openless-core` 是框架无关后端，`src-tauri` 承载 macOS/Windows/Android，`linux-egui` 包含 Linux 原生 UI 与平台 Adapter。源码构建 Tauri 前需初始化子模块：即使不编译对应平台代码，Cargo 仍会解析 manifest 中的本地 path 依赖，其中包括 `src-tauri/vendor/` 下的 macOS ASR 引擎，如 [`Open-Less/qwen-asr`](https://github.com/Open-Less/qwen-asr)。根 Core/Linux workspace 排除了 `src-tauri`，其独立检查不解析 Tauri manifest，也不要求这些子模块。阅读入口为 [docs/index.md](docs/index.md)、[架构](docs/architecture.md)和[目录结构](docs/structure.md)。
 
-Rust 1.88 是从源码构建所支持的最低工具链版本；建议使用最新 stable Rust。CI 会在 macOS、Windows 和 Linux 上同时验证 Rust 1.88 与 stable。
+Rust 1.88 是桌面应用源码（`openless-core`、`src-tauri`）所支持的最低工具链版本；建议使用最新 stable Rust。CI 在 macOS 与 Windows 上同时验证 Rust 1.88 与 stable；Linux egui 宿主需要 Rust 1.95，按 stable 验证。
 
 Apple Silicon 编译可选的 Qwen3-ASR MLX 后端时需要 Xcode 的 MetalToolchain 组件。执行 `xcodebuild -downloadComponent MetalToolchain` 安装，并用 `xcrun --find metal` 验证。它只属于源码构建依赖，已打包的 OpenLess 应用运行时不需要该组件。
 
 ```bash
-# 仅首次克隆——拉取 vendored 子模块
-git submodule update --init --recursive
-
 cd "openless-all/app"
 npm ci
 
-# 开发:Vite 运行于 :1420 + Tauri 外壳
+# macOS/Windows/Android:Vite 运行于 :1420 + Tauri 宿主
+# 解析 Tauri manifest 前先初始化子模块。
+git submodule update --init --recursive
 npm run tauri dev
 
 # macOS 发布构建(签名、安装、重置 TCC)
 ./scripts/build-mac.sh
 INSTALL=0 ./scripts/build-mac.sh   # 仅构建,跳过安装
 
-# 不完整编译的 Rust 类型检查
-cargo check --manifest-path src-tauri/Cargo.toml
+# 共享后端与 Linux Host/UI（不含 Tauri/WebKitGTK）
+cargo check -p openless-core
+cargo check -p openless-linux-egui --all-targets
+
+# Tauri host 类型检查
+cargo check --manifest-path "src-tauri/Cargo.toml"
 
 # 前端 TS 检查
 npm run build
@@ -357,7 +371,7 @@ OpenLess 的润色模型只重塑文本。它不回答问题、不执行任务�
 
 ……而不是一份缺失功能的清单。
 
-长期参考改写以 `raw → polished → rule` 三元组存储,待向量库接入后,将作为相似示例参考被检索(绝不作为对话上下文)。见 [docs/polish-reference-corpus.md](docs/polish-reference-corpus.md) 与 [Examples/polish-reference-examples.sample.jsonl](Examples/polish-reference-examples.sample.jsonl)。
+长期参考改写的 `raw → polished → rule` 三元组格式见 [Examples/polish-reference-examples.sample.jsonl](Examples/polish-reference-examples.sample.jsonl)。该文件说明参考数据格式；当前模块职责见[架构文档](docs/architecture.md)。
 
 ## 词典
 
@@ -366,87 +380,55 @@ OpenLess 的润色模型只重塑文本。它不回答问题、不执行任务�
 - 手动添加正确拼写、分类与备注。你无需维护错误拼写或上下文提示。
 - 启用的条目作为 Volcengine ASR 的 `context.hotwords` 发送,以便在转写时被正确识别。
 - 条目同样注入润色提示词:模型逐句判断是否替换。如果“Cloud”在上下文中明显指 AI 产品 `Claude`,就会被纠正;如果它确实指云计算,则保持原样。
-- **词典会自己长。** 当你手动改掉 OpenLess 刚打出来的某个词,屏幕角落会弹一张小卡片问你要不要记住它。点一下勾就进去了——不用打开设置页,不用填表。**每一条都由你过目,没有任何东西是悄悄加进去的。** 需要开启下面的「光标上下文」,目前仅 macOS。
+- **手改学词（实验）。** 在「设置 → 实验与扩展 → 手改学词」进入独立配置页，设置观察时长（10–60 秒，默认 60）、建议保留时长（5–60 秒，默认 10）及自动建议最大词长（2–32 个字符，默认 12）。功能默认关闭，不跟随光标上下文或云同步授权。macOS、Windows 和 Android 可在支持的编辑器中观察插入后的修改，候选需在有效期内逐条确认才加入词典。修改参数会结束当前观察并清空待确认建议，下次听写生效。Android 需要无障碍服务。无法观察时，可在历史详情点击「记住词汇」手动输入正确词；Android 输入法编辑结果也提供默认不勾选的加入词典选项。所有入口均需明确确认，不自动创建全局替换规则。
 - **真正在用的词优先。** 发给 ASR 的热词预算是有限的(几百字符)。条目按命中次数排序,并给刚手动添加的词留几个保底席位——这样你天天在用的那些词不会被「最近刚加的」挤出去。
 
-### 光标上下文(需手动开启,仅 macOS)
+### 光标上下文(需手动开启,macOS / Windows / Android)
 
 设置 → 隐私 → 数据存储 → **光标上下文**。默认关闭。
 
-开启后,每次听写会读取**你正在写的那个应用里**光标附近的几百个字,随润色请求一起发出,让模型知道你在写什么。中文同音词(接口/借口、大鱼/大禹)声学模型分不出来,但上下文能分。词典的自我学习也建立在这之上——OpenLess 只有看得见自己刚打出去的文字,才可能发现你把某个词改掉了。
+开启后,每次听写会读取**你正在写的那个应用里**光标附近的几百个字,随润色请求一起发出,让模型知道你在写什么。中文同音词(接口/借口、大鱼/大禹)声学模型分不出来,但上下文能分。手改学词是独立的本地功能，不需要开启此设置。观察文本本身不会发送给模型；确认加入词典的词会按词典规则参与后续 ASR／润色。
 
-**永远不读的地方**:密码输入框、macOS Secure Input、密码管理器、终端——这些在发出任何一次辅助功能调用之前就被拦下。开关关闭时,一次辅助功能调用都不会发生,提示词与没有这个功能的版本逐字节相同。
+Windows 使用 UI Automation 读取当前焦点文本控件的光标附近内容：优先使用 `TextPattern2` 的 caret range；控件不支持 `TextPattern2` 时，兼容使用 `TextPattern` 的 collapsed selection。无法可靠定位 caret 时直接跳过，不会猜测光标位置，也不会影响正常听写。
+
+基于 Chromium 的编辑器（VS Code、Electron 应用）只有在检测到有无障碍客户端在用时，才会实时同步无障碍树里的光标位置，默认设置下 UI Automation 读到的位置可能是过时的。VS Code 里需要把 `editor.accessibilitySupport` 设为 `on`（设置里搜"accessibility support"，改完可能需要重新加载窗口）才能拿到准确的光标上下文；其他基于 Electron 的编辑器一般也有类似设置。普通的 Chrome/Edge 文本框不需要这一步。
+
+Android 上由 OpenLess 键盘在开始录音的那一刻，直接通过自身的 `InputConnection` 读取光标前后的文字——不需要无障碍权限，只读一次，不重试。听写、速记和云笔记润色时都会参考，但上下文只用来判断这次口述该怎么写：不会被抄进笔记、历史、云笔记 Webhook 或日志。使用云端润色模型时，上下文会随本次润色请求发送给该模型服务。悬浮球暂不读取光标上下文。
+
+光标上下文排除密码输入框、macOS Secure Input、Windows UIA 密码控件、Android 上密码类型或声明不做个性化学习的输入框、已知密码管理器和终端。关闭此开关后不会为润色读取光标上下文；其他已授权的辅助功能（如手改学词或插入）独立工作。手改学词关闭后会停止观察并清空待确认建议。
 
 主窗口组织为 首页 / 历史 / 词典 / 设置。点击“新建”时,词典页会打开一个独立的编辑窗口。首页展示总听写时长、总字数、平均每分钟字数、估算节省的时间,以及词典参与统计。
 
 ## 架构
 
-活跃实现为 Tauri 2(`openless-all/app/`)。发布分为两个频道:**Stable**(`v<v>-tauri` 标签,为所有用户自动更新)与 **Beta**(`v<v>-beta-tauri` 标签,GitHub pre-release,由可选加入的用户手动下载)。每个发布标签都由 CI 产出签名的更新产物。
-
-**Tauri 后端(Rust)**——每个模块仅依赖 `types.rs`:
+应用只有一套共享后端 Interface，并由各平台宿主适配：
 
 ```
-types.rs         Pure value types: DictationSession, PolishMode, HotkeyBinding, errors
-hotkey.rs        Global hotkey (CGEventTap on macOS, WH_KEYBOARD_LL on Windows, rdev on Linux)
-recorder.rs      Mic → 16 kHz mono Int16 PCM, RMS callback
-asr/             流式 ASR 客户端(Volcengine / Bailian / Qwen3 / StepFun / iFlytek 走 WebSocket)+ Whisper 兼容批量 HTTP
-polish.rs        OpenAI-compatible chat completions (Ark / DeepSeek / etc.)
-insertion.rs     AX focused-element → clipboard + Cmd+V → copy-only fallback
-persistence.rs   History / preferences / vocab JSON + platform credential vault
-permissions.rs   TCC checks (Accessibility / Microphone)
-coordinator.rs   State machine: Idle → Starting → Listening → Processing
-commands.rs      Tauri IPC surface
+React UI ── Tauri Adapter（macOS/Windows/Android）──┐
+                                                  ├── openless-core
+egui UI  ── Linux Adapter（无 Tauri/WebKitGTK）───┘
 ```
 
-**React 前端(`src/`)**——状态通过 Recoil atoms(`pages/_atoms.tsx`)管理;快捷键能力与绑定通过 `HotkeySettingsContext`;所有后端调用都经由 `lib/ipc.ts`。
+`openless-core` 负责稳定 DTO、错误、语义事件、repository、凭据契约和面向宿主的 use-case Interface。IPC、窗口、托盘、权限、更新、keyring、fcitx5 与打包资源路径等宿主能力由 Adapter 实现。旧 React command/event 名称只保留在 Tauri 兼容 Adapter；Linux 与 core 同进程，通过类型化 Rust Interface 调用。详细契约见 [`docs/linux-egui-backend-contract.md`](docs/linux-egui-backend-contract.md)。
+
+`v<version>-tauri` / `v<version>-Beta.N-tauri` 工作流构建 macOS、Windows、Android 宿主以及独立的 Linux egui deb/rpm。Linux 真机验收完成、管理员创建 tag 后，验证过的 Linux 包自动附到共用 Release；Beta 资产先留在草稿中供管理员核对发布。Linux 不提供 AppImage 或应用内更新清单。
 
 听写流水线:`hotkey edge → Recorder.start + ASR.openSession → [audio frames] → hotkey edge → Recorder.stop + ASR.sendLastFrame → Polish → Insert → History.save`。
 
-不变式与模块接线规则见 [CLAUDE.md](CLAUDE.md)。
+贡献与发布规则见[贡献流程](#贡献流程)和[发布规范](RELEASING.md)，模块职责与接线见[架构文档](docs/architecture.md)。
 
 ## 路线图
 
 已规划但尚未发布:
 
-- 跨会话风格记忆:润色随时间学习用户的语气([#46](../../issues/46))。
+- 跨会话风格记忆:润色随时间学习用户的语气([#46](https://github.com/Open-Less/openless/issues/46))。
 - 片段(Snippets,尚无 UI 或触发逻辑)。
 - 历史增强:复制按钮、搜索、重新润色、重新插入。
 - “粘贴上次结果”快捷键。
 
 ## 维护者发布清单
 
-OpenLess 提供两个发布频道。分支名即频道名(见[贡献流程](#贡献流程))。
-
-### 通用准备(两个频道)
-
-- 在**全部五个**文件中提升版本号:`package.json`、`package-lock.json`(根级 + `packages.""` 下的嵌套条目)、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`,以及 `Cargo.lock`(查找 `name = "openless"` 块)。否则 CI 的 `Verify version sync` 步骤会使构建失败。
-- 运行 `INSTALL=0 ./scripts/build-mac.sh`,确认 `.app` 能启动。
-- 在干净的机器上做冒烟测试:权限流程、快捷键、录音、ASR、润色、插入,以及剪贴板回退。
-- 确认 `TAURI_SIGNING_PRIVATE_KEY` 以及(macOS 所需的)Apple 签名 / 公证密钥已在仓库中配置。
-- Android tag 发版还需配置:`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`（release APK 签名；minisign 仍用 `TAURI_SIGNING_PRIVATE_KEY`）。
-
-### Beta 频道 — `v<v>-beta-tauri`
-
-1. 通过 PR 评审把改动落到 `beta` 分支。
-2. **在 `beta` 上**推送标签:`git tag v<v>-beta-tauri && git push origin v<v>-beta-tauri`。
-3. CI 会把该 GitHub Release 标记为 `Pre-release`,并上传 `latest-{tgt}-{arch}-beta.json` 与 `latest-android-{arch}-beta.json` 更新清单。Stable 用户的 `releases/latest` 跳转不受影响。
-4. 在合适的渠道(issue 讨论串、QQ 群)公告:可选加入的 Beta 用户可从 设置 → 关于 → 加入 Beta 频道 获取。
-
-### Stable 频道 — `v<v>-tauri`
-
-1. 在 Beta 发布充分沉淀后,将 `beta → main` 合并(或直接运行一次最终的双平台冒烟构建)。
-2. **在 `main` 上**推送标签:`git tag v<v>-tauri && git push origin v<v>-tauri`。
-3. CI 发布一个正常的 GitHub Release,并上传 `latest-{tgt}-{arch}.json` 与 `latest-android-{arch}.json`(无 `-beta` 后缀)。所有 Stable 用户都会通过应用内更新器获得更新。
-
-### 发布后验证(始终执行)
-
-执行 [`CLAUDE.md` → Branch & release-channel workflow → Channel distribution](CLAUDE.md) 中的 5 步清单,并额外核对 Android:
-
-1. Release 页面含 `latest-android-aarch64.json`（Stable 无 `-beta` 后缀混用）。
-2. Beta pre-release 含 `latest-android-aarch64-beta.json`,URL 指向具体 tag。
-3. 真机:设置 → 关于 → 检查更新 → 下载 → 系统安装器 → 版本号递增。
-4. Beta 开关:高级 → 加入 Beta → 手动/自动检查 Beta manifest。
-5. 原始端点与 mirror 端点均可访问。
+[RELEASING.md](RELEASING.md) 统一维护管理员权限、版本同步、平台验收、草稿资产、签名和更新清单校验。新 Beta 标签使用 `v<X.Y.Z>-Beta.<N>-tauri`，历史 `-beta-tauri` 后缀仅作兼容。
 
 ## 致谢
 
@@ -460,4 +442,5 @@ OpenLess 同样认可并感谢 LinuxDo 社区开放、务实、对开发者友�
 
 ## 许可证
 
-OpenLess 基于 [MIT 许可证](LICENSE) 发布。
+OpenLess 2.0.0-Beta.1 基于 [AGPL-3.0-only 许可证](LICENSE) 发布。
+已发布的 1.x 版本继续沿用原 MIT 许可证。

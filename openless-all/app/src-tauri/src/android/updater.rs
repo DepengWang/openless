@@ -4,13 +4,12 @@
 mod android_impl {
     use std::path::PathBuf;
 
-    use minisign_verify::{PublicKey, Signature};
     use serde::Deserialize;
     use tauri::{AppHandle, Emitter};
 
     use crate::android::updater_logic::{
         beta_manifest_urls, format_manifest_error, map_abi_to_arch, stable_manifest_urls,
-        UPDATER_PUBKEY_B64, INSTALLER_NOT_OPENED_MSG, version_is_newer,
+        verify_updater_signature, version_is_newer, INSTALLER_NOT_OPENED_MSG, UPDATER_PUBKEY_B64,
     };
     use crate::commands::{
         fetch_latest_beta_release, parse_latest_beta_from_atom, AppUpdateMetadata,
@@ -125,14 +124,7 @@ mod android_impl {
     }
 
     fn verify_signature(apk_bytes: &[u8], signature_b64: &str) -> Result<(), String> {
-        let public_key =
-            PublicKey::from_base64(UPDATER_PUBKEY_B64).map_err(|e| format!("parse updater pubkey: {e}"))?;
-        let signature =
-            Signature::decode(signature_b64.trim()).map_err(|e| format!("decode signature: {e}"))?;
-        public_key
-            .verify(apk_bytes, &signature, false)
-            .map_err(|e| format!("signature verify failed: {e}"))?;
-        Ok(())
+        verify_updater_signature(apk_bytes, signature_b64, UPDATER_PUBKEY_B64)
     }
 
     fn updates_cache_dir() -> Result<PathBuf, String> {
@@ -157,7 +149,8 @@ mod android_impl {
             return Err(format!("download status {}", resp.status()));
         }
         let total = resp.content_length();
-        // 安全：防止无限流耗尽内存。200 MB 远超任何实际 APK 大小（当前约 50 MB）。
+        // Security: cap the stream so an unbounded one can't exhaust memory. 200 MB far
+        // exceeds any real APK size (~50 MB currently).
         const MAX_APK_BYTES: u64 = 200 * 1024 * 1024;
         if let Some(len) = total {
             if len > MAX_APK_BYTES {

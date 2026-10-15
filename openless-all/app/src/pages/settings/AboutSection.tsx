@@ -1,7 +1,7 @@
-// 关于 → 版本信息 / 检查更新 / 字体大小 / 文档链接。
-// 「个性化」原本是独立 tab，但只剩字体大小一项、整页太空，遂并入「关于」。
-// 「加入 Beta 渠道」已挪到「高级」页底部（见 BetaChannelSection），这里图标旁
-// 只保留查正式版的「检查更新」按钮。
+// About → version info / check updates / font size / doc links.
+// "Personalization" was once its own tab but was left with only font size, so it merged into "About".
+// "Join the Beta channel" moved to the bottom of the Advanced page (see BetaChannelSection); here the
+// icon area keeps only the stable-channel "check updates" button.
 
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -11,6 +11,7 @@ import { getPlatformCapabilities, openExternal } from '../../lib/ipc';
 import type { PlatformCapabilities } from '../../lib/types';
 import { APP_VERSION_LABEL } from '../../lib/appVersion';
 import { Card } from '../_atoms';
+import { useConservativeLayout, useLayoutStack } from '../../lib/useMobileLayout';
 import { btnGhostStyle, SectionTitle } from './shared';
 import { CheckUpdateButton } from './CheckUpdateButton';
 
@@ -19,6 +20,10 @@ const RELEASE_NOTES_URL = 'https://github.com/Open-Less/openless/releases';
 
 export function AboutSection() {
   const { t } = useTranslation();
+  const baseLayoutStack = useLayoutStack();
+  const conservativeLayout = useConservativeLayout();
+  const compactLayout = baseLayoutStack || conservativeLayout;
+  const appIconSize = compactLayout ? 36 : 56;
   const [qqCopied, setQqCopied] = useState(false);
   const [platformCaps, setPlatformCaps] = useState<PlatformCapabilities | null>(null);
   const qqCopiedRef = useRef<number | null>(null);
@@ -27,9 +32,12 @@ export function AboutSection() {
     void getPlatformCapabilities().then(setPlatformCaps);
   }, []);
 
-  useEffect(() => () => {
-    if (qqCopiedRef.current) clearTimeout(qqCopiedRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (qqCopiedRef.current) clearTimeout(qqCopiedRef.current);
+    },
+    [],
+  );
 
   const copyQq = () => {
     navigator.clipboard?.writeText('1078960553');
@@ -40,34 +48,71 @@ export function AboutSection() {
 
   return (
     <>
-      {/* ─── 版本信息 + 检查更新（正式版）─────────────────────────────── */}
+      {/* ─── Version info + check updates (stable) ─────────────────────── */}
       <Card>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+        <div
+          className="ol-inline-composite"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: compactLayout ? 4 : 14,
+            minWidth: 0,
+            flexWrap: 'nowrap',
+          }}
+        >
           <img
             src="AppIcon.png"
             alt=""
-            style={{ width: 56, height: 56, borderRadius: 13, boxShadow: '0 4px 10px rgba(0,0,0,.10), 0 0 0 0.5px rgba(0,0,0,.06)' }}
+            style={{
+              width: appIconSize,
+              height: appIconSize,
+              flexShrink: 0,
+              borderRadius: 13,
+              boxShadow: '0 4px 10px rgba(0,0,0,.10), 0 0 0 0.5px rgba(0,0,0,.06)',
+            }}
           />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 17, fontWeight: 600 }}>OpenLess</div>
-            <div style={{ fontSize: 12, color: 'var(--ol-ink-3)', marginTop: 2 }}>
+            <div
+              style={{
+                fontSize: 17,
+                fontWeight: 'var(--ol-font-weight-semibold)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              OpenLess
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                color: 'var(--ol-ink-3)',
+                marginTop: 2,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
               {t('modal.about.tagline')} · {APP_VERSION_LABEL}
             </div>
           </div>
-          {/* 图标右上方：查正式版的检查更新按钮。Beta 渠道在「高级」页。 */}
+          {/* Top right of the icon: stable-channel check-updates button. Beta channel lives on the Advanced page. */}
           {platformCaps?.supportsAutoUpdate === true && (
-            <CheckUpdateButton channel="stable" />
+            <CheckUpdateButton channel="stable" compact={compactLayout} />
           )}
         </div>
       </Card>
 
-      {/* 个性化（字体大小）已按需求移除（页面瘦身）。 */}
+      {/* Personalization (font size) removed as requested (page slimming). */}
 
-      {/* ─── 文档链接 ─────────────────────────────────────────────── */}
+      {/* ─── Documentation links ─────────────────────────────────────── */}
       <Card>
         <SectionTitle>{t('settings.about.linksTitle')}</SectionTitle>
         <Row label={t('modal.about.source')}>
-          <button style={btnGhostStyle} onClick={() => openExternal('https://github.com/Open-Less/openless')}>
+          <button
+            style={btnGhostStyle}
+            onClick={() => openExternal('https://github.com/Open-Less/openless')}
+          >
             GitHub
           </button>
         </Row>
@@ -87,23 +132,37 @@ export function AboutSection() {
           </button>
         </Row>
         <Row label={t('modal.about.feedback')}>
-          <button style={btnGhostStyle} onClick={() => openExternal('https://github.com/Open-Less/openless/issues')}>
+          <button
+            style={btnGhostStyle}
+            onClick={() => openExternal('https://github.com/Open-Less/openless/issues')}
+          >
             {t('modal.about.feedbackBtn')}
           </button>
         </Row>
         <Row label={t('modal.about.qq')}>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <kbd style={{
-              padding: '4px 10px', fontSize: 12, fontFamily: 'var(--ol-font-mono)',
-              borderRadius: 6, background: 'var(--ol-surface-2)',
-              border: '0.5px solid var(--ol-line-strong)',
-              boxShadow: '0 1px 0 rgba(0,0,0,0.04)',
-              color: 'var(--ol-ink-2)',
-            }}>1078960553</kbd>
+            <kbd
+              style={{
+                padding: '4px 10px',
+                fontSize: 12,
+                fontFamily: 'var(--ol-font-mono)',
+                borderRadius: 6,
+                background: 'var(--ol-surface-2)',
+                border: '0.5px solid var(--ol-line-strong)',
+                boxShadow: '0 1px 0 rgba(0,0,0,0.04)',
+                color: 'var(--ol-ink-2)',
+              }}
+            >
+              1078960553
+            </kbd>
             <button onClick={copyQq} title={t('modal.about.copyQq')} style={btnGhostStyle}>
               <Icon name="copy" size={14} />
             </button>
-            {qqCopied && <span style={{ fontSize: 11, color: 'var(--ol-ok)', whiteSpace: 'nowrap' }}>{t('common.copied')}</span>}
+            {qqCopied && (
+              <span style={{ fontSize: 11, color: 'var(--ol-ok)', whiteSpace: 'nowrap' }}>
+                {t('common.copied')}
+              </span>
+            )}
           </div>
         </Row>
       </Card>

@@ -1,7 +1,8 @@
-// 主窗口启动 + 后台每 60 分钟自动检查更新。
-// 受 prefs.autoUpdateCheck 开关控制；关闭时只走 Settings 手动按钮。
-// 桌面：发现新版本弹 UpdateDialog 等用户确认。
-// Android：发现新版本后自动下载、校验并打开系统安装器（进度仍走 UpdateDialog）。
+// Main-window startup + background auto update check every 60 minutes.
+// Controlled by the prefs.autoUpdateCheck switch; when off, only the manual Settings
+// button runs. Desktop: a new version opens UpdateDialog for user confirmation.
+// Android: a new version auto-downloads, verifies, and opens the system installer
+// (progress still goes through UpdateDialog).
 
 import { useEffect, useRef, useState } from 'react';
 import { isDialogStatus, UpdateDialog, useAutoUpdate } from './AutoUpdate';
@@ -33,9 +34,11 @@ export function AutoUpdateGate() {
       if (cancelled) return;
       const current = uRef.current;
       if (current.checking || current.busy || isDialogStatus(current.status)) return;
-      void current.checkForUpdates(undefined, { autoInstallAndroid: isAndroid() }).catch(error => {
-        console.warn('[auto-update] background check failed', error);
-      });
+      void current
+        .checkForUpdates(undefined, { autoInstallAndroid: isAndroid() })
+        .catch((error) => {
+          console.warn('[auto-update] background check failed', error);
+        });
     };
 
     const startupTimer = window.setTimeout(tick, STARTUP_DELAY_MS);
@@ -49,10 +52,10 @@ export function AutoUpdateGate() {
 
   if (platformCaps?.supportsAutoUpdate !== true) return null;
 
-  if (!isDialogStatus(u.status)) return null;
   return (
     <UpdateDialog
       status={u.status}
+      currentVersion={u.currentVersion}
       version={u.version}
       progress={u.progress}
       downloaded={u.downloaded}

@@ -1,15 +1,17 @@
 #![allow(dead_code, unused_imports, unused_variables)]
-//! sherpa-onnx 本地 ASR provider（Windows offline batch + online streaming）。
+//! sherpa-onnx local ASR provider (Windows offline batch + online streaming).
 //!
-//! 形状与 `foundry_provider.rs` 对齐：
-//! - 作为 `Recorder::AudioConsumer` 持续吃 PCM
-//! - 录音结束后 `transcribe(timeout)` 返回 `RawTranscript`
-//! - `cancel()` 让任何 in-flight transcription 提前结束，并清理已缓存 PCM
+//! Shaped to match `foundry_provider.rs`:
+//! - consumes PCM continuously as a `Recorder::AudioConsumer`
+//! - after recording stops, `transcribe(timeout)` returns a `RawTranscript`
+//! - `cancel()` ends any in-flight transcription early and clears cached PCM
 //!
-//! Offline 模型停止录音后把整段 16kHz mono s16le PCM 交给
-//! `SherpaOnnxRuntime::transcribe_pcm`。Online 模型在独立 worker 中实时消费 PCM，
-//! partial token 通过回调上抛，停止录音后返回 final `RawTranscript`。
+//! The offline model hands the whole 16kHz mono s16le PCM to
+//! `SherpaOnnxRuntime::transcribe_pcm` once recording stops. The online model consumes PCM
+//! in real time on a dedicated worker, surfaces partial tokens via callback, and returns
+//! the final `RawTranscript` after recording stops.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -22,12 +24,12 @@ use parking_lot::Mutex;
 
 use crate::asr::RawTranscript;
 
-use super::sherpa;
 use super::sherpa_runtime::{SherpaOnlineSession, SherpaOnnxRuntime};
 
 pub struct SherpaOnnxAsr {
     runtime: Arc<SherpaOnnxRuntime>,
     model_alias: String,
+    model_dir: PathBuf,
     language_hint: Option<String>,
     mode: SherpaProviderMode,
     cancel_generation: AtomicU64,
@@ -58,11 +60,13 @@ impl SherpaOnnxAsr {
     pub fn new(
         runtime: Arc<SherpaOnnxRuntime>,
         model_alias: String,
+        model_dir: PathBuf,
         language_hint: Option<String>,
     ) -> Self {
         Self {
             runtime,
             model_alias,
+            model_dir,
             language_hint: normalize_language_hint(language_hint),
             mode: SherpaProviderMode::Offline {
                 buffer: Mutex::new(Vec::new()),
@@ -74,14 +78,23 @@ impl SherpaOnnxAsr {
     pub async fn new_for_model(
         runtime: Arc<SherpaOnnxRuntime>,
         model_alias: String,
+        model_dir: PathBuf,
         language_hint: Option<String>,
         token_handler: Option<SherpaTokenHandler>,
     ) -> Result<Self> {
-        if sherpa::alias_is_online(&model_alias) {
-            let session = runtime.create_online_session(&model_alias).await?;
+        let target = openless_core::LocalAsrTarget::parse(
+            openless_core::LocalAsrRuntime::SherpaOnnx,
+            model_alias.clone(),
+        )
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        if target.sherpa_execution_mode() == Some(openless_core::LocalAsrExecutionMode::Online) {
+            let session = runtime
+                .create_online_session(&model_alias, &model_dir)
+                .await?;
             Ok(Self {
                 runtime,
                 model_alias,
+                model_dir,
                 language_hint: normalize_language_hint(language_hint),
                 mode: SherpaProviderMode::Online {
                     worker: Mutex::new(Some(OnlineWorker::spawn(session, token_handler))),
@@ -89,7 +102,7 @@ impl SherpaOnnxAsr {
                 cancel_generation: AtomicU64::new(0),
             })
         } else {
-            Ok(Self::new(runtime, model_alias, language_hint))
+            Ok(Self::new(runtime, model_alias, model_dir, language_hint))
         }
     }
 
@@ -103,8 +116,8 @@ impl SherpaOnnxAsr {
         self.language_hint.as_deref()
     }
 
-    /// 当前缓冲音频时长（毫秒）。Offline 读 PCM buffer；Online 读 worker 已接收
-    /// 的 PCM 字节数。不消费缓冲。
+    /// Duration of currently buffered audio (ms). Offline reads the PCM buffer; Online
+    /// reads the PCM bytes the worker has received. Does not consume the buffer.
     pub fn buffer_duration_ms(&self) -> u64 {
         match &self.mode {
             SherpaProviderMode::Offline { buffer } => pcm_duration_ms(&buffer.lock()),
@@ -144,14 +157,21 @@ impl SherpaOnnxAsr {
         let duration_ms = pcm_duration_ms(&pcm);
         let result = self
             .runtime
-            .transcribe_pcm(&self.model_alias, &pcm, self.language_hint(), audio_timeout)
+            .transcribe_pcm(
+                &self.model_alias,
+                &self.model_dir,
+                &pcm,
+                self.language_hint(),
+                audio_timeout,
+            )
             .await;
 
         if self.cancel_generation.load(Ordering::SeqCst) != cancel_generation {
             anyhow::bail!("sherpa-onnx transcription cancelled");
         }
 
-        // 与 Foundry 行为对齐：进入推理后清 buffer，避免下一轮重复消费。
+        // Match Foundry behavior: clear the buffer once inference begins, so the next round
+        // doesn't consume it twice.
         buffer.lock().clear();
 
         let text = result?;
@@ -372,6 +392,7 @@ mod tests {
         SherpaOnnxAsr::new(
             Arc::new(SherpaOnnxRuntime::new()),
             "sense-voice-small-zh".into(),
+            PathBuf::from("unused"),
             Some("  ZH  ".into()),
         )
     }
@@ -387,6 +408,7 @@ mod tests {
         let provider = SherpaOnnxAsr::new(
             Arc::new(SherpaOnnxRuntime::new()),
             "paraformer-zh".into(),
+            PathBuf::from("unused"),
             Some("   ".into()),
         );
         assert!(provider.language_hint().is_none());
@@ -428,6 +450,7 @@ mod tests {
         let provider = SherpaOnnxAsr::new(
             Arc::new(SherpaOnnxRuntime::new()),
             "unknown-sherpa-model".into(),
+            PathBuf::from("unused"),
             None,
         );
         provider.consume_pcm_chunk(&vec![0u8; 32_000]);
@@ -445,6 +468,7 @@ mod tests {
         let provider = SherpaOnnxAsr::new(
             Arc::clone(&runtime),
             "sense-voice-small-zh".into(),
+            PathBuf::from("unused"),
             Some("  ZH  ".into()),
         );
         provider.consume_pcm_chunk(&[1, 2, 3, 4]);

@@ -1,12 +1,9 @@
-#![cfg_attr(target_os = "linux", allow(dead_code, unused_variables))]
-//! Tauri command surface — every IPC entry the React UI invokes lives here.
+//! Tauri IPC 命令入口，按设置、凭据、历史等领域拆分子模块。
 //!
-//! issue: 历史上整个 IPC 表（127 个 `#[tauri::command]` + 跨域 helper）挤在单个
-//! 4800 行的 `commands.rs` 里。按单一职责拆成 `commands/` 下的域模块（settings /
-//! credentials / providers / history / …），每个文件聚焦一个领域。对外路径保持不变：
-//! 本模块用 `pub use <domain>::*` glob 重导出每个子模块，`commands::<name>` 仍然解析，
-//! `lib.rs` 的 `generate_handler!` 清单与类型引用零改动。`#[tauri::command]` 生成的
-//! `__cmd__<name>` 伴生项也随 glob 一并重导出——这是 Tauri 拆分命令文件的标准做法。
+//! Submodule commands and their macro-generated companions are glob
+//! re-exported for registration by `lib.rs`'s `generate_handler!` as
+//! `commands::<name>`. Platform conditions must stay consistent with the
+//! registration list.
 
 use std::sync::Arc;
 
@@ -16,32 +13,18 @@ use parking_lot::Mutex;
 use tauri::Manager;
 use tauri::State;
 
-// 跨域共享的 crate 级导入：以 `pub(crate) use` 重导出，子模块用 `use super::*;`
-// 即可拿到，避免在 16 个文件里重复同一组 import。
+// Submodules access the shared Host state, DTOs, and dependency types via use super::*.
 pub(crate) use serde::Serialize;
 pub(crate) use serde_json::Value;
 pub(crate) use tauri::{AppHandle, Emitter, Window};
 
 #[cfg(not(mobile))]
-pub(crate) use crate::asr::local::foundry::{
-    model_alias_is_known, FoundryCatalogModel, FoundryPrepareProgressPayload, FoundryRuntimeStatus,
-    DEFAULT_MODEL_ALIAS, PROVIDER_ID as FOUNDRY_LOCAL_PROVIDER_ID,
-};
+pub(crate) use crate::asr::local::foundry::PROVIDER_ID as FOUNDRY_LOCAL_PROVIDER_ID;
 #[cfg(not(mobile))]
-pub(crate) use crate::asr::local::sherpa::{
-    model_alias_is_known as sherpa_model_alias_is_known, SherpaCatalogModel,
-    SherpaPrepareProgressPayload, SherpaRuntimeStatus,
-    DEFAULT_MODEL_ALIAS as SHERPA_DEFAULT_MODEL_ALIAS,
-};
-#[cfg(not(mobile))]
-pub(crate) use crate::asr::local::sherpa_download::{
-    fetch_remote_info as fetch_sherpa_remote_info, SherpaDownloadManager, SherpaRemoteInfo,
-};
-#[cfg(not(mobile))]
-pub(crate) use crate::asr::local::{FoundryLocalRuntime, Mirror, SherpaOnnxRuntime};
+pub(crate) use crate::asr::local::{FoundryLocalRuntime, SherpaOnnxRuntime};
 pub(crate) use crate::coordinator::Coordinator;
 pub(crate) use crate::net;
-pub(crate) use crate::permissions::{self, PermissionStatus};
+pub(crate) use crate::permissions::PermissionStatus;
 pub(crate) use crate::persistence::{
     sync_style_pack_preferences, ChannelKind, CredentialAccount, CredentialsSnapshot,
     CredentialsVault, PreferencesStore,
@@ -66,9 +49,13 @@ pub(crate) use crate::types::{
 };
 
 mod channels;
+mod cloud_sync;
+mod cloud_sync_e2ee;
 mod credentials;
 mod dictation;
 mod dictionary;
+#[cfg(not(mobile))]
+mod experimental_asr;
 #[cfg(not(mobile))]
 mod foundry_asr;
 mod github_oauth;
@@ -87,15 +74,22 @@ mod remote_input;
 mod selection_polish;
 #[cfg(not(mobile))]
 mod selection_polish_preview;
+#[cfg(all(not(mobile), target_os = "windows"))]
+mod selection_voice;
 mod settings;
 #[cfg(not(mobile))]
 mod sherpa_asr;
 mod style_packs;
+mod voice_edit;
 
 pub use channels::*;
+pub use cloud_sync::*;
+pub use cloud_sync_e2ee::*;
 pub use credentials::*;
 pub use dictation::*;
 pub use dictionary::*;
+#[cfg(not(mobile))]
+pub use experimental_asr::*;
 #[cfg(not(mobile))]
 pub use foundry_asr::*;
 pub use github_oauth::*;
@@ -110,22 +104,38 @@ pub use providers::*;
 pub use qa::*;
 #[cfg(not(mobile))]
 pub use remote_input::*;
-pub use settings::*;
-// sherpa_onnx_asr_* 命令整组 `#[cfg(target_os = "windows")]`（见 lib.rs 的
-// generate_handler! 清单）。非 Windows 平台这组 glob 重导出无人引用，会触发
-// unused_imports；这是平台 cfg 的正常结果，不是真正的死代码。
 #[cfg(all(not(mobile), debug_assertions))]
 pub use selection_polish::*;
 #[cfg(not(mobile))]
 pub use selection_polish_preview::*;
+#[cfg(all(not(mobile), target_os = "windows"))]
+pub use selection_voice::*;
+pub use settings::*;
 #[cfg(not(mobile))]
+// Sherpa commands are registered on Windows only; other desktop targets keep
+// an empty re-export.
 #[allow(unused_imports)]
 pub use sherpa_asr::*;
 pub use style_packs::*;
+pub use voice_edit::*;
 
 pub(crate) type CoordinatorState<'a> = State<'a, Arc<Coordinator>>;
+pub(crate) type CoreState<'a> = State<'a, Arc<openless_core::OpenLessBackend>>;
 #[cfg(not(mobile))]
-pub type MicrophoneMonitorState = Mutex<Option<Recorder>>;
+pub struct MicrophoneMonitorState {
+    pub(crate) operation: Mutex<()>,
+    pub(crate) recorder: Mutex<Option<Recorder>>,
+}
+
+#[cfg(not(mobile))]
+impl MicrophoneMonitorState {
+    pub(crate) fn new(recorder: Option<Recorder>) -> Self {
+        Self {
+            operation: Mutex::new(()),
+            recorder: Mutex::new(recorder),
+        }
+    }
+}
 #[cfg(not(mobile))]
 pub type TrayMicrophoneMenuState = Mutex<Vec<TrayMicrophoneMenuItem>>;
 
@@ -151,10 +161,12 @@ impl AudioConsumer for LevelProbeConsumer {
     fn consume_pcm_chunk(&self, _pcm: &[u8]) {}
 }
 
-// ─────────────────────────── 跨域共享校验 helper ───────────────────────────
+// ─────────────────────────── shared cross-domain validation helpers ───────────────────────────
 
-/// UUID-v4 字面校验：36 字符 + 5 段 `-` 分隔（8-4-4-4-12）+ 仅 ASCII 十六进制。
-/// 用于 install/detail/like —— pack_id 来自远端服务器，必须是它发的 UUID。
+/// UUID-v4 literal validation: 36 chars + 4 `-` separators (8-4-4-4-12) +
+/// ASCII hex only.
+/// Used by install/detail/like — pack_id comes from the remote server and must
+/// be a UUID it issued.
 pub(crate) fn is_valid_session_id(s: &str) -> bool {
     if s.len() != 36 {
         return false;
@@ -173,9 +185,11 @@ pub(crate) fn is_valid_session_id(s: &str) -> bool {
     true
 }
 
-/// 本地 style pack id 白名单：`[A-Za-z0-9._-]`、长度 1..=128。
-/// 上传走本地 id（`builtin.light` / 用户自取 slug / UUID 都可），不是远端 UUID。
-/// 仍阻断 `..` / `/` / `\` / 控制字符，避免 path traversal 进临时 zip 文件名。
+/// Local style pack id whitelist: `[A-Za-z0-9._-]`, length 1..=128.
+/// Uploads use local ids (`builtin.light` / a user-chosen slug / a UUID are
+/// all fine), not remote UUIDs.
+/// Still blocks `..` / `/` / `\` / control characters to keep path traversal
+/// out of temp zip file names.
 pub(crate) fn is_valid_local_pack_id(s: &str) -> bool {
     if s.is_empty() || s.len() > 128 {
         return false;
@@ -184,7 +198,7 @@ pub(crate) fn is_valid_local_pack_id(s: &str) -> bool {
         .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_')
 }
 
-// ─── 在系统文件管理器中打开路径（三个 ASR 模块共用，cfg 分平台）───
+// ─── Open a path in the system file manager (shared by the three ASR modules, cfg per platform) ───
 
 #[cfg(target_os = "windows")]
 pub(crate) fn open_path_in_file_manager(path: &std::path::Path) -> Result<(), String> {
@@ -245,13 +259,7 @@ mod tests {
         active_foundry_model_from_prefs, normalize_foundry_language_hint,
         validate_foundry_model_alias,
     };
-    use crate::commands::providers::{
-        active_asr_is_keyless_for_validation, asr_transcriptions_url, fetch_provider_models,
-        is_gemini_base_url, models_url, parse_gemini_model_ids, parse_model_ids, ProviderConfig,
-    };
-    use crate::commands::settings::{
-        parse_latest_beta_from_atom, persist_settings, SettingsWriter,
-    };
+    use crate::commands::settings::parse_latest_beta_from_atom;
     use crate::commands::sherpa_asr::{
         active_sherpa_model_from_prefs, normalize_sherpa_language_hint, validate_sherpa_model_alias,
     };
@@ -259,27 +267,6 @@ mod tests {
     use crate::types::{
         ComboBinding, HotkeyBinding, HotkeyMode, HotkeyTrigger, ShortcutBinding, UserPreferences,
     };
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::sync::Mutex;
-    use std::thread;
-
-    #[derive(Default)]
-    struct FakeSettingsWriter {
-        saved: Mutex<Option<UserPreferences>>,
-        active_asr_provider_syncs: Mutex<Vec<String>>,
-        write_settings_error: Mutex<Option<String>>,
-        write_settings_errors: Mutex<Vec<Option<String>>>,
-        active_asr_provider_sync_error: Mutex<Option<String>>,
-        active_asr_provider_sync_errors: Mutex<Vec<Option<String>>>,
-        dictation_refreshes: Mutex<u32>,
-        qa_refreshes: Mutex<u32>,
-        combo_refreshes: Mutex<u32>,
-        translation_refreshes: Mutex<u32>,
-        switch_style_refreshes: Mutex<u32>,
-        open_app_refreshes: Mutex<u32>,
-        coding_agent_refreshes: Mutex<u32>,
-    }
 
     fn snapshot() -> CredentialsSnapshot {
         CredentialsSnapshot::default()
@@ -291,12 +278,13 @@ mod tests {
             volcengine_app_key: Some("app".into()),
             volcengine_access_key: Some("access".into()),
             volcengine_resource_id: Some("resource".into()),
-            volcengine_auth_mode: None, // 默认 AppIdToken 模式
+            volcengine_auth_mode: None, // defaults to AppIdToken mode
             ..snapshot()
         };
         assert!(asr_configured_for_provider("volcengine", &volcengine));
 
-        // AppIdToken 模式缺 access_key → 未配置（即使 app_key / resource_id 已填）。
+        // AppIdToken mode without access_key -> unconfigured (even with
+        // app_key / resource_id filled).
         let volcengine_no_access = CredentialsSnapshot {
             volcengine_app_key: Some("app".into()),
             volcengine_resource_id: Some("resource".into()),
@@ -307,7 +295,8 @@ mod tests {
             &volcengine_no_access
         ));
 
-        // ApiKey 模式：只需独立 api_key 槽 + resource_id，无需 app_key。
+        // ApiKey mode: only the standalone api_key slot + resource_id are
+        // needed, no app_key.
         let volcengine_api_key = CredentialsSnapshot {
             volcengine_api_key: Some("key".into()),
             volcengine_resource_id: Some("resource".into()),
@@ -318,7 +307,8 @@ mod tests {
             "volcengine",
             &volcengine_api_key
         ));
-        // ApiKey 模式缺 api_key（旧 access_key 槽有值也不满足）→ 未配置。
+        // ApiKey mode missing api_key (even with the old access_key slot set) ->
+        // unconfigured.
         let volcengine_api_key_missing = CredentialsSnapshot {
             volcengine_access_key: Some("old-access-token".into()),
             volcengine_resource_id: Some("resource".into()),
@@ -334,7 +324,10 @@ mod tests {
             asr_api_key: Some("key".into()),
             ..snapshot()
         };
-        assert!(!asr_configured_for_provider("whisper", &whisper_key_only));
+        // endpoint/model defaults now come from the Core descriptor, so the
+        // public Whisper channel counts as configured with just the required
+        // key.
+        assert!(asr_configured_for_provider("whisper", &whisper_key_only));
         assert!(asr_configured_for_provider(
             crate::asr::bailian::PROVIDER_ID,
             &whisper_key_only
@@ -345,7 +338,9 @@ mod tests {
             asr_model: Some("whisper-1".into()),
             ..snapshot()
         };
-        assert!(asr_configured_for_provider(
+        // An explicit endpoint/model does not waive the public Whisper
+        // provider's key; only `openai-compatible` allows optional auth.
+        assert!(!asr_configured_for_provider(
             "whisper",
             &whisper_keyless_ready
         ));
@@ -354,27 +349,18 @@ mod tests {
             &whisper_keyless_ready
         ));
 
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            assert!(asr_configured_for_provider(
-                crate::asr::local::PROVIDER_ID,
-                &snapshot()
-            ));
-            assert!(asr_configured_for_provider(
-                crate::asr::local::LOCAL_QWEN3_C_PROVIDER_ID,
-                &snapshot()
-            ));
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        assert!(!asr_configured_for_provider(
+        // Retired metadata IDs can never count as a configured native runtime.
+        for provider in [
             crate::asr::local::PROVIDER_ID,
-            &snapshot()
-        ));
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        assert!(asr_configured_for_provider(
+            crate::asr::local::LOCAL_QWEN3_C_PROVIDER_ID,
             crate::asr::local::LOCAL_QWEN3_MLX_PROVIDER_ID,
-            &snapshot()
-        ));
+        ] {
+            assert!(!asr_configured_for_provider(provider, &snapshot()));
+        }
+        #[cfg(target_os = "macos")]
+        for provider in ["local-whisper", "apple-whisper", "apple-speech"] {
+            assert!(!asr_configured_for_provider(provider, &snapshot()));
+        }
         #[cfg(target_os = "windows")]
         assert!(asr_configured_for_provider(
             crate::asr::local::foundry::PROVIDER_ID,
@@ -413,52 +399,6 @@ mod tests {
                 &CredentialsSnapshot::default()
             ));
         }
-    }
-
-    #[test]
-    fn local_asr_providers_skip_external_validation() {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        assert!(active_asr_is_keyless_for_validation(
-            crate::asr::local::PROVIDER_ID
-        ));
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        assert!(!active_asr_is_keyless_for_validation(
-            crate::asr::local::PROVIDER_ID
-        ));
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        assert!(active_asr_is_keyless_for_validation(
-            crate::asr::local::LOCAL_QWEN3_C_PROVIDER_ID
-        ));
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        assert!(active_asr_is_keyless_for_validation(
-            crate::asr::local::LOCAL_QWEN3_MLX_PROVIDER_ID
-        ));
-        #[cfg(target_os = "macos")]
-        assert!(active_asr_is_keyless_for_validation(
-            crate::asr::local::LOCAL_WHISPER_PROVIDER_ID
-        ));
-        #[cfg(not(target_os = "macos"))]
-        assert!(!active_asr_is_keyless_for_validation(
-            crate::asr::local::LOCAL_WHISPER_PROVIDER_ID
-        ));
-        #[cfg(target_os = "windows")]
-        assert!(active_asr_is_keyless_for_validation(
-            crate::asr::local::foundry::PROVIDER_ID
-        ));
-        #[cfg(target_os = "windows")]
-        assert!(active_asr_is_keyless_for_validation(
-            crate::asr::local::sherpa::PROVIDER_ID
-        ));
-        #[cfg(not(target_os = "windows"))]
-        assert!(!active_asr_is_keyless_for_validation(
-            crate::asr::local::foundry::PROVIDER_ID
-        ));
-        #[cfg(not(target_os = "windows"))]
-        assert!(!active_asr_is_keyless_for_validation(
-            crate::asr::local::sherpa::PROVIDER_ID
-        ));
-        assert!(!active_asr_is_keyless_for_validation("volcengine"));
-        assert!(!active_asr_is_keyless_for_validation("whisper"));
     }
 
     #[test]
@@ -682,449 +622,6 @@ mod tests {
         assert!(llm_configured_for_provider("atlascloud", &ready));
     }
 
-    impl SettingsWriter for FakeSettingsWriter {
-        fn read_settings(&self) -> UserPreferences {
-            self.saved.lock().unwrap().clone().unwrap_or_default()
-        }
-
-        fn write_settings(&self, prefs: UserPreferences) -> Result<(), String> {
-            if let Some(error) = {
-                let mut errors = self.write_settings_errors.lock().unwrap();
-                if errors.is_empty() {
-                    None
-                } else {
-                    errors.remove(0)
-                }
-            } {
-                return Err(error);
-            }
-            if let Some(error) = self.write_settings_error.lock().unwrap().clone() {
-                return Err(error);
-            }
-            *self.saved.lock().unwrap() = Some(prefs);
-            Ok(())
-        }
-
-        fn sync_active_asr_provider(&self, provider: &str) -> Result<(), String> {
-            self.active_asr_provider_syncs
-                .lock()
-                .unwrap()
-                .push(provider.to_string());
-            if let Some(error) = {
-                let mut errors = self.active_asr_provider_sync_errors.lock().unwrap();
-                if errors.is_empty() {
-                    None
-                } else {
-                    errors.remove(0)
-                }
-            } {
-                return Err(error);
-            }
-            if let Some(error) = self.active_asr_provider_sync_error.lock().unwrap().clone() {
-                return Err(error);
-            }
-            Ok(())
-        }
-
-        fn refresh_dictation_hotkey(&self) {
-            *self.dictation_refreshes.lock().unwrap() += 1;
-        }
-
-        fn refresh_qa_hotkey(&self) {
-            *self.qa_refreshes.lock().unwrap() += 1;
-        }
-
-        fn refresh_combo_hotkey(&self) {
-            *self.combo_refreshes.lock().unwrap() += 1;
-        }
-
-        fn refresh_translation_hotkey(&self) {
-            *self.translation_refreshes.lock().unwrap() += 1;
-        }
-
-        fn refresh_switch_style_hotkey(&self) {
-            *self.switch_style_refreshes.lock().unwrap() += 1;
-        }
-
-        fn refresh_open_app_hotkey(&self) {
-            *self.open_app_refreshes.lock().unwrap() += 1;
-        }
-
-        fn refresh_selection_polish_hotkey(&self) {}
-
-        fn refresh_coding_agent_hotkey(&self) {
-            *self.coding_agent_refreshes.lock().unwrap() += 1;
-        }
-    }
-
-    #[test]
-    fn models_url_accepts_base_or_chat_endpoint() {
-        assert_eq!(
-            models_url("https://api.openai.com/v1"),
-            "https://api.openai.com/v1/models"
-        );
-        assert_eq!(
-            models_url("https://api.openai.com/v1/chat/completions"),
-            "https://api.openai.com/v1/models"
-        );
-    }
-
-    #[test]
-    fn asr_transcriptions_url_accepts_base_or_transcriptions_endpoint() {
-        assert_eq!(
-            asr_transcriptions_url("https://api.openai.com/v1").unwrap(),
-            "https://api.openai.com/v1/audio/transcriptions"
-        );
-        assert_eq!(
-            asr_transcriptions_url("https://api.openai.com/v1/chat/completions").unwrap(),
-            "https://api.openai.com/v1/audio/transcriptions"
-        );
-        assert_eq!(
-            asr_transcriptions_url("https://api.openai.com/v1/audio").unwrap(),
-            "https://api.openai.com/v1/audio/transcriptions"
-        );
-        assert_eq!(
-            asr_transcriptions_url("https://api.openai.com/v1/audio/transcriptions").unwrap(),
-            "https://api.openai.com/v1/audio/transcriptions"
-        );
-        assert_eq!(
-            asr_transcriptions_url("https://api.openai.com/v1?api-version=2024-12-01").unwrap(),
-            "https://api.openai.com/v1/audio/transcriptions?api-version=2024-12-01"
-        );
-        assert_eq!(
-            asr_transcriptions_url("http://192.168.1.10:8000/v1").unwrap(),
-            "http://192.168.1.10:8000/v1/audio/transcriptions"
-        );
-    }
-
-    #[test]
-    fn parse_model_ids_sorts_and_deduplicates() {
-        let models =
-            parse_model_ids(r#"{ "data": [{ "id": "b" }, { "id": "a" }, { "id": "b" }] }"#)
-                .unwrap();
-        assert_eq!(models, vec!["a".to_string(), "b".to_string()]);
-    }
-
-    #[test]
-    fn parse_gemini_model_ids_strips_models_prefix_and_dedups() {
-        // Google v1beta/models 真实响应的子集——name 字段带 `models/` 前缀，
-        // ProviderTools 选中后写入 ark.model_id 时不能带这个前缀（generateContent
-        // URL 拼接已经会加 `models/`，不去前缀就会变成 `models/models/...`）。
-        // 字段缺失时保守保留（视为支持 generateContent）。
-        let body = r#"{"models":[
-            {"name":"models/gemini-2.5-pro"},
-            {"name":"models/gemini-2.5-flash"},
-            {"name":"models/gemini-2.5-flash"},
-            {"name":"models/gemini-3-flash-preview"}
-        ]}"#;
-        let ids = parse_gemini_model_ids(body).unwrap();
-        assert_eq!(
-            ids,
-            vec![
-                "gemini-2.5-flash".to_string(),
-                "gemini-2.5-pro".to_string(),
-                "gemini-3-flash-preview".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_gemini_model_ids_filters_out_non_generate_content_families() {
-        // 真实 Google v1beta/models 响应里同时有 generateContent / embedContent /
-        // generateMessage 等多种家族。用户选中 embedding/TTS/image 模型写入
-        // ark.model_id → polish 必败。这里是 PR #398 pr_agent advisory 的回归用例：
-        // 只把 supportedGenerationMethods 里含 generateContent 的过滤出来。
-        let body = r#"{"models":[
-            {"name":"models/gemini-2.5-flash","supportedGenerationMethods":["generateContent","streamGenerateContent","countTokens"]},
-            {"name":"models/gemini-embedding-2","supportedGenerationMethods":["embedContent"]},
-            {"name":"models/text-embedding-004","supportedGenerationMethods":["embedContent","countTextTokens"]},
-            {"name":"models/gemini-2.5-pro-preview-tts","supportedGenerationMethods":["generateContent"]},
-            {"name":"models/gemini-2.5-flash-image","supportedGenerationMethods":["predict"]}
-        ]}"#;
-        let ids = parse_gemini_model_ids(body).unwrap();
-        // 只剩两条声明 generateContent 的；embedding 与 image (predict-only) 必须被过滤。
-        assert_eq!(
-            ids,
-            vec![
-                "gemini-2.5-flash".to_string(),
-                "gemini-2.5-pro-preview-tts".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn is_gemini_base_url_matches_official_domain() {
-        assert!(is_gemini_base_url(
-            "https://generativelanguage.googleapis.com/v1beta"
-        ));
-        assert!(is_gemini_base_url(
-            "https://generativelanguage.googleapis.com/v1beta/"
-        ));
-        assert!(!is_gemini_base_url("https://api.openai.com/v1"));
-        assert!(!is_gemini_base_url(
-            "https://ark.cn-beijing.volces.com/api/v3"
-        ));
-    }
-
-    #[test]
-    fn persist_settings_refreshes_changed_hotkey_pipelines() {
-        let writer = FakeSettingsWriter::default();
-        let previous = UserPreferences::default();
-        *writer.saved.lock().unwrap() = Some(previous);
-        let prefs = UserPreferences {
-            dictation_hotkey: ShortcutBinding {
-                primary: "D".to_string(),
-                modifiers: vec!["ctrl".to_string()],
-            },
-            qa_hotkey: Some(ShortcutBinding {
-                primary: "Q".to_string(),
-                modifiers: vec!["ctrl".to_string(), "alt".to_string()],
-            }),
-            translation_hotkey: ShortcutBinding {
-                primary: "T".to_string(),
-                modifiers: vec!["ctrl".to_string(), "alt".to_string()],
-            },
-            switch_style_hotkey: Some(ShortcutBinding {
-                primary: "S".to_string(),
-                modifiers: vec!["ctrl".to_string(), "alt".to_string()],
-            }),
-            open_app_hotkey: Some(ShortcutBinding {
-                primary: "O".to_string(),
-                modifiers: vec!["ctrl".to_string(), "alt".to_string()],
-            }),
-            coding_agent_voice_hotkey: Some(ShortcutBinding {
-                primary: "RightControl".to_string(),
-                modifiers: vec![],
-            }),
-            // This fixture deliberately assigns Right Control to Less Computer.
-            // Keep selection polish disabled so the test exercises the intended
-            // independent refresh paths.
-            selection_polish_hotkey: None,
-            hotkey: HotkeyBinding {
-                trigger: HotkeyTrigger::Custom,
-                mode: HotkeyMode::Hold,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        persist_settings(&writer, prefs.clone()).unwrap();
-
-        let saved = writer
-            .saved
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("settings saved");
-        assert_eq!(saved.hotkey.trigger, HotkeyTrigger::Custom);
-        assert_eq!(saved.hotkey.mode, prefs.hotkey.mode);
-        assert_eq!(
-            saved.dictation_hotkey.primary,
-            prefs.dictation_hotkey.primary
-        );
-        assert_eq!(saved.qa_hotkey.unwrap().primary, "Q");
-        assert_eq!(*writer.dictation_refreshes.lock().unwrap(), 1);
-        assert_eq!(*writer.combo_refreshes.lock().unwrap(), 1);
-        assert_eq!(*writer.qa_refreshes.lock().unwrap(), 1);
-        assert_eq!(*writer.translation_refreshes.lock().unwrap(), 1);
-        assert_eq!(*writer.switch_style_refreshes.lock().unwrap(), 1);
-        assert_eq!(*writer.open_app_refreshes.lock().unwrap(), 1);
-        assert_eq!(*writer.coding_agent_refreshes.lock().unwrap(), 1);
-    }
-
-    #[test]
-    fn persist_settings_reconciles_less_computer_dictation_overlap_and_saves() {
-        let writer = FakeSettingsWriter::default();
-        let binding = ShortcutBinding {
-            primary: "LeftControl".into(),
-            modifiers: vec![],
-        };
-        let prefs = UserPreferences {
-            dictation_hotkey: binding.clone(),
-            coding_agent_voice_hotkey: Some(binding),
-            ..Default::default()
-        };
-
-        // 兜底（#904）：冲突不再拒绝整份保存，较低优先级的 Less Computer 键被停用。
-        persist_settings(&writer, prefs).unwrap();
-        let saved = writer.saved.lock().unwrap().clone().expect("prefs saved");
-        assert_eq!(saved.dictation_hotkey.primary, "LeftControl");
-        assert!(saved.coding_agent_voice_hotkey.is_none());
-    }
-
-    #[test]
-    fn persist_settings_syncs_active_asr_provider_without_hotkey_refresh() {
-        let writer = FakeSettingsWriter::default();
-        let previous = UserPreferences::default();
-        *writer.saved.lock().unwrap() = Some(previous.clone());
-        let prefs = UserPreferences {
-            active_asr_provider: "whisper".to_string(),
-            microphone_device_name: "External Mic".to_string(),
-            hotkey: previous.hotkey,
-            dictation_hotkey: previous.dictation_hotkey,
-            qa_hotkey: previous.qa_hotkey,
-            translation_hotkey: previous.translation_hotkey,
-            switch_style_hotkey: previous.switch_style_hotkey,
-            open_app_hotkey: previous.open_app_hotkey,
-            ..Default::default()
-        };
-
-        persist_settings(&writer, prefs.clone()).unwrap();
-
-        let saved = writer
-            .saved
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("settings saved");
-        assert_eq!(saved.active_asr_provider, prefs.active_asr_provider);
-        assert_eq!(saved.microphone_device_name, prefs.microphone_device_name);
-        assert_eq!(
-            writer.active_asr_provider_syncs.lock().unwrap().clone(),
-            vec![prefs.active_asr_provider.clone()]
-        );
-        assert_eq!(*writer.dictation_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.combo_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.qa_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.translation_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.switch_style_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.open_app_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.coding_agent_refreshes.lock().unwrap(), 0);
-    }
-
-    #[test]
-    fn persist_settings_does_not_save_when_active_asr_sync_fails() {
-        let writer = FakeSettingsWriter::default();
-        let previous = UserPreferences::default();
-        *writer.saved.lock().unwrap() = Some(previous.clone());
-        *writer.active_asr_provider_sync_error.lock().unwrap() = Some("sync failed".to_string());
-        let prefs = UserPreferences {
-            active_asr_provider: "whisper".to_string(),
-            microphone_device_name: "External Mic".to_string(),
-            hotkey: previous.hotkey,
-            dictation_hotkey: previous.dictation_hotkey,
-            qa_hotkey: previous.qa_hotkey,
-            translation_hotkey: previous.translation_hotkey,
-            switch_style_hotkey: previous.switch_style_hotkey,
-            open_app_hotkey: previous.open_app_hotkey,
-            ..Default::default()
-        };
-
-        let error = persist_settings(&writer, prefs).unwrap_err();
-
-        assert_eq!(error, "sync failed");
-        let saved = writer
-            .saved
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("previous settings remain saved");
-        assert_eq!(saved.active_asr_provider, previous.active_asr_provider);
-        assert_eq!(
-            saved.microphone_device_name,
-            previous.microphone_device_name
-        );
-        assert_eq!(
-            writer.active_asr_provider_syncs.lock().unwrap().clone(),
-            vec!["whisper".to_string()]
-        );
-        assert_eq!(*writer.dictation_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.combo_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.qa_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.translation_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.switch_style_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.open_app_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.coding_agent_refreshes.lock().unwrap(), 0);
-    }
-
-    #[test]
-    fn persist_settings_restores_active_asr_provider_when_save_fails_after_sync() {
-        let writer = FakeSettingsWriter::default();
-        let previous = UserPreferences::default();
-        *writer.saved.lock().unwrap() = Some(previous.clone());
-        *writer.write_settings_error.lock().unwrap() = Some("save failed".to_string());
-        let prefs = UserPreferences {
-            active_asr_provider: "whisper".to_string(),
-            microphone_device_name: "External Mic".to_string(),
-            hotkey: previous.hotkey,
-            dictation_hotkey: previous.dictation_hotkey,
-            qa_hotkey: previous.qa_hotkey,
-            translation_hotkey: previous.translation_hotkey,
-            switch_style_hotkey: previous.switch_style_hotkey,
-            open_app_hotkey: previous.open_app_hotkey,
-            ..Default::default()
-        };
-
-        let error = persist_settings(&writer, prefs).unwrap_err();
-
-        assert_eq!(error, "save failed");
-        let saved = writer
-            .saved
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("previous settings remain saved");
-        assert_eq!(saved.active_asr_provider, previous.active_asr_provider);
-        assert_eq!(
-            saved.microphone_device_name,
-            previous.microphone_device_name
-        );
-        assert_eq!(
-            writer.active_asr_provider_syncs.lock().unwrap().clone(),
-            vec!["whisper".to_string(), previous.active_asr_provider.clone()]
-        );
-        assert_eq!(*writer.dictation_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.combo_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.qa_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.translation_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.switch_style_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.open_app_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.coding_agent_refreshes.lock().unwrap(), 0);
-    }
-
-    #[test]
-    fn persist_settings_keeps_new_active_asr_provider_when_rollback_fails() {
-        let writer = FakeSettingsWriter::default();
-        let previous = UserPreferences::default();
-        *writer.saved.lock().unwrap() = Some(previous.clone());
-        *writer.write_settings_errors.lock().unwrap() = vec![Some("save failed".to_string()), None];
-        *writer.active_asr_provider_sync_errors.lock().unwrap() =
-            vec![None, Some("rollback failed".to_string())];
-        let prefs = UserPreferences {
-            active_asr_provider: "whisper".to_string(),
-            microphone_device_name: "External Mic".to_string(),
-            hotkey: previous.hotkey,
-            dictation_hotkey: previous.dictation_hotkey,
-            qa_hotkey: previous.qa_hotkey,
-            translation_hotkey: previous.translation_hotkey,
-            switch_style_hotkey: previous.switch_style_hotkey,
-            open_app_hotkey: previous.open_app_hotkey,
-            ..Default::default()
-        };
-
-        persist_settings(&writer, prefs.clone()).expect("settings remain consistent");
-
-        let saved = writer
-            .saved
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("new settings saved");
-        assert_eq!(saved.active_asr_provider, prefs.active_asr_provider);
-        assert_eq!(saved.microphone_device_name, prefs.microphone_device_name);
-        assert_eq!(
-            writer.active_asr_provider_syncs.lock().unwrap().clone(),
-            vec!["whisper".to_string(), previous.active_asr_provider.clone()]
-        );
-        assert_eq!(*writer.dictation_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.combo_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.qa_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.translation_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.switch_style_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.open_app_refreshes.lock().unwrap(), 0);
-        assert_eq!(*writer.coding_agent_refreshes.lock().unwrap(), 0);
-    }
-
     #[test]
     fn sync_dictation_hotkey_sets_modifier_trigger_and_clears_combo() {
         let mut prefs = UserPreferences {
@@ -1315,71 +812,10 @@ mod tests {
     }
 
     #[test]
-    fn persist_settings_reconciles_dictation_translation_overlap_and_saves() {
-        let writer = FakeSettingsWriter::default();
-        let binding = ShortcutBinding {
-            primary: "RightControl".into(),
-            modifiers: vec![],
-        };
-        let prefs = UserPreferences {
-            dictation_hotkey: binding.clone(),
-            translation_hotkey: binding,
-            ..Default::default()
-        };
-
-        // 兜底（#904）：冲突不再拒绝整份保存，翻译键恢复为旧默认 Shift。
-        persist_settings(&writer, prefs).unwrap();
-        let saved = writer.saved.lock().unwrap().clone().expect("prefs saved");
-        assert_eq!(saved.dictation_hotkey.primary, "RightControl");
-        assert_eq!(saved.translation_hotkey.primary, "Shift");
-    }
-
-    #[test]
-    fn persist_settings_reconciles_translation_switch_style_overlap_and_saves() {
-        let writer = FakeSettingsWriter::default();
-        let binding = ShortcutBinding {
-            primary: "T".into(),
-            modifiers: vec!["cmd".into(), "shift".into()],
-        };
-        let prefs = UserPreferences {
-            translation_hotkey: binding.clone(),
-            switch_style_hotkey: Some(binding),
-            ..Default::default()
-        };
-
-        // 兜底（#904）：冲突不再拒绝整份保存，切换风格键恢复为旧默认。
-        persist_settings(&writer, prefs).unwrap();
-        let saved = writer.saved.lock().unwrap().clone().expect("prefs saved");
-        let defaults = UserPreferences::default();
-        assert_eq!(saved.translation_hotkey.primary, "T");
-        assert_eq!(saved.switch_style_hotkey, defaults.switch_style_hotkey);
-    }
-
-    #[test]
-    fn persist_settings_reconciles_switch_style_open_app_overlap_and_saves() {
-        let writer = FakeSettingsWriter::default();
-        let binding = ShortcutBinding {
-            primary: "K".into(),
-            modifiers: vec!["cmd".into(), "shift".into()],
-        };
-        let prefs = UserPreferences {
-            switch_style_hotkey: Some(binding.clone()),
-            open_app_hotkey: Some(binding.clone()),
-            ..Default::default()
-        };
-
-        // 兜底（#904）：冲突不再拒绝整份保存，打开应用键恢复为旧默认。
-        persist_settings(&writer, prefs).unwrap();
-        let saved = writer.saved.lock().unwrap().clone().expect("prefs saved");
-        let defaults = UserPreferences::default();
-        assert_eq!(saved.switch_style_hotkey, Some(binding));
-        assert_eq!(saved.open_app_hotkey, defaults.open_app_hotkey);
-    }
-
-    #[test]
     fn parse_latest_beta_from_atom_picks_first_beta_tagged_entry() {
-        // Fixture trimmed from real `releases.atom`：包含一条 stable + 一条 Beta。
-        // 解析必须跳过 stable（tag 不以 -beta-tauri 结尾），返回 Beta。
+        // Fixture trimmed from a real `releases.atom`: one stable + one Beta
+        // entry. Parsing must skip the stable entry (tag not ending in
+        // -beta-tauri) and return the Beta.
         let body = r#"<?xml version="1.0"?>
 <feed>
   <entry>
@@ -1466,102 +902,10 @@ mod tests {
         assert!(parse_latest_beta_from_atom(body).is_none());
     }
 
-    #[tokio::test]
-    async fn fetch_provider_models_omits_authorization_when_api_key_is_empty() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 8192];
-            let mut request = Vec::new();
-            loop {
-                let n = stream.read(&mut buf).unwrap();
-                if n == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buf[..n]);
-                if request.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            let request_text = String::from_utf8_lossy(&request);
-            assert!(!request_text.contains("Authorization: Bearer"));
-
-            let body = r#"{"data":[{"id":"m1"},{"id":"m2"}]}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream.write_all(response.as_bytes()).unwrap();
-        });
-
-        let models = fetch_provider_models(&ProviderConfig {
-            base_url: format!("http://{}", addr),
-            api_key: String::new(),
-            extra_headers: Default::default(),
-            temperature: None,
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(models, vec!["m1".to_string(), "m2".to_string()]);
-        server.join().unwrap();
-    }
-
-    #[tokio::test]
-    async fn fetch_provider_models_sends_extra_headers() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 8192];
-            let mut request = Vec::new();
-            loop {
-                let n = stream.read(&mut buf).unwrap();
-                if n == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buf[..n]);
-                if request.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            let request_text = String::from_utf8_lossy(&request);
-            assert!(request_text
-                .to_ascii_lowercase()
-                .contains("x-openless-test-token: secret"));
-            assert!(!request_text.contains("Authorization: Bearer"));
-
-            let body = r#"{"data":[{"id":"m1"}]}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream.write_all(response.as_bytes()).unwrap();
-        });
-
-        let models = fetch_provider_models(&ProviderConfig {
-            base_url: format!("http://{}", addr),
-            api_key: String::new(),
-            extra_headers: [("x-openless-test-token".to_string(), "secret".to_string())]
-                .into_iter()
-                .collect(),
-            temperature: None,
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(models, vec!["m1".to_string()]);
-        server.join().unwrap();
-    }
-
     #[test]
     fn is_valid_session_id_accepts_canonical_uuid_v4() {
-        // canonical UUID-v4 字面：8-4-4-4-12，全小写、全大写、混合都接受。
+        // Canonical UUID-v4 literal: 8-4-4-4-12; lowercase, uppercase, and
+        // mixed all accepted.
         assert!(is_valid_session_id("550e8400-e29b-41d4-a716-446655440000"));
         assert!(is_valid_session_id("550E8400-E29B-41D4-A716-446655440000"));
         assert!(is_valid_session_id("Abc12345-6789-abcd-EF01-234567890abc"));
@@ -1572,21 +916,22 @@ mod tests {
         assert!(!is_valid_session_id(""));
         assert!(!is_valid_session_id("../../etc/passwd"));
         assert!(!is_valid_session_id("..\\..\\windows\\system32"));
-        // 长度对但含 `/`：dash 位置错或非 hex 字符都不通过
+        // Right length but contains `/`: wrong dash positions or non-hex chars
+        // are both rejected
         assert!(!is_valid_session_id("550e8400-e29b-41d4-a716-44665544/000"));
-        assert!(!is_valid_session_id("550e8400_e29b_41d4_a716_446655440000")); // 用 _ 代 -
-                                                                               // 非 hex 字符
+        assert!(!is_valid_session_id("550e8400_e29b_41d4_a716_446655440000")); // uses _ for -
+                                                                               // non-hex char
         assert!(!is_valid_session_id("550e8400-e29b-41d4-a716-44665544000g"));
-        // 长度不对（35 / 37）
+        // Wrong length (35 / 37)
         assert!(!is_valid_session_id("550e8400-e29b-41d4-a716-44665544000"));
         assert!(!is_valid_session_id(
             "550e8400-e29b-41d4-a716-4466554400000"
         ));
-        // NUL 字节
+        // NUL byte
         assert!(!is_valid_session_id(
             "550e8400-e29b-41d4-a716-44665544\x00000"
         ));
-        // 百分号编码与绝对路径
+        // Percent-encoding and absolute paths
         assert!(!is_valid_session_id("%2e%2e/recordings/x"));
         assert!(!is_valid_session_id("/Users/attacker/secret.wav"));
     }

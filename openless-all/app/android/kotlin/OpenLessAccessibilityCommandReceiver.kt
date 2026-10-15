@@ -10,6 +10,10 @@ import android.util.Log
 class OpenLessAccessibilityCommandReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         val action = intent?.action ?: return
+        if (action == ACTION_VOCABULARY) {
+            OpenLessAccessibilityService.handleVocabularyCommand(intent)
+            return
+        }
         val receiver = resultReceiver(intent) ?: return
         when (action) {
             ACTION_PASTE -> {
@@ -21,11 +25,12 @@ class OpenLessAccessibilityCommandReceiver : BroadcastReceiver() {
                 }
             }
             ACTION_PING -> {
-                val result = if (OpenLessAccessibilityService.instance != null) {
-                    AccessibilityPasteResult.SUCCESS
-                } else {
-                    AccessibilityPasteResult.SERVICE_NOT_CONNECTED
-                }
+                val result =
+                    if (OpenLessAccessibilityService.instance != null) {
+                        AccessibilityPasteResult.SUCCESS
+                    } else {
+                        AccessibilityPasteResult.SERVICE_NOT_CONNECTED
+                    }
                 sendResult(receiver, result)
             }
             ACTION_CAPTURE_SELECTED_TEXT -> {
@@ -39,6 +44,25 @@ class OpenLessAccessibilityCommandReceiver : BroadcastReceiver() {
                     Bundle().apply {
                         putString(EXTRA_SELECTED_TEXT, selectedText.orEmpty())
                     },
+                )
+            }
+            ACTION_CAPTURE_SELECTION_TARGET -> {
+                val target = OpenLessAccessibilityService.captureSelectionTargetFromCommand()
+                receiver.send(
+                    if (!target.isNullOrEmpty()) AccessibilityPasteResult.SUCCESS.code
+                    else AccessibilityPasteResult.NO_FOCUSED_EDITOR.code,
+                    Bundle().apply { putString(EXTRA_SELECTION_TARGET, target.orEmpty()) },
+                )
+            }
+            ACTION_REPLACE_CAPTURED_SELECTION -> {
+                val generation = intent.getLongExtra(EXTRA_SELECTION_GENERATION, 0L)
+                val replacement = intent.getStringExtra(EXTRA_SELECTION_REPLACEMENT).orEmpty()
+                sendResult(
+                    receiver,
+                    OpenLessAccessibilityService.replaceCapturedSelectionFromCommand(
+                        generation,
+                        replacement,
+                    ),
                 )
             }
         }
@@ -57,19 +81,22 @@ class OpenLessAccessibilityCommandReceiver : BroadcastReceiver() {
     }
 
     companion object {
+        const val ACTION_VOCABULARY = "com.openless.app.accessibility.VOCABULARY"
         const val ACTION_PASTE = "com.openless.app.accessibility.PASTE"
         const val ACTION_PING = "com.openless.app.accessibility.PING"
-        const val ACTION_CAPTURE_SELECTED_TEXT = "com.openless.app.accessibility.CAPTURE_SELECTED_TEXT"
+        const val ACTION_CAPTURE_SELECTED_TEXT =
+            "com.openless.app.accessibility.CAPTURE_SELECTED_TEXT"
+        const val ACTION_CAPTURE_SELECTION_TARGET =
+            "com.openless.app.accessibility.CAPTURE_SELECTION_TARGET"
+        const val ACTION_REPLACE_CAPTURED_SELECTION =
+            "com.openless.app.accessibility.REPLACE_CAPTURED_SELECTION"
         const val EXTRA_RESULT_RECEIVER = "result_receiver"
         const val EXTRA_RESULT_REASON = "result_reason"
         const val EXTRA_PASTE_TEXT = "paste_text"
         const val EXTRA_SELECTED_TEXT = "selected_text"
-        /** @deprecated Use [AccessibilityPasteResult] codes */
-        const val EXTRA_PASTE_RESULT = "paste_result"
-        /** @deprecated Use [AccessibilityPasteResult.SUCCESS.code] */
-        const val RESULT_PASTE_SUCCESS = 1
-        /** @deprecated Use failure codes from [AccessibilityPasteResult] */
-        const val RESULT_PASTE_FAILED = 4
+        const val EXTRA_SELECTION_TARGET = "selection_target"
+        const val EXTRA_SELECTION_GENERATION = "selection_generation"
+        const val EXTRA_SELECTION_REPLACEMENT = "selection_replacement"
         private const val TAG = "OpenLessA11yCommand"
     }
 }

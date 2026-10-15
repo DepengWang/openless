@@ -14,7 +14,7 @@ class OpenLessAccessibilityTargetTest {
                 isFocused = true,
                 nodePackage = "com.example.app",
                 activePackage = "com.example.app",
-            ),
+            )
         )
         assertFalse(
             OpenLessAccessibilityTarget.passesEditableFocusChecks(
@@ -22,7 +22,7 @@ class OpenLessAccessibilityTargetTest {
                 isFocused = true,
                 nodePackage = "com.example.app",
                 activePackage = "com.example.app",
-            ),
+            )
         )
         assertFalse(
             OpenLessAccessibilityTarget.passesEditableFocusChecks(
@@ -30,7 +30,7 @@ class OpenLessAccessibilityTargetTest {
                 isFocused = false,
                 nodePackage = "com.example.app",
                 activePackage = "com.example.app",
-            ),
+            )
         )
         assertFalse(
             OpenLessAccessibilityTarget.passesEditableFocusChecks(
@@ -38,7 +38,7 @@ class OpenLessAccessibilityTargetTest {
                 isFocused = true,
                 nodePackage = "com.other.app",
                 activePackage = "com.example.app",
-            ),
+            )
         )
     }
 
@@ -48,6 +48,26 @@ class OpenLessAccessibilityTargetTest {
         assertFalse(OpenLessAccessibilityTarget.passesWindowChecks(3, 4))
         assertFalse(OpenLessAccessibilityTarget.passesWindowChecks(-1, 3))
         assertFalse(OpenLessAccessibilityTarget.passesWindowChecks(3, -1))
+    }
+
+    @Test
+    fun selectionRangeValidationRejectsEmptyAndOutOfBoundsRanges() {
+        assertTrue(OpenLessAccessibilityTarget.isSelectionRangeValid("hello", 1, 4))
+        assertTrue(OpenLessAccessibilityTarget.isSelectionRangeValid("hello", 4, 1))
+        assertFalse(OpenLessAccessibilityTarget.isSelectionRangeValid("hello", 2, 2))
+        assertFalse(OpenLessAccessibilityTarget.isSelectionRangeValid("hello", -1, 2))
+        assertFalse(OpenLessAccessibilityTarget.isSelectionRangeValid("hello", 1, 8))
+        assertFalse(OpenLessAccessibilityTarget.isSelectionRangeValid(null, 1, 2))
+    }
+
+    @Test
+    fun fieldTargetValidationAllowsCaretButStillChecksBounds() {
+        assertTrue(OpenLessAccessibilityTarget.isFieldTargetValid("hello", 2, 2))
+        assertTrue(OpenLessAccessibilityTarget.isFieldTargetValid("hello", 4, 1))
+        assertTrue(OpenLessAccessibilityTarget.isFieldTargetValid("", 0, 0))
+        assertFalse(OpenLessAccessibilityTarget.isFieldTargetValid("hello", -1, 1))
+        assertFalse(OpenLessAccessibilityTarget.isFieldTargetValid("hello", 1, 6))
+        assertFalse(OpenLessAccessibilityTarget.isFieldTargetValid(null, 0, 0))
     }
 
     @Test
@@ -75,7 +95,7 @@ class OpenLessAccessibilityTargetTest {
                 isPassword = false,
                 className = "android.widget.EditText",
                 actions = emptyList(),
-            ),
+            )
         )
         assertTrue(
             OpenLessAccessibilityTarget.isPasteTarget(
@@ -83,7 +103,7 @@ class OpenLessAccessibilityTargetTest {
                 isPassword = false,
                 className = "android.view.View",
                 actionIds = listOf(0x00008000),
-            ),
+            )
         )
         assertFalse(
             OpenLessAccessibilityTarget.isPasteTarget(
@@ -91,7 +111,7 @@ class OpenLessAccessibilityTargetTest {
                 isPassword = true,
                 className = "android.widget.EditText",
                 actions = emptyList(),
-            ),
+            )
         )
     }
 }

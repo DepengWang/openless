@@ -1,132 +1,192 @@
-//! 宿主 app 文档读取 —— 唯一接触「用户正在写的那篇东西」的地方。
+//! Host app document reading — the only place that touches "what the user is writing".
 //!
-//! 目标：让 LLM 润色知道用户在写什么。中文同音词（接口/借口、大鱼/大禹）声学模型
-//! 分不出来，但上下文能分；今天这条信息在 OpenLess 里完全缺失。
+//! Goal: let LLM polishing know what the user is writing. Chinese homophones are
+//! indistinguishable to the acoustic model but clear from context; this information is
+//! entirely missing from OpenLess today.
 //!
-//! ## 边界
+//! ## Boundary
 //!
-//! 所有平台差异关在本模块内。非 macOS 一律返回 [`HostDocumentStatus::Unsupported`]：
-//! Windows 没有任何 UIAutomation 代码且 TSF 只在提交瞬间激活；Linux 的 fcitx5
-//! SurroundingText 多数客户端不支持。留着接口形状一致，将来补实现不用改调用方。
+//! Cursor context is available on macOS and Windows (UI Automation). Edit learning has
+//! separate local consent: macOS AX, Windows UIA and Android accessibility provide bounded
+//! observation. Linux retains explicit vocabulary entry.
 //!
-//! ## 三条硬约束（新代码不得违反，哪怕仓库里的旧 AX 代码就是这么写的）
+//! ## Three hard constraints (new code must not violate these, even though the old AX
+//! code in this repo does)
 //!
-//! 1. **AX 调用必须有超时**。`AXUIElementSetMessagingTimeout` 不设就继承默认的
-//!    ~6 秒 —— 对着一个卡死的 app 就是 6 秒冻结。`selection.rs` / `lib.rs` 的既有
-//!    AX 代码都没设，那是缺陷，不要复制。
-//! 2. **不在 tokio worker 上同步调 AX**。走 `spawn_blocking` + `tokio::time::timeout`
-//!    双保险（形状照 `windows_ime_ipc.rs` 的原生调用边界）。内层超时保护线程本身，
-//!    外层保证 async 调用方无论如何都能按时返回。
-//! 3. **读之前先过安全闸门**。我们读的是别的应用里的任意文本，最终会进 LLM 请求体。
-//!    密码框、Secure Input、密码管理器、终端一律不读，一次 AX 都不发。
+//! 1. **AX calls must have a timeout**. Without `AXUIElementSetMessagingTimeout` they
+//!    inherit the ~6s default — a hung app means a 6-second freeze. The existing AX code
+//!    in `selection.rs` / `lib.rs` doesn't set it; that's a defect, don't copy it.
+//! 2. **Never call AX synchronously on a tokio worker**. Use `spawn_blocking` +
+//!    `tokio::time::timeout` as double protection (shaped after the native call boundary
+//!    in `windows_ime_ipc.rs`). The inner timeout protects the thread itself; the outer
+//!    one guarantees the async caller returns on time regardless.
+//! 3. **Pass the safety gate before reading text**. Reject password fields, Secure Input,
+//!    known password managers and terminals. Cursor context may enter authorized LLM
+//!    requests; edit observation remains local.
 //!
-//! ## 本里程碑的范围
+//! ## Scope of this milestone
 //!
-//! 模块可用但**不接产品链路** —— 只有一个 debug 命令 `debug_read_cursor_context`
-//! 在调它。接进润色 prompt 是下一步的事，那里才引入用户可见的开关（默认关）。
-
-mod diff;
-mod window;
+//! Document context reading is invoked from explicit context entry points.
+//! `KeyboardDelivery` additionally serves macOS streaming input completion timing: it
+//! reuses the same focus/permission gates and reads only the selection range, never the
+//! host document body.
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "windows")]
+mod uia_text;
+#[cfg(target_os = "windows")]
+pub(crate) use windows::insert_with_delivery_check;
 
-// `minimal_edit` 目前只有 macOS 的观察回调在用，非 macOS 构建下没有消费方。
+#[cfg(target_os = "macos")]
+pub(crate) use macos::{KeyboardDelivery, KeyboardDeliveryOutcome};
+
+// `minimal_edit` is currently used only by the macOS observation callback; no consumer on non-macOS builds.
 #[allow(unused_imports)]
-pub use diff::{
-    edit_is_within_typed_text, is_vocab_worthy, learned_rule, minimal_edit, EditPair, LearnedRule,
+pub use openless_core::host_document::{
+    edit_is_within_typed_text, is_vocab_worthy, learned_rule, minimal_edit, plan_window,
+    utf16_offset_to_char_offset, window_around_cursor, DocumentWindow, EditPair, LearnedRule,
+    WindowSpan,
 };
-
-// `WindowSpan` 目前只有 `plan_window` 的返回类型用到，本 crate 内没有别的引用点；
-// 跟着一起导出是为了让调用方能给它命名（对齐 `unicode_keystroke` 的既有写法）。
-#[allow(unused_imports)]
-pub use window::{plan_window, utf16_offset_to_char_offset, window_around_cursor, WindowSpan};
 
 use serde::Serialize;
 
-/// 送进 LLM 的默认上下文预算（char）。够覆盖一两段中文，又不至于让 prompt 显著变贵。
-/// 真实的成本/延迟影响要等接进润色后实测，届时再调。
+/// Default context budget (chars) sent to the LLM. Covers a paragraph or two without
+/// significantly inflating the prompt.
 pub const DEFAULT_BUDGET_CHARS: usize = 600;
 
-/// 单次 AX 消息的超时。200ms 已经远超正常 AX 往返（个位数毫秒），只用来兜住卡死的 app。
+/// Hard upper bound for all cursor-context reads, including the debug command. Keeping this
+/// bounded also makes conversions to UIA's signed `maxLength`/move-count parameters safe.
+pub const MAX_BUDGET_CHARS: usize = 4_000;
+
+/// The original control and its complete text, captured before the edit panel takes focus.
+#[derive(Debug, Clone)]
+pub(crate) struct NativeVoiceEditTarget {
+    insertion_target: crate::selection::SelectionInsertionTarget,
+    #[cfg(target_os = "windows")]
+    native: windows::VoiceEditTarget,
+    #[cfg(target_os = "macos")]
+    native: macos::VoiceEditTarget,
+}
+
+pub(crate) fn capture_voice_edit_target() -> Result<
+    (
+        String,
+        Option<openless_core::TextSelection>,
+        NativeVoiceEditTarget,
+    ),
+    String,
+> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
+        let insertion_target = crate::selection::capture_selection_insertion_target();
+        if !crate::selection::selection_insertion_target_is_captured(&insertion_target) {
+            return Err("voiceEditTargetUnavailable".into());
+        }
+        #[cfg(target_os = "windows")]
+        let (text, selection, native) = windows::capture_voice_edit_target()?;
+        #[cfg(target_os = "macos")]
+        let (text, selection, native) = macos::capture_voice_edit_target()?;
+        Ok((
+            text,
+            selection,
+            NativeVoiceEditTarget {
+                insertion_target,
+                native,
+            },
+        ))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        Err("voiceEditTargetUnavailable".into())
+    }
+}
+
+/// Restore the original app, compare the exact control, full text and selection, then write.
+/// Call only on the blocking native insertion thread.
+pub(crate) fn apply_voice_edit_target(
+    target: &NativeVoiceEditTarget,
+    text: &str,
+    insert: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
+        if !crate::selection::reactivate_selection_insertion_target(&target.insertion_target) {
+            return Err("voiceEditTargetChanged".into());
+        }
+        #[cfg(target_os = "windows")]
+        return windows::apply_voice_edit_target(&target.native, text, insert);
+        #[cfg(target_os = "macos")]
+        return macos::apply_voice_edit_target(&target.native, text, insert);
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = (target, text, insert);
+        Err("voiceEditTargetUnavailable".into())
+    }
+}
+
+/// Restore only the selection we changed when a native write fails. Platform
+/// callbacks must revalidate the original control and unchanged text first.
+#[cfg(any(test, target_os = "windows", target_os = "macos"))]
+fn write_with_selection_recovery(
+    write: impl FnOnce() -> Result<(), String>,
+    recover: impl FnOnce(),
+) -> Result<(), String> {
+    let result = write();
+    if result.is_err() {
+        recover();
+    }
+    result
+}
+
+/// Timeout for a single AX message. 200ms is far above a normal AX round-trip (single-digit
+/// ms); it only catches hung apps.
 #[cfg(target_os = "macos")]
 const AX_MESSAGING_TIMEOUT_SECS: f32 = 0.2;
 
-/// 整次读取（若干次 AX 往返）在 async 侧的硬上限。
+/// Hard upper bound on the async side for a whole read (several AX round-trips).
 ///
-/// 比 `AX_MESSAGING_TIMEOUT_SECS` 大是故意的：一次读取要发 5~6 条 AX 消息，逐条
-/// 200ms 封顶。超时只是让调用方别再等；阻塞线程会自己按 AX 超时收尾。
+/// Deliberately larger than `AX_MESSAGING_TIMEOUT_SECS`: one read sends 5-6 AX messages,
+/// each capped at 200ms. The timeout only stops the caller from waiting; the blocking thread
+/// winds down on its own AX timeout.
 #[cfg(target_os = "macos")]
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1200);
 
-/// 手改监听最长存活多久。
-///
-/// 过了一分钟用户还在动这段文字，多半是在继续写新东西而不是纠我们插错的词，再学下去
-/// 只会收进噪声。同时这也是「观察器绝不泄漏」的最后一道保险。
-#[cfg(target_os = "macos")]
-const EDIT_WATCH_MAX_LIFETIME: std::time::Duration = std::time::Duration::from_secs(60);
+/// Outer timeout for one Windows UIA cursor-context read. UIA calls themselves are capped at
+/// 200ms each (`SetConnectionTimeout` / `SetTransactionTimeout` in `windows.rs`); this bounds
+/// the whole read (a handful of round-trips) per `windows_cursor_context开发方案.md` §11.
+#[cfg(target_os = "windows")]
+const WINDOWS_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1000);
 
-/// 已按预算截过窗的上下文。`cursor` 是窗口内的 char 下标。
-///
-/// 没有与之对应的「完整文档」类型：手改监听的基线是**落字那一段文本**而不是整篇文档
-/// （见 [`watch_for_edits`]），整篇文档在本模块里除了被截窗之外没有第二个用途。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DocumentWindow {
-    pub text: String,
-    pub cursor: usize,
-}
-
-impl DocumentWindow {
-    /// 光标之前的部分（用户已经写完的语境）。
-    pub fn before(&self) -> &str {
-        let byte_idx = self
-            .text
-            .char_indices()
-            .nth(self.cursor)
-            .map(|(i, _)| i)
-            .unwrap_or(self.text.len());
-        &self.text[..byte_idx]
-    }
-
-    /// 光标之后的部分。
-    pub fn after(&self) -> &str {
-        let byte_idx = self
-            .text
-            .char_indices()
-            .nth(self.cursor)
-            .map(|(i, _)| i)
-            .unwrap_or(self.text.len());
-        &self.text[byte_idx..]
-    }
-}
-
-/// 一次读取的结局。`Ok` 之外的每一种都要能说清「为什么没读到」—— 装机验证时全靠它
-/// 判断某个 app 是「被拦了」还是「AX 根本不支持」。
+/// Outcome of one read. Every variant beyond `Ok` must explain why nothing was read —
+/// during installation verification this distinguishes "blocked" from "AX unsupported".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HostDocumentStatus {
-    /// 读到了。
+    /// Read successfully.
     Ok,
-    /// 安全闸门拦下，一次 AX 都没发。
+    /// Blocked by the safety gate; not a single AX call was sent.
     Blocked,
-    /// 本平台没有实现。（macOS 编译时构造不到它，故显式 allow。）
+    /// Not implemented on this platform. (Unconstructible on macOS builds, hence the explicit allow.)
     #[allow(dead_code)]
     Unsupported,
-    /// AX 可达但拿不到文档（没焦点 / 该控件不支持文本属性 / 权限缺失）。
+    /// AX reachable but no document available (no focus / control lacks text attributes / missing permission).
     Unavailable,
-    /// 超过 [`READ_TIMEOUT`] 还没返回 —— 目标 app 大概率卡死。
+    /// No response within [`READ_TIMEOUT`] — the target app is probably hung.
     Timeout,
 }
 
-/// 硬拦原因。
+/// Reason for a hard block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockReason {
-    /// macOS Secure Event Input 已开启（密码框、sudo 提示等）。
+    /// macOS Secure Event Input is on (password fields, sudo prompts, etc.).
     SecureInput,
-    /// 焦点控件的 AXRole/AXSubrole 是 `AXSecureTextField`。
+    /// Focused control's AXRole/AXSubrole is `AXSecureTextField`.
     SecureTextField,
-    /// 前台 app 在硬编码黑名单里（密码管理器 / 钥匙串 / 终端）。
+    /// Foreground app is on the hardcoded blocklist (password managers / keychain / terminals).
     BlockedApp,
 }
 
@@ -140,12 +200,12 @@ impl BlockReason {
     }
 }
 
-/// 一次读取的完整结果，debug 命令直接把它序列化给前端看。
+/// Full result of one read; the debug command serializes it straight to the frontend.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostDocumentReadResult {
     pub status: HostDocumentStatus,
-    /// 机器可读的细节：`BlockReason::as_str()` 或不可用原因。
+    /// Machine-readable detail: `BlockReason::as_str()` or the unavailability reason.
     pub reason: Option<String>,
     pub window: Option<DocumentWindow>,
     pub app_name: Option<String>,
@@ -166,36 +226,34 @@ impl HostDocumentReadResult {
     }
 }
 
-/// 安全闸门的输入。抽成一个纯数据结构，是为了让判定逻辑能脱离 AX 单测 —— 闸门判错
-/// 的代价是把密码送进 LLM，这条路径必须有测试覆盖。
+/// Inputs to the safety gate. Modeled as a plain data structure so the decision logic is
+/// unit-testable without AX — a wrong gate decision means sending passwords to the LLM, so
+/// this path must have test coverage.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GateInputs {
-    /// `unicode_keystroke::is_secure_input_enabled()` 的结果。
+    /// Result of `unicode_keystroke::is_secure_input_enabled()`.
     pub secure_input: bool,
-    /// 前台 app 的 bundle id（macOS）。
+    /// Foreground app bundle id (macOS).
     pub bundle_id: Option<String>,
-    /// 焦点元素的 `AXRole`。
+    /// Focused element's `AXRole`.
     pub role: Option<String>,
-    /// 焦点元素的 `AXSubrole`。
+    /// Focused element's `AXSubrole`.
     pub subrole: Option<String>,
 }
 
-/// AX 里表示「密码输入框」的 role/subrole 值。
+/// AX role/subrole value denoting a secure text field.
 const AX_SECURE_TEXT_FIELD: &str = "axsecuretextfield";
 
-/// 一律不读的 app（bundle id 前缀，小写比较）。
+/// Sensitive apps that are never read (bundle id prefixes, lowercase comparison).
 ///
-/// 不做 UI —— 黑名单 UI 会给用户「配一下就安全了」的错觉，而真正的防线是默认关闭
-/// 加这里的硬编码。这份清单只覆盖「内容几乎必然敏感」的两类：
+/// No UI for this — a blocklist UI creates the illusion "configure it once and you're safe",
+/// while the real defense is read-off-by-default plus this hardcoded list. The list covers only
+/// the two categories whose content is almost certainly sensitive:
 ///
-/// - **密码管理器 / 钥匙串**：正文就是凭据本身。
-/// - **终端**：命令行里混着 token、私钥路径、内网地址，而且很多终端的 AX 会把整个
-///   scrollback 当作一个文本元素返回 —— 一读就是几千行历史命令。
-///
-/// 前缀匹配，所以 `com.1password` 能同时盖住 `com.1password.1password` 和其
-/// helper 进程。
-const BLOCKED_BUNDLE_PREFIXES: &[&str] = &[
-    // 密码管理器 / 钥匙串
+/// - **Password managers / keychain**: the document body is the credential itself.
+/// Prefix matching, so `com.1password` covers both `com.1password.1password` and its helper
+/// processes.
+const SENSITIVE_BUNDLE_PREFIXES: &[&str] = &[
     "com.1password",
     "com.agilebits.onepassword",
     "com.apple.keychainaccess",
@@ -207,7 +265,12 @@ const BLOCKED_BUNDLE_PREFIXES: &[&str] = &[
     "in.sinew.enpass",
     "com.sinew.enpass",
     "com.apple.passwords",
-    // 终端
+];
+
+/// Terminal app bundle id prefixes. Besides forbidding scrollback reads, used for the macOS
+/// auto-wrap-mode decision: known terminals send U+000A, other apps conservatively send
+/// Shift+Return.
+const TERMINAL_BUNDLE_PREFIXES: &[&str] = &[
     "com.apple.terminal",
     "com.googlecode.iterm2",
     "dev.warp.warp",
@@ -221,19 +284,26 @@ const BLOCKED_BUNDLE_PREFIXES: &[&str] = &[
     "com.mitchellh.ghostty",
 ];
 
-/// 闸门判定。返回 `Some(reason)` 表示拦下，`None` 表示放行。
+fn bundle_id_starts_with_any(bundle_id: &str, prefixes: &[&str]) -> bool {
+    let lowered = bundle_id.to_ascii_lowercase();
+    prefixes.iter().any(|prefix| lowered.starts_with(prefix))
+}
+
+pub(crate) fn is_terminal_bundle_id(bundle_id: &str) -> bool {
+    bundle_id_starts_with_any(bundle_id, TERMINAL_BUNDLE_PREFIXES)
+}
+
+/// Gate decision. Returns `Some(reason)` to block, `None` to allow.
 ///
-/// 判定顺序按「代价从低到高」：Secure Input 和 bundle 前缀不需要 AX，先判；
-/// role/subrole 需要一次 AX 读，放在最后。
+/// Checks are ordered by cost: Secure Input and bundle prefixes need no AX and are decided
+/// first; role/subrole needs one AX read and is checked last.
 pub fn evaluate_gate(inputs: &GateInputs) -> Option<BlockReason> {
     if inputs.secure_input {
         return Some(BlockReason::SecureInput);
     }
     if let Some(bundle) = inputs.bundle_id.as_deref() {
-        let lowered = bundle.to_ascii_lowercase();
-        if BLOCKED_BUNDLE_PREFIXES
-            .iter()
-            .any(|prefix| lowered.starts_with(prefix))
+        if bundle_id_starts_with_any(bundle, SENSITIVE_BUNDLE_PREFIXES)
+            || is_terminal_bundle_id(bundle)
         {
             return Some(BlockReason::BlockedApp);
         }
@@ -249,44 +319,77 @@ pub fn evaluate_gate(inputs: &GateInputs) -> Option<BlockReason> {
     None
 }
 
-/// 平台实现返回给 [`probe_around_cursor`] 的中间结果。
+/// Intermediate result returned by platform implementations to [`probe_around_cursor`].
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) enum ReadOutcome {
     Window(DocumentWindow),
     Blocked(BlockReason),
-    /// 带一句静态原因，供日志和 debug 命令区分「没焦点」和「不支持」。
+    /// Carries a static reason so logs and the debug command can tell "no focus" from "unsupported".
     Unavailable(&'static str),
 }
 
-/// 读光标周围的上下文；任何失败都退化为 `None`，绝不向上抛错。
+/// Read the context around the cursor; any failure degrades to `None`, never an error.
 ///
-/// 这是产品链路要用的入口（里程碑 2 起）。想知道「为什么没读到」用
-/// [`probe_around_cursor`]。
+/// This is the production entry point (from milestone 2 on). To learn why nothing was read,
+/// use [`probe_around_cursor`].
 pub async fn read_around_cursor(budget_chars: usize) -> Option<DocumentWindow> {
     probe_around_cursor(budget_chars).await.window
 }
 
-/// 带诊断信息的读取。debug 命令用它，装机验证时靠 `status` / `reason` 判断各 app
-/// 的真实覆盖情况。
-pub async fn probe_around_cursor(budget_chars: usize) -> HostDocumentReadResult {
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub(crate) async fn read_around_cursor_for_target(
+    budget_chars: usize,
+    target: crate::selection::SelectionInsertionTarget,
+) -> Option<DocumentWindow> {
+    #[cfg(target_os = "windows")]
+    {
+        return windows_probe(budget_chars.min(MAX_BUDGET_CHARS), Some(target))
+            .await
+            .window;
+    }
     #[cfg(target_os = "macos")]
     {
-        macos_probe(budget_chars).await
+        macos_probe(budget_chars.min(MAX_BUDGET_CHARS), Some(target))
+            .await
+            .window
     }
-    #[cfg(not(target_os = "macos"))]
+}
+
+/// Read with diagnostics. Used by the debug command; during installation verification
+/// `status` / `reason` show the real per-app coverage.
+pub async fn probe_around_cursor(budget_chars: usize) -> HostDocumentReadResult {
+    let budget_chars = budget_chars.min(MAX_BUDGET_CHARS);
+    #[cfg(target_os = "macos")]
+    {
+        macos_probe(budget_chars, None).await
+    }
+    #[cfg(target_os = "windows")]
+    {
+        windows_probe(budget_chars, None).await
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = budget_chars;
         HostDocumentReadResult::new(
             HostDocumentStatus::Unsupported,
-            Some("cursor context is macOS-only for now".to_string()),
+            Some("cursor context is unsupported on this platform".to_string()),
         )
     }
 }
 
 #[cfg(target_os = "macos")]
-async fn macos_probe(budget_chars: usize) -> HostDocumentReadResult {
+async fn macos_probe(
+    budget_chars: usize,
+    target: Option<crate::selection::SelectionInsertionTarget>,
+) -> HostDocumentReadResult {
     let started = std::time::Instant::now();
-    let (app_name, bundle_id) = crate::selection::current_front_app_parts();
+    let (app_name, bundle_id) = match target.as_ref() {
+        Some(target) => (
+            crate::selection::front_app_for_target(target),
+            crate::selection::bundle_id_for_target(target),
+        ),
+        None => crate::selection::current_front_app_parts(),
+    };
 
     let finish = |mut result: HostDocumentReadResult| {
         result.app_name = app_name.clone();
@@ -295,7 +398,7 @@ async fn macos_probe(budget_chars: usize) -> HostDocumentReadResult {
         result
     };
 
-    // 第一道闸门：不需要 AX 的部分先判掉，命中就一条 AX 消息都不发。
+    // First gate: decide the AX-free checks first; on a hit, not a single AX message is sent.
     let gate = GateInputs {
         secure_input: crate::unicode_keystroke::is_secure_input_enabled(),
         bundle_id: bundle_id.clone(),
@@ -306,9 +409,10 @@ async fn macos_probe(budget_chars: usize) -> HostDocumentReadResult {
         return finish(blocked_result(reason));
     }
 
-    // AX 是同步阻塞 API：必须离开 tokio worker，否则一个卡死的 app 会拖住整个运行时。
-    let handle =
-        tokio::task::spawn_blocking(move || macos::read_around_cursor_blocking(budget_chars, gate));
+    // AX is a synchronous blocking API: it must leave the tokio worker, or one hung app stalls the whole runtime.
+    let handle = tokio::task::spawn_blocking(move || {
+        macos::read_around_cursor_blocking(budget_chars, gate, target)
+    });
 
     match tokio::time::timeout(READ_TIMEOUT, handle).await {
         Ok(Ok(ReadOutcome::Window(window))) => finish(HostDocumentReadResult {
@@ -333,29 +437,88 @@ async fn macos_probe(budget_chars: usize) -> HostDocumentReadResult {
 
 #[cfg(target_os = "macos")]
 fn blocked_result(reason: BlockReason) -> HostDocumentReadResult {
-    HostDocumentReadResult::new(HostDocumentStatus::Blocked, Some(reason.as_str().to_string()))
+    HostDocumentReadResult::new(
+        HostDocumentStatus::Blocked,
+        Some(reason.as_str().to_string()),
+    )
+}
+
+/// Windows counterpart of [`macos_probe`]. UIA is a synchronous COM API, so the real read runs
+/// on `spawn_blocking`; the gate itself (password field, process blocklist) lives in
+/// `windows::read_around_cursor_blocking` because it needs the live focused element, unlike
+/// macOS where the bundle-id-only pre-check can run before leaving the async worker.
+#[cfg(target_os = "windows")]
+async fn windows_probe(
+    budget_chars: usize,
+    target: Option<crate::selection::SelectionInsertionTarget>,
+) -> HostDocumentReadResult {
+    let started = std::time::Instant::now();
+    let app_name = target
+        .as_ref()
+        .and_then(crate::selection::front_app_for_target)
+        .or_else(crate::selection::current_front_app);
+
+    let finish = |mut result: HostDocumentReadResult| {
+        result.app_name = app_name.clone();
+        result.elapsed_ms = started.elapsed().as_millis() as u64;
+        result
+    };
+
+    let handle = tokio::task::spawn_blocking(move || {
+        windows::read_around_cursor_blocking(budget_chars, target)
+    });
+
+    match tokio::time::timeout(WINDOWS_READ_TIMEOUT, handle).await {
+        Ok(Ok(ReadOutcome::Window(window))) => finish(HostDocumentReadResult {
+            window: Some(window),
+            ..HostDocumentReadResult::new(HostDocumentStatus::Ok, None)
+        }),
+        Ok(Ok(ReadOutcome::Blocked(reason))) => finish(HostDocumentReadResult::new(
+            HostDocumentStatus::Blocked,
+            Some(reason.as_str().to_string()),
+        )),
+        Ok(Ok(ReadOutcome::Unavailable(reason))) => finish(HostDocumentReadResult::new(
+            HostDocumentStatus::Unavailable,
+            Some(reason.to_string()),
+        )),
+        Ok(Err(join_error)) => finish(HostDocumentReadResult::new(
+            HostDocumentStatus::Unavailable,
+            Some(format!("blocking task failed: {join_error}")),
+        )),
+        Err(_) => finish(HostDocumentReadResult::new(
+            HostDocumentStatus::Timeout,
+            Some(format!(
+                "no response within {}ms",
+                WINDOWS_READ_TIMEOUT.as_millis()
+            )),
+        )),
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 手改监听
+// Edit watcher
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// 已武装的手改监听。**drop 即解除** —— 让「忘了解除」在类型层面不成立。
+/// An armed edit watch. **Drop disarms** — makes "forgot to disarm" unrepresentable at the type level.
 ///
-/// 观察器泄漏不只是资源问题：它意味着我们持续持有别的 app 的 AX 引用、持续被那个 app
-/// 的每次击键唤醒。所以除了这里的 RAII，观察线程自己还有 60 秒硬超时和「前台 app 一换
-/// 就自杀」两道保险。
+/// An observer leak isn't just a resource issue: it means we keep holding another app's AX
+/// references and keep being woken by each of its keystrokes. Besides the RAII here, the
+/// observer thread itself has two more safeguards: a 60s hard timeout and self-termination
+/// when the foreground app changes.
 pub struct EditWatcher {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(target_os = "android")]
+    generation: u64,
 }
 
 impl EditWatcher {
-    /// 主动解除。幂等，drop 时会自动调用。
+    /// Disarm explicitly. Idempotent; also called automatically on drop.
     pub fn disarm(&self) {
-        #[cfg(target_os = "macos")]
-        self.stop
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(target_os = "android")]
+        crate::android::edit_observation::disarm(self.generation);
     }
 }
 
@@ -365,29 +528,44 @@ impl Drop for EditWatcher {
     }
 }
 
-/// 武装「用户改了我们刚插入的文本」的监听。
+/// Arm a watch for the user modifying the text we just inserted.
 ///
-/// `typed_text` 必须是**用户实际看到落到屏幕上的那段文字**：流式路径下它是真正打出去的
-/// 内容，可能短于完整的 LLM 输出（中途失败、被取消）。拿完整输出当基线会让所有没打完的
-/// 会话都被判成「用户删掉了一大段」。
+/// `typed_text` must be **the text the user actually saw land on screen**: on the streaming
+/// path that is what was really typed out, possibly shorter than the full LLM output (mid-stream
+/// failure, cancellation). Using the full output as the baseline would classify every unfinished
+/// session as "the user deleted a big chunk".
 ///
-/// `on_edit` 在观察线程上被调用，可能多次。任何失败都返回 `None` —— 学不到东西是可以
-/// 接受的，影响落字不行。
-pub fn watch_for_edits<F>(typed_text: String, on_edit: F) -> Option<EditWatcher>
+/// `on_edit` is called on the observer thread, possibly multiple times. Returns `None` on any
+/// failure — failing to learn is acceptable; breaking typing is not.
+pub fn watch_for_edits<F>(
+    typed_text: String,
+    lifetime: std::time::Duration,
+    on_edit: F,
+) -> Option<EditWatcher>
 where
-    F: Fn(EditPair) + Send + Sync + 'static,
+    F: Fn(EditPair) -> bool + Send + Sync + 'static,
 {
     #[cfg(target_os = "macos")]
     {
         if typed_text.trim().is_empty() {
             return None;
         }
-        let stop = macos::spawn_edit_watcher(typed_text, Box::new(on_edit))?;
+        let stop = macos::spawn_edit_watcher(typed_text, lifetime, Box::new(on_edit))?;
         Some(EditWatcher { stop })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        let _ = (typed_text, on_edit);
+        windows::spawn_edit_watcher(typed_text, lifetime, Box::new(on_edit))
+            .map(|stop| EditWatcher { stop })
+    }
+    #[cfg(target_os = "android")]
+    {
+        crate::android::edit_observation::arm(typed_text, lifetime, Box::new(on_edit))
+            .map(|generation| EditWatcher { generation })
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "android")))]
+    {
+        let _ = (typed_text, lifetime, on_edit);
         None
     }
 }
@@ -396,14 +574,15 @@ where
 mod tests {
     use super::*;
 
-    /// 丢掉 `EditWatcher` 必须真的把观察线程停掉。
+    /// Dropping `EditWatcher` must actually stop the observer thread.
     ///
-    /// 停止链路横跨两个文件，读单个文件看不全，实际被误读过：`spawn_edit_watcher`
-    /// 只是把 flag 交出来，谁都没置位它 —— 置位的是这里的 `Drop`。解除的调用点也不是
-    /// 显式的 `disarm()`，而是 `*slot = None`（`arm_edit_watch` / `begin_session_as`）。
+    /// The stop chain spans two files and has been misread before: `spawn_edit_watcher` only
+    /// hands out the flag and nobody sets it — the `Drop` here does. The disarm site isn't an
+    /// explicit `disarm()` call either but `*slot = None` (`arm_edit_watch` / `begin_session_as`).
     ///
-    /// 这条链一旦断了，症状是**静默的**：观察器活到 60 秒硬超时才停，期间继续读用户
-    /// 正在写的文档、继续上报，还会和新武装的那个并行跑。所以钉一个测试在这里。
+    /// If this chain breaks the symptom is silent: the observer lives until the 60s hard
+    /// timeout, keeps reading the user's document and reporting, and runs in parallel with the
+    /// newly armed one. Hence this pinning test.
     #[cfg(target_os = "macos")]
     #[test]
     fn dropping_the_watcher_stops_the_observer_thread() {
@@ -433,6 +612,26 @@ mod tests {
     }
 
     #[test]
+    fn failed_native_write_restores_selection_before_retry() {
+        let caret = std::cell::Cell::new((3, 3));
+        for result in [Err("clipboard unavailable".to_string()), Ok(())] {
+            let original = caret.get();
+            let outcome = write_with_selection_recovery(
+                || {
+                    caret.set((0, 6));
+                    result.clone()
+                },
+                || caret.set(original),
+            );
+            assert_eq!(outcome, result);
+            assert_eq!(
+                caret.get(),
+                if outcome.is_err() { original } else { (0, 6) }
+            );
+        }
+    }
+
+    #[test]
     fn ordinary_editor_passes_the_gate() {
         assert_eq!(
             evaluate_gate(&gate(
@@ -456,15 +655,19 @@ mod tests {
     #[test]
     fn secure_text_field_role_blocks() {
         assert_eq!(
-            evaluate_gate(&gate(Some("com.apple.Safari"), Some("AXSecureTextField"), None)),
+            evaluate_gate(&gate(
+                Some("com.apple.Safari"),
+                Some("AXSecureTextField"),
+                None
+            )),
             Some(BlockReason::SecureTextField)
         );
     }
 
     #[test]
     fn secure_text_field_subrole_blocks() {
-        // Safari / Chrome 的密码框常常 role=AXTextField、subrole=AXSecureTextField，
-        // 只看 role 会漏。
+        // Safari / Chrome password fields often have role=AXTextField, subrole=AXSecureTextField;
+        // checking role alone misses them.
         assert_eq!(
             evaluate_gate(&gate(
                 Some("com.google.Chrome"),
@@ -517,7 +720,7 @@ mod tests {
 
     #[test]
     fn bundle_match_is_case_insensitive_and_prefix_based() {
-        // NSWorkspace 返回的大小写不保证和清单一致；helper 进程会在后面缀东西。
+        // NSWorkspace's casing isn't guaranteed to match the list; helper processes append suffixes.
         assert_eq!(
             evaluate_gate(&gate(Some("COM.APPLE.TERMINAL"), None, None)),
             Some(BlockReason::BlockedApp)
@@ -530,7 +733,7 @@ mod tests {
 
     #[test]
     fn a_bundle_that_merely_contains_a_blocked_name_is_not_blocked() {
-        // 前缀匹配而非子串匹配：别人的 app 名里带 "terminal" 不该被误伤。
+        // Prefix match, not substring match: another app whose name contains "terminal" must not be hit.
         assert_eq!(
             evaluate_gate(&gate(Some("com.example.terminalnotes"), None, None)),
             None
@@ -539,8 +742,9 @@ mod tests {
 
     #[test]
     fn missing_metadata_does_not_block_by_itself() {
-        // 读不到 bundle / role（AX 权限没给、非 macOS）时不能当成「安全」也不能当成
-        // 「危险」——闸门只负责已知的危险信号，读不到文档自然会走 Unavailable。
+        // Missing bundle / role (AX permission not granted, non-macOS) must count neither as safe
+        // nor as dangerous — the gate only handles known danger signals; unreadable documents
+        // naturally end up as Unavailable.
         assert_eq!(evaluate_gate(&GateInputs::default()), None);
     }
 
@@ -565,10 +769,20 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(not(target_os = "macos"))]
-    async fn non_macos_reports_unsupported_without_touching_anything() {
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    async fn non_macos_non_windows_reports_unsupported_without_touching_anything() {
         let result = probe_around_cursor(DEFAULT_BUDGET_CHARS).await;
         assert_eq!(result.status, HostDocumentStatus::Unsupported);
         assert!(result.window.is_none());
+    }
+
+    /// On a CI/build machine with no focused editable control, Windows UIA should degrade to
+    /// `Unavailable` or `Blocked`, never panic or hang past the outer timeout — this is the
+    /// same contract `debug_read_cursor_context` relies on for install verification.
+    #[tokio::test]
+    #[cfg(target_os = "windows")]
+    async fn windows_probe_never_reports_unsupported() {
+        let result = probe_around_cursor(DEFAULT_BUDGET_CHARS).await;
+        assert_ne!(result.status, HostDocumentStatus::Unsupported);
     }
 }

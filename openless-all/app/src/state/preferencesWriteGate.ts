@@ -1,50 +1,86 @@
-export interface IncomingPreference<T> {
-  value: T;
-  wasPending: boolean;
-  isOwnWrite: boolean;
+export interface PreferenceSnapshot<T> {
+  preferences: T;
+  revision: number;
+}
+export type PreferenceEdits = Record<string, unknown>;
+
+export function preferenceEdits(previous: unknown, next: unknown, path = ''): PreferenceEdits {
+  if (JSON.stringify(previous) === JSON.stringify(next)) return {};
+  if (
+    previous &&
+    next &&
+    typeof previous === 'object' &&
+    typeof next === 'object' &&
+    !Array.isArray(previous) &&
+    !Array.isArray(next)
+  ) {
+    const before = previous as Record<string, unknown>,
+      after = next as Record<string, unknown>;
+    return Object.assign(
+      {},
+      ...[...new Set([...Object.keys(before), ...Object.keys(after)])].map((key) =>
+        preferenceEdits(
+          before[key],
+          after[key],
+          `${path}/${key.replace(/~/g, '~0').replace(/\//g, '~1')}`,
+        ),
+      ),
+    );
+  }
+  return { [path]: next ?? null };
 }
 
-/** Correlates preference broadcasts with writes initiated by this webview. */
-export class PreferencesWriteGate<T = unknown> {
-  private readonly pendingWrites = new Map<number, T>();
-  private readonly recentWrites: T[] = [];
-  private nextWriteId = 0;
+function applyEdits<T>(value: T, edits: PreferenceEdits): T {
+  const result = structuredClone(value);
+  for (const [path, value] of Object.entries(edits)) {
+    const keys = path
+      .slice(1)
+      .split('/')
+      .map((key) => key.replace(/~1/g, '/').replace(/~0/g, '~'));
+    let target = result as Record<string, unknown>;
+    let compatible = true;
+    for (const key of keys.slice(0, -1)) {
+      const child = target[key];
+      if (!child || typeof child !== 'object' || Array.isArray(child)) {
+        compatible = false;
+        break;
+      }
+      target = child as Record<string, unknown>;
+    }
+    // A concurrent removal of an optional object wins until the backend rejects this stale edit.
+    if (compatible) target[keys[keys.length - 1]] = structuredClone(value);
+  }
+  return result;
+}
 
-  constructor(
-    private readonly equals: (left: T, right: T) => boolean = Object.is,
-  ) {}
+/** Backend revisions order snapshots; pending edits belong to individual requests. */
+export class PreferencesWriteGate<T> {
+  private saved: PreferenceSnapshot<T> | null = null;
+  private nextId = 0;
+  private pending = new Map<number, PreferenceEdits>();
 
-  beginWrite(value: T): (canonical?: T) => boolean {
-    const writeId = this.nextWriteId++;
-    this.pendingWrites.set(writeId, value);
-    let finished = false;
-    return (canonical) => {
-      if (finished) return false;
-      finished = true;
-      this.pendingWrites.delete(writeId);
-      this.remember(value);
-      if (canonical !== undefined) this.remember(canonical);
-      return this.pendingWrites.size === 0;
-    };
+  receiveIncoming(snapshot: PreferenceSnapshot<T>): T {
+    if (!this.saved || snapshot.revision >= this.saved.revision) this.saved = snapshot;
+    return this.current();
   }
 
-  shouldApplyIncoming(): boolean {
-    return this.pendingWrites.size === 0;
+  beginWrite(previous: T, next: T) {
+    const id = ++this.nextId;
+    const edits = preferenceEdits(previous, next);
+    this.pending.set(id, edits);
+    return { id, edits };
   }
 
-  receiveIncoming(value: T): IncomingPreference<T> {
-    const wasPending = this.pendingWrites.size > 0;
-    const isOwnWrite = [
-      ...this.pendingWrites.values(),
-      ...this.recentWrites,
-    ].some(expected => this.equals(expected, value));
-    return { value, wasPending, isOwnWrite };
+  finishWrite(id: number, snapshot?: PreferenceSnapshot<T>): T {
+    if (snapshot) this.receiveIncoming(snapshot);
+    this.pending.delete(id);
+    return this.current();
   }
 
-  private remember(value: T) {
-    const previousIndex = this.recentWrites.findIndex(item => this.equals(item, value));
-    if (previousIndex >= 0) this.recentWrites.splice(previousIndex, 1);
-    this.recentWrites.push(value);
-    if (this.recentWrites.length > 16) this.recentWrites.shift();
+  current(): T {
+    if (!this.saved) throw new Error('preferences not loaded');
+    let value = this.saved.preferences;
+    for (const edits of this.pending.values()) value = applyEdits(value, edits);
+    return value;
   }
 }

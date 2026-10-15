@@ -1,5 +1,4 @@
-// 隐私 → 数据存储：本地保留的历史会话与对话上下文窗口。
-// 自 Settings.tsx 的 RecordingSection「历史与上下文」折叠组拆出，逻辑零改动。
+// Retention, cleanup, and storage settings for history and context data.
 
 import { useTranslation } from 'react-i18next';
 import { detectOS } from '../../components/WindowChrome';
@@ -7,7 +6,8 @@ import { useHotkeySettings } from '../../state/HotkeySettingsContext';
 import { Card } from '../_atoms';
 import { SettingRow, SectionTitle, Toggle, inputStyle } from './shared';
 
-// 范围限制：retention 0-365 天，context window 0-60 分钟（再大对实际对话场景没意义且白烧 token）。
+// Range limits: retention 0-365 days, context window 0-60 minutes (larger values are meaningless
+// for real conversation scenarios and just burn tokens).
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 
 export function DataStorageSection() {
@@ -22,7 +22,7 @@ export function DataStorageSection() {
     );
   }
 
-  // 空字符串时回滚到默认值。
+  // Empty string rolls back to the default.
   const onHistoryRetentionChange = (raw: string) => {
     const parsed = raw === '' ? 0 : Number.parseInt(raw, 10);
     if (Number.isNaN(parsed)) return;
@@ -33,8 +33,16 @@ export function DataStorageSection() {
     if (Number.isNaN(parsed)) return;
     void savePrefs({ ...prefs, polishContextWindowMinutes: clamp(parsed, 0, 60) });
   };
-  // 历史条数 200 是当前 HISTORY_CAP（persistence.rs:32），下限 5 是避免用户填 0 导致
-  // 写一条就立刻被清光；空字符串视为不限制，落回 null → 后端走 200 默认。
+  // Issue #1032: 0 = off. Empty string rolls back to off. Upper bound 50 characters keeps the
+  // skip limited to short fragments; longer dictations still get polished.
+  const onPolishSkipMaxCharsChange = (raw: string) => {
+    const parsed = raw === '' ? 0 : Number.parseInt(raw, 10);
+    if (Number.isNaN(parsed)) return;
+    void savePrefs({ ...prefs, polishSkipMaxChars: clamp(parsed, 0, 50) });
+  };
+  // History cap 200 is the current HISTORY_CAP (persistence.rs:32); the lower bound of 5 keeps a
+  // user-entered 0 from wiping everything as soon as one entry is written; empty string means
+  // unlimited, falling back to null → the backend applies its 200 default.
   const onHistoryMaxEntriesChange = (raw: string) => {
     const trimmed = raw.trim();
     if (trimmed === '') {
@@ -55,7 +63,7 @@ export function DataStorageSection() {
           min={0}
           max={365}
           value={prefs.historyRetentionDays}
-          onChange={e => onHistoryRetentionChange(e.target.value)}
+          onChange={(e) => onHistoryRetentionChange(e.target.value)}
           style={{ ...inputStyle, width: 80, textAlign: 'right' }}
         />
       </SettingRow>
@@ -66,7 +74,7 @@ export function DataStorageSection() {
           max={200}
           placeholder="200"
           value={prefs.historyMaxEntries ?? ''}
-          onChange={e => onHistoryMaxEntriesChange(e.target.value)}
+          onChange={(e) => onHistoryMaxEntriesChange(e.target.value)}
           style={{ ...inputStyle, width: 80, textAlign: 'right' }}
         />
       </SettingRow>
@@ -76,21 +84,34 @@ export function DataStorageSection() {
           min={0}
           max={60}
           value={prefs.polishContextWindowMinutes}
-          onChange={e => onPolishContextWindowChange(e.target.value)}
+          onChange={(e) => onPolishContextWindowChange(e.target.value)}
           style={{ ...inputStyle, width: 80, textAlign: 'right' }}
         />
       </SettingRow>
-      {/* 光标上下文。放在「隐私」而不是「润色」下是有意的：这个开关真正的代价不是
-          token，而是「把别的 app 里的文字发给 LLM 服务商」。只在 macOS 显示——
-          其余平台没有实现，摆一个拨不动结果的开关只会误导。 */}
-      {detectOS() === 'mac' && (
+      <SettingRow
+        label={t('settings.recording.polishSkipMaxCharsLabel')}
+        desc={t('settings.recording.polishSkipMaxCharsDesc')}
+      >
+        <input
+          type="number"
+          min={0}
+          max={50}
+          value={prefs.polishSkipMaxChars}
+          onChange={(e) => onPolishSkipMaxCharsChange(e.target.value)}
+          style={{ ...inputStyle, width: 80, textAlign: 'right' }}
+        />
+      </SettingRow>
+      {/* Cursor context. Placing it under "Privacy" rather than "Polish" is deliberate: this
+          toggle's real cost is not tokens but "sending text from other apps to the LLM provider".
+          Shown on macOS, Windows and Android — Linux has no implementation. */}
+      {(detectOS() === 'mac' || detectOS() === 'win' || detectOS() === 'android') && (
         <SettingRow
           label={t('settings.dataStorage.cursorContextLabel')}
           desc={t('settings.dataStorage.cursorContextDesc')}
         >
           <Toggle
             on={prefs.cursorContextEnabled}
-            onToggle={next => void savePrefs({ ...prefs, cursorContextEnabled: next })}
+            onToggle={(next) => void savePrefs({ ...prefs, cursorContextEnabled: next })}
           />
         </SettingRow>
       )}

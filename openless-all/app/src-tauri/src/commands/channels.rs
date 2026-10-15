@@ -1,140 +1,139 @@
-//! 渠道卡片管理的 IPC 面。
+//! IPC surface for channel card management.
 //!
-//! 一张卡片 = 一份可命名、可排序、可开关的供应商配置。同一家厂商可以有多张卡片
-//! （多把 key），此时渠道 id 与 `providerType` 分离 —— 前者是 map key，后者决定
-//! 协议路由。详见 `persistence::credentials` 里 `ChannelMeta` 的说明。
+//! One card = one nameable, reorderable, toggleable provider configuration. A
+//! single vendor can have multiple cards (multiple keys); the channel id and
+//! `providerType` are then separate — the former is the map key, the latter
+//! decides protocol routing. See the `ChannelMeta` docs in
+//! `persistence::credentials`.
 //!
-//! 凭据本身不走这里：前端按渠道 id 调 `read_credential` / `set_credential`
-//! （`provider` 参数传渠道 id），避免密钥随列表批量出栈。
+//! Credentials themselves do not flow through here: the frontend calls
+//! `read_credential` / `set_credential` per channel id (passing the channel id
+//! as the `provider` argument), keeping secrets out of bulk list responses.
 
 use super::*;
-use crate::persistence::{ChannelKind, ChannelSummary};
+use openless_core::{ChannelKind, ChannelSummary};
 
 fn parse_kind(kind: &str) -> Result<ChannelKind, String> {
     ChannelKind::parse(kind).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn list_channels(window: Window, kind: String) -> Result<Vec<ChannelSummary>, String> {
+pub async fn list_channels(
+    core: CoreState<'_>,
+    window: Window,
+    kind: String,
+) -> Result<Vec<ChannelSummary>, String> {
     ensure_main_window(&window)?;
-    let kind = parse_kind(&kind)?;
-    tauri::async_runtime::spawn_blocking(move || CredentialsVault::list_channels(kind))
+    core.list_channels(parse_kind(&kind)?)
         .await
-        .map_err(|e| format!("channel list worker failed: {e}"))
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub async fn create_channel(
+    core: CoreState<'_>,
     window: Window,
     kind: String,
     provider_type: String,
     name: String,
 ) -> Result<String, String> {
     ensure_main_window(&window)?;
-    let kind = parse_kind(&kind)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        CredentialsVault::create_channel(kind, &provider_type, &name).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("channel create worker failed: {e}"))?
+    core.create_channel(parse_kind(&kind)?, provider_type, name)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub async fn set_channel_provider_type(
+    core: CoreState<'_>,
     window: Window,
     kind: String,
     id: String,
     provider_type: String,
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
-    let kind = parse_kind(&kind)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        CredentialsVault::set_channel_provider_type(kind, &id, &provider_type)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("channel provider type worker failed: {e}"))?
+    core.set_channel_provider_type(parse_kind(&kind)?, id, provider_type)
+        .await
+        .map_err(|error| error.to_string())
 }
 
-/// 关闭「添加渠道」弹窗时回收没填任何内容的草稿卡片；返回是否真的删了。
+/// Reclaims a draft card left completely blank when the "add channel" dialog
+/// closes; returns whether it was actually deleted.
 #[tauri::command]
 pub async fn delete_channel_if_blank(
+    core: CoreState<'_>,
     window: Window,
     kind: String,
     id: String,
 ) -> Result<bool, String> {
     ensure_main_window(&window)?;
-    let kind = parse_kind(&kind)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        CredentialsVault::delete_channel_if_blank(kind, &id).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("channel cleanup worker failed: {e}"))?
+    core.delete_channel_if_blank(parse_kind(&kind)?, id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub async fn rename_channel(
+    core: CoreState<'_>,
     window: Window,
     kind: String,
     id: String,
     name: String,
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
-    let kind = parse_kind(&kind)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        CredentialsVault::rename_channel(kind, &id, &name).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("channel rename worker failed: {e}"))?
+    core.rename_channel(parse_kind(&kind)?, id, name)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub async fn delete_channel(window: Window, kind: String, id: String) -> Result<(), String> {
+pub async fn delete_channel(
+    core: CoreState<'_>,
+    window: Window,
+    kind: String,
+    id: String,
+) -> Result<(), String> {
     ensure_main_window(&window)?;
-    let kind = parse_kind(&kind)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        CredentialsVault::delete_channel(kind, &id).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("channel delete worker failed: {e}"))?
+    core.delete_channel(parse_kind(&kind)?, id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub async fn set_channel_enabled(
+    core: CoreState<'_>,
     window: Window,
     kind: String,
     id: String,
     enabled: bool,
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
-    let kind = parse_kind(&kind)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        CredentialsVault::set_channel_enabled(kind, &id, enabled).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("channel toggle worker failed: {e}"))?
+    core.set_channel_enabled(parse_kind(&kind)?, id, enabled)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub async fn reorder_channels(
+    core: CoreState<'_>,
     window: Window,
     kind: String,
     ids: Vec<String>,
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
-    let kind = parse_kind(&kind)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        CredentialsVault::reorder_channels(kind, &ids).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("channel reorder worker failed: {e}"))?
+    core.reorder_channels(parse_kind(&kind)?, ids)
+        .await
+        .map_err(|error| error.to_string())
 }
 
-/// 记录一次「测试连通」的结果，供卡片显示延迟或标红。
+/// Records one "test connection" result for the card to show latency or mark
+/// failure.
 ///
-/// 时间戳在后端取，不信任前端传入 —— 前端时钟错乱会让"3 分钟前"显示成负数。
+/// The timestamp is taken in the backend, never trusted from the frontend — a
+/// skewed frontend clock would render "3 minutes ago" as negative.
 #[tauri::command]
 pub async fn record_channel_test(
+    core: CoreState<'_>,
     window: Window,
     kind: String,
     id: String,
@@ -143,15 +142,7 @@ pub async fn record_channel_test(
     error: Option<String>,
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
-    let kind = parse_kind(&kind)?;
-    let at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    tauri::async_runtime::spawn_blocking(move || {
-        CredentialsVault::record_channel_test(kind, &id, ok, latency_ms, at, error)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("channel test record worker failed: {e}"))?
+    core.record_channel_test(parse_kind(&kind)?, id, ok, latency_ms, error)
+        .await
+        .map_err(|error| error.to_string())
 }

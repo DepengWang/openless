@@ -1,10 +1,16 @@
-// 高级 → Beta 渠道。Toggle 控制后台 AutoUpdateGate 跟随 stable/beta；
-// 「检查 Beta 更新」按钮始终可用，与 Toggle 状态无关。
-// 关于页的「检查正式版更新」固定查 stable，两者互不影响。
+// Advanced → Beta channel. The Toggle controls whether the background AutoUpdateGate
+// follows stable/beta; the "check for Beta updates" button always works regardless of the
+// Toggle state. The About page's "check for stable updates" always checks stable — the two
+// don't interfere with each other.
 
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getPlatformCapabilities, getUpdateChannel, setUpdateChannel, type UpdateChannel } from '../../lib/ipc';
+import {
+  getPlatformCapabilities,
+  getUpdateChannel,
+  setUpdateChannel,
+  type UpdateChannel,
+} from '../../lib/ipc';
 import type { PlatformCapabilities } from '../../lib/types';
 import { Card } from '../_atoms';
 import { SectionTitle, SettingRow, Toggle } from './shared';
@@ -13,6 +19,7 @@ import { CheckUpdateButton } from './CheckUpdateButton';
 export function BetaChannelSection() {
   const { t } = useTranslation();
   const [channel, setChannel] = useState<UpdateChannel>('stable');
+  const [autoCheckChannel, setAutoCheckChannel] = useState<UpdateChannel | null>(null);
   const [platformCaps, setPlatformCaps] = useState<PlatformCapabilities | null>(null);
 
   useEffect(() => {
@@ -22,9 +29,15 @@ export function BetaChannelSection() {
   useEffect(() => {
     let cancelled = false;
     void getUpdateChannel()
-      .then(c => { if (!cancelled) setChannel(c); })
-      .catch(() => { /* fall back to stable already in initial state */ });
-    return () => { cancelled = true; };
+      .then((c) => {
+        if (!cancelled) setChannel(c);
+      })
+      .catch(() => {
+        /* fall back to stable already in initial state */
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const onToggle = async (next: boolean) => {
@@ -34,7 +47,9 @@ export function BetaChannelSection() {
       await setUpdateChannel(target);
     } catch {
       setChannel(target === 'beta' ? 'stable' : 'beta');
+      return;
     }
+    setAutoCheckChannel(target);
   };
 
   if (platformCaps?.supportsAutoUpdate !== true) return null;
@@ -49,7 +64,7 @@ export function BetaChannelSection() {
         <Toggle on={channel === 'beta'} onToggle={onToggle} />
       </SettingRow>
       <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: 4 }}>
-        <CheckUpdateButton channel="beta" />
+        <CheckUpdateButton channel="beta" autoCheckChannel={autoCheckChannel} />
       </div>
     </Card>
   );

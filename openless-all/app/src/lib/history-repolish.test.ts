@@ -24,6 +24,7 @@ function pack(
     kind,
     baseMode,
     selectionPrompt: '',
+    voiceEditPrompt: '',
     prompt: '',
     examples: [],
     tags: [],
@@ -45,59 +46,64 @@ const modeLabel: Record<PolishMode, string> = {
   formal: 'Formal',
 };
 
-// 原风格包存在（启用）→ 返回该 id。
+// Original pack exists (enabled) → returns that id.
 assert(
   resolveRepolishRetryPackId({ stylePackId: 'custom-alive' }, allPacks) === 'custom-alive',
   'retry should use the original pack id when the pack still exists',
 );
 
-// 原风格包已被禁用 → 仍返回该 id（历史可能出自后来被禁用的包，只要包还在就能重试）。
+// Original pack is disabled → still returns that id (history may come from a since-disabled pack; retry works while the pack exists).
 assert(
   resolveRepolishRetryPackId({ stylePackId: 'custom-disabled' }, allPacks) === 'custom-disabled',
   'retry should use the original pack id even when the pack is disabled',
 );
 
-// 内置包同样按原 id 重试。
+// Builtin packs retry by their original id too.
 assert(
-  resolveRepolishRetryPackId({ stylePackId: 'builtin.structured' }, allPacks) === 'builtin.structured',
+  resolveRepolishRetryPackId({ stylePackId: 'builtin.structured' }, allPacks) ===
+    'builtin.structured',
   'retry should use the builtin pack id as-is',
 );
 
-// 包已被删除 → 回落（undefined，调用方走当前激活包）。
+// Pack was deleted → fall back (undefined; caller uses the currently active pack).
 assert(
   resolveRepolishRetryPackId({ stylePackId: 'deleted-pack' }, allPacks) === undefined,
   'retry should fall back when the original pack was deleted',
 );
 
-// 旧历史没有 stylePackId → 回落。
+// Older history has no stylePackId → fall back.
 assert(
   resolveRepolishRetryPackId({ stylePackId: null }, allPacks) === undefined,
   'retry should fall back when the record has no stylePackId',
 );
 
-// 顶层包列表尚未加载（null）→ 回落。
+// Pack list not yet loaded (null) → fall back.
 assert(
   resolveRepolishRetryPackId({ stylePackId: 'custom-alive' }, null) === undefined,
   'retry should fall back while style packs are still loading',
 );
 
-// 内置包显示名走 i18n mode 名，自定义包用原名。
+// Builtin pack display name uses the i18n mode label; custom packs keep their own name.
 assert(
-  packDisplayName(pack('builtin.light', true, 'builtin', 'light'), modeLabel) === 'Light polish',
+  packDisplayName(
+    { ...pack('builtin.light', true, 'builtin', 'light'), name: '轻度润色' },
+    modeLabel,
+  ) === 'Light polish',
   'builtin packs should display the i18n mode label',
+);
+assert(
+  packDisplayName(pack('builtin.light', true, 'builtin', 'light'), modeLabel) ===
+    '包 builtin.light',
+  'user-renamed builtin packs retain their chosen name',
 );
 assert(
   packDisplayName(pack('custom-alive', true), modeLabel) === '包 custom-alive',
   'custom packs should display their own name',
 );
 
-// 下拉默认：当前激活包优先，其次第一个包，空列表为 ''。
+// Dropdown default: prefer the active pack, then the first pack, empty list yields ''.
 assert(
-  defaultPackId([
-    pack('a', true),
-    { ...pack('b', true), active: true },
-    pack('c', true),
-  ]) === 'b',
+  defaultPackId([pack('a', true), { ...pack('b', true), active: true }, pack('c', true)]) === 'b',
   'default should prefer the active pack',
 );
 assert(
@@ -106,27 +112,32 @@ assert(
 );
 assert(defaultPackId([]) === '', 'default should be empty for an empty list');
 
-// 重试回落：原包删除/未加载时显式落到当前激活包（其次第一个），列表全不可用才不传。
+// Retry fallback: when the original pack was deleted / not loaded, explicitly fall to the currently active
+// pack (then the first one); pass nothing only when the whole list is unusable.
 const enabledPacks: StylePack[] = [
   { ...pack('active-pack', true), active: true },
   pack('idle-pack', true),
 ];
 assert(
-  resolveRepolishRetryPackIdWithFallback({ stylePackId: 'custom-alive' }, allPacks, enabledPacks)
-    === 'custom-alive',
+  resolveRepolishRetryPackIdWithFallback(
+    { stylePackId: 'custom-alive' },
+    allPacks,
+    enabledPacks,
+  ) === 'custom-alive',
   'retry-with-fallback should keep the original pack when it still exists',
 );
 assert(
-  resolveRepolishRetryPackIdWithFallback({ stylePackId: 'deleted-pack' }, allPacks, enabledPacks)
-    === 'active-pack',
+  resolveRepolishRetryPackIdWithFallback(
+    { stylePackId: 'deleted-pack' },
+    allPacks,
+    enabledPacks,
+  ) === 'active-pack',
   'retry-with-fallback should use the active pack when the original was deleted',
 );
 assert(
-  resolveRepolishRetryPackIdWithFallback(
-    { stylePackId: null },
-    allPacks,
-    [pack('only-pack', true)],
-  ) === 'only-pack',
+  resolveRepolishRetryPackIdWithFallback({ stylePackId: null }, allPacks, [
+    pack('only-pack', true),
+  ]) === 'only-pack',
   'retry-with-fallback should use the first enabled pack when none is active',
 );
 assert(

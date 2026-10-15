@@ -1,7 +1,8 @@
-// 远程输入：在局域网用手机/平板浏览器打开一个录音页，语音实时流回电脑，复用
-// 电脑现有的「录音→ASR→润色→光标落字」管线。放在「通用」标签页里，做成可折叠组
-// （与「启动」一致，默认折叠）：启停开关、监听端口、访问网址（可一键复制，带配对码）、
-// 配对码（可重置）、默认录音方式，以及证书/安全提示。
+// Remote input: on the LAN, a phone/tablet browser opens a recording page and streams voice
+// back to the PC in real time, reusing the existing "record -> ASR -> polish -> insert at
+// cursor" pipeline. Lives in the "General" tab as a collapsible group (like "Launch", collapsed
+// by default): start/stop switch, listening port, access URLs (one-click copy, with pairing
+// code), pairing code (resettable), default recording mode, and certificate/security notes.
 
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -15,13 +16,14 @@ import {
   isTauri,
   type RemoteInputStatus,
 } from '../../lib/ipc';
+import { getRemoteInputViewState } from './remoteInputViewState';
 
 async function copyText(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
     return;
   } catch {
-    // 退路：隐藏 textarea + execCommand，兼容个别不支持 async clipboard 的环境。
+    // Fallback: hidden textarea + execCommand, for environments without async clipboard support.
     const ta = document.createElement('textarea');
     ta.value = text;
     ta.style.position = 'fixed';
@@ -43,7 +45,8 @@ export function RemoteInputSection() {
   const [status, setStatus] = useState<RemoteInputStatus | null>(null);
   const [startError, setStartError] = useState<{ reason: string; port: number } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
-  // 端口编辑草稿：失焦/回车时才解析提交，避免逐键持久化导致后端服务在中间值端口反复重启。
+  // Port edit draft: parsed and committed on blur/Enter only, so per-keystroke persistence does
+  // not restart the backend service repeatedly on intermediate port values.
   const [portDraft, setPortDraft] = useState<string | null>(null);
 
   useEffect(() => {
@@ -52,36 +55,47 @@ export function RemoteInputSection() {
       getRemoteInputStatus()
         .then((s) => alive && setStatus(s))
         .catch(() => {});
-    refresh();
-    // 进设置页时把当前界面语言同步给远程服务，确保 H5 录音页语言与 PC 一致。
-    void setRemoteLocale(i18n.language).catch(() => {});
-    if (!isTauri) return;
     const unsubs: Array<() => void> = [];
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen('remote-input:running', () => {
-        if (!alive) return;
-        setStartError(null);
-        refresh();
-      }).then((u) => {
-        // 异步注册完成时组件可能已卸载，立即退订避免监听器泄漏。
-        if (!alive) {
-          u();
-        } else {
-          unsubs.push(u);
+    const registerAndRefresh = async () => {
+      try {
+        // Register events before querying the snapshot, so a startup event is not missed by
+        // arriving before the first query completes.
+        if (isTauri) {
+          const { listen } = await import('@tauri-apps/api/event');
+          if (!alive) return;
+          const runningUnsubscribe = await listen('remote-input:running', () => {
+            if (!alive) return;
+            setStartError(null);
+            refresh();
+          });
+          // The component may have unmounted while async registration completed; unsubscribe
+          // immediately to avoid a listener leak.
+          if (!alive) {
+            runningUnsubscribe();
+            return;
+          }
+          unsubs.push(runningUnsubscribe);
+
+          const errorUnsubscribe = await listen('remote-input:error', (e) => {
+            if (!alive) return;
+            const p = e.payload as { reason?: string; port?: number } | null;
+            setStartError({ reason: p?.reason ?? '', port: p?.port ?? 0 });
+            refresh();
+          });
+          if (!alive) {
+            errorUnsubscribe();
+            return;
+          }
+          unsubs.push(errorUnsubscribe);
         }
-      });
-      listen('remote-input:error', (e) => {
-        if (!alive) return;
-        const p = e.payload as { reason?: string; port?: number } | null;
-        setStartError({ reason: p?.reason ?? '', port: p?.port ?? 0 });
-      }).then((u) => {
-        if (!alive) {
-          u();
-        } else {
-          unsubs.push(u);
-        }
-      });
-    });
+      } finally {
+        if (alive) refresh();
+      }
+    };
+    void registerAndRefresh().catch(() => {});
+    // Sync the current UI language to the remote service when entering settings, keeping the H5
+    // recording page language consistent with the PC.
+    void setRemoteLocale(i18n.language).catch(() => {});
     return () => {
       alive = false;
       unsubs.forEach((u) => u());
@@ -91,8 +105,17 @@ export function RemoteInputSection() {
   if (!prefs) return null;
   const enabled = prefs.remoteInputEnabled;
   const mode = prefs.remoteInputDefaultMode ?? 'toggle';
+  const viewState = getRemoteInputViewState(enabled, status, startError);
+  // Only a full fingerprint returned by the local listener qualifies for phone verification.
+  const fingerprint = status?.caFingerprintSha256;
+  const canVerifyCertificate =
+    typeof fingerprint === 'string' && /^[a-f0-9]{64}$/i.test(fingerprint);
+  const formattedFingerprint = canVerifyCertificate
+    ? fingerprint.toUpperCase().match(/.{2}/g)!.join(' ')
+    : '';
 
-  // 提交端口草稿：非法（非有限数/越界离谱）则丢弃还原显示，合法则取整并 clamp 到 [1024, 65535]。
+  // Commit the port draft: invalid (non-finite / wildly out of range) discards and restores the
+  // display; valid rounds and clamps into [1024, 65535].
   const commitPort = () => {
     if (portDraft == null) return;
     const n = Math.round(Number(portDraft));
@@ -130,10 +153,7 @@ export function RemoteInputSection() {
         label={t('settings.remoteInput.enableLabel')}
         desc={t('settings.remoteInput.enableDesc')}
       >
-        <Toggle
-          on={enabled}
-          onToggle={(v) => updatePrefs({ ...prefs, remoteInputEnabled: v })}
-        />
+        <Toggle on={enabled} onToggle={(v) => updatePrefs({ ...prefs, remoteInputEnabled: v })} />
       </SettingRow>
 
       <SettingRow label={t('settings.remoteInput.portLabel')}>
@@ -156,17 +176,14 @@ export function RemoteInputSection() {
           {(['toggle', 'hold'] as const).map((m) => (
             <button
               key={m}
-              onClick={() =>
-                updatePrefs({ ...prefs, remoteInputDefaultMode: m })
-              }
+              onClick={() => updatePrefs({ ...prefs, remoteInputDefaultMode: m })}
               style={{
                 padding: '5px 12px',
                 borderRadius: 8,
                 fontSize: 12.5,
                 cursor: 'pointer',
                 border: '0.5px solid var(--ol-line-strong)',
-                background:
-                  mode === m ? 'var(--ol-blue)' : 'var(--ol-surface-2)',
+                background: mode === m ? 'var(--ol-blue)' : 'var(--ol-surface-2)',
                 color: mode === m ? '#fff' : 'var(--ol-ink)',
               }}
             >
@@ -180,59 +197,124 @@ export function RemoteInputSection() {
         </div>
       </SettingRow>
 
-      {enabled && status?.running && (
+      {enabled && (viewState === 'running' || viewState === 'stale') && status && (
         <>
-          <SettingRow label={t('settings.remoteInput.urlLabel')}>
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 6,
-                minWidth: 0,
-              }}
-            >
-              {(status.urls.length
-                ? status.urls
-                : [`https://localhost:${status.port}`]
-              ).map((u) => (
-                <div
-                  key={u}
-                  style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-                >
-                  <span
+          <SettingRow label={t('settings.remoteInput.certFingerprintLabel')}>
+            <div style={{ minWidth: 0, width: '100%' }}>
+              {canVerifyCertificate ? (
+                <>
+                  <code
+                    aria-label={t('settings.remoteInput.certFingerprintLabel')}
                     style={{
-                      fontFamily: 'monospace',
-                      fontSize: 12.5,
-                      color: 'var(--ol-ink-2)',
-                      wordBreak: 'break-all',
+                      display: 'block',
+                      fontSize: 12,
+                      lineHeight: 1.8,
+                      overflowWrap: 'anywhere',
+                      userSelect: 'text',
                     }}
                   >
-                    {u}
-                  </span>
+                    {formattedFingerprint}
+                  </code>
                   <button
-                    onClick={() => doCopy(u, status.pin)}
-                    title={t('settings.remoteInput.urlLabel')}
-                    style={smallBtn}
+                    type="button"
+                    onClick={async () => {
+                      await copyText(formattedFingerprint);
+                      setCopied('ca-fingerprint');
+                      window.setTimeout(
+                        () => setCopied((c) => (c === 'ca-fingerprint' ? null : c)),
+                        1500,
+                      );
+                    }}
+                    style={{ ...smallBtn, marginTop: 6 }}
                   >
-                    {copied === u ? '✓' : '⧉'}
+                    {copied === 'ca-fingerprint'
+                      ? t('settings.remoteInput.certFingerprintCopied')
+                      : t('settings.remoteInput.certFingerprintCopy')}
                   </button>
-                </div>
-              ))}
+                </>
+              ) : (
+                <p role="alert" style={{ color: 'var(--ol-red)', margin: 0 }}>
+                  {t('settings.remoteInput.certFingerprintUnavailable')}
+                </p>
+              )}
+              <p style={{ fontSize: 12, lineHeight: 1.6, margin: '8px 0 0' }}>
+                {t('settings.remoteInput.certVerifyHint')}
+              </p>
+              <p style={{ fontSize: 12, lineHeight: 1.6, margin: '6px 0 0' }}>
+                {t('settings.remoteInput.certProfileHint')}
+              </p>
             </div>
           </SettingRow>
+          {status.urls.length > 0 && (
+            <SettingRow label={t('settings.remoteInput.urlLabel')}>
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6,
+                  minWidth: 0,
+                }}
+              >
+                {status.urls.map((u) => (
+                  <div
+                    key={u}
+                    style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}
+                  >
+                    <span
+                      style={{
+                        fontFamily: 'monospace',
+                        fontSize: 12.5,
+                        color: 'var(--ol-ink-2)',
+                        wordBreak: 'break-all',
+                      }}
+                    >
+                      {u}
+                    </span>
+                    <button
+                      onClick={() => doCopy(u, status.pin)}
+                      title={t('settings.remoteInput.urlLabel')}
+                      style={smallBtn}
+                    >
+                      {copied === u ? '✓' : '⧉'}
+                    </button>
+                    <button
+                      disabled={!canVerifyCertificate}
+                      onClick={async () => {
+                        const link = `${u}/cert.mobileconfig`;
+                        await copyText(link);
+                        setCopied(link);
+                        window.setTimeout(() => setCopied((c) => (c === link ? null : c)), 1500);
+                      }}
+                      style={smallBtn}
+                    >
+                      {copied === `${u}/cert.mobileconfig`
+                        ? '✓'
+                        : t('settings.remoteInput.certSetupLink')}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </SettingRow>
+          )}
 
           <SettingRow label={t('settings.remoteInput.pinLabel')}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <code
-                style={{ fontSize: 15, letterSpacing: 2, fontWeight: 600 }}
+                style={{
+                  fontSize: 15,
+                  letterSpacing: 2,
+                  fontWeight: 'var(--ol-font-weight-semibold)',
+                }}
               >
                 {status.pin}
               </code>
               <button
                 onClick={async () => {
                   try {
-                    // 直接用命令返回的新 PIN 更新本地状态；后端会异步重启服务，
-                    // 此时查询状态可能拿到 running:false 导致闪烁，刷新交给 remote-input:running 事件。
+                    // Update local state directly from the command's returned new PIN; the
+                    // backend restarts the service asynchronously, and querying status then may
+                    // return running:false causing a flicker — refresh is left to the
+                    // remote-input:running event.
                     const pin = await regenerateRemotePin();
                     setStatus((s) => (s ? { ...s, pin } : s));
                   } catch (e) {
@@ -245,7 +327,27 @@ export function RemoteInputSection() {
               </button>
             </div>
           </SettingRow>
+          {viewState === 'stale' && (
+            <div style={{ fontSize: 12, color: 'var(--ol-ink-3)', marginTop: 8 }}>
+              {t('settings.remoteInput.urlsStale')}
+            </div>
+          )}
         </>
+      )}
+
+      {enabled && viewState === 'starting' && (
+        <div style={{ fontSize: 12, color: 'var(--ol-ink-3)', marginTop: 8 }}>
+          {t('settings.remoteInput.starting')}
+        </div>
+      )}
+
+      {enabled && viewState === 'waiting' && (
+        <div style={{ fontSize: 12, color: 'var(--ol-ink-3)', marginTop: 8 }}>
+          {t(
+            'settings.remoteInput.waitingStart',
+            '服务尚未启动。请关闭开关再打开一次，不要重启软件。',
+          )}
+        </div>
       )}
 
       {enabled && startError != null && (

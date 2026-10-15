@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OpenLess",
-  "version": "1.3.18",
+  "version": "2.0.0+build.20261016",
   "identifier": "com.openless.app",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run check:macos-metal-toolchain && npm run build",
+    "beforeBuildCommand": "npm run build",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
@@ -16,8 +16,8 @@
       {
         "label": "main",
         "title": "OpenLess",
-        "width": 1240,
-        "height": 800,
+        "width": 1300,
+        "height": 835,
         "minWidth": 980,
         "minHeight": 640,
         "resizable": true,
@@ -26,7 +26,7 @@
         "shadow": true,
         "hiddenTitle": true,
         "titleBarStyle": "Overlay",
-        "trafficLightPosition": { "x": 14, "y": 20 },
+        "trafficLightPosition": { "x": 16, "y": 26 },
         "visible": false,
         "acceptFirstMouse": true
       },

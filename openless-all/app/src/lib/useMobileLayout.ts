@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { detectOS } from '../components/WindowChrome';
 
-function shouldUseMobileLayout(breakpoint: number): boolean {
+export function shouldUseMobileLayout(breakpoint = 720): boolean {
   if (typeof window === 'undefined') return false;
   const osQuery = new URLSearchParams(window.location.search).get('os');
   return osQuery === 'android' || detectOS() === 'android' || window.innerWidth < breakpoint;
@@ -22,4 +22,18 @@ export function useMobileLayout(breakpoint = 720): boolean {
   }, [breakpoint]);
 
   return mobile;
+}
+
+/** Legacy row consumers remain responsive, but retired layout preferences are ignored. */
+export function useReadableLayout(): boolean {
+  return false;
+}
+
+/** Narrow screens stack controls automatically. */
+export function useLayoutStack(breakpoint = 720): boolean {
+  return useMobileLayout(breakpoint);
+}
+
+export function useConservativeLayout(): boolean {
+  return false;
 }

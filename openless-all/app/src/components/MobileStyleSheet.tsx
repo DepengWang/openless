@@ -1,4 +1,6 @@
-import type { CSSProperties } from 'react';
+import { useRef, type CSSProperties } from 'react';
+import { useExitMount } from '../lib/useExitMount';
+import { useOverlayMotion } from '../lib/motion';
 import { useTranslation } from 'react-i18next';
 import { Icon } from './Icon';
 import { subItemLabelKey } from '../lib/navLabels';
@@ -23,24 +25,33 @@ export function MobileStyleSheet({
   onSelectTab,
 }: MobileStyleSheetProps) {
   const { t } = useTranslation();
-  if (!open) return null;
+  const { mounted, closing } = useExitMount(open);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  useOverlayMotion(overlayRef, closing, 'backdrop', mounted);
+  useOverlayMotion(cardRef, closing, 'sheet', mounted);
+  if (!mounted) return null;
 
   return (
     <div
-      onClick={onClose}
+      ref={overlayRef}
+      onClick={closing ? undefined : onClose}
       style={{
-        position: 'absolute',
+        position: 'fixed',
         inset: 0,
         zIndex: 60,
         background: 'rgba(15,17,22,0.32)',
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'flex-end',
-        animation: 'ol-mobile-sheet-backdrop 0.2s var(--ol-motion-soft)',
+        pointerEvents: closing ? 'none' : undefined,
       }}
     >
       <div
-        onClick={e => e.stopPropagation()}
+        ref={cardRef}
+        role="dialog"
+        aria-label={t('nav.group.style')}
+        onClick={(e) => e.stopPropagation()}
         style={{
           background: 'var(--ol-surface)',
           borderTopLeftRadius: 16,
@@ -48,11 +59,25 @@ export function MobileStyleSheet({
           border: '0.5px solid var(--ol-line)',
           padding: '12px 12px calc(12px + env(safe-area-inset-bottom, 0px))',
           boxShadow: '0 -8px 32px -8px rgba(15,17,22,0.18)',
-          animation: 'ol-mobile-sheet-up 0.26s var(--ol-motion-spring)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px 12px' }}>
-          <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--ol-ink)' }}>{t('nav.group.style')}</span>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '4px 8px 12px',
+          }}
+        >
+          <span
+            style={{
+              fontSize: 14,
+              fontWeight: 'var(--ol-font-weight-semibold)',
+              color: 'var(--ol-ink)',
+            }}
+          >
+            {t('nav.group.style')}
+          </span>
           <button
             type="button"
             onClick={onClose}
@@ -63,7 +88,7 @@ export function MobileStyleSheet({
           </button>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {STYLE_TABS.map(item => {
+          {STYLE_TABS.map((item) => {
             const active = currentTab === item.id;
             return (
               <button
@@ -77,7 +102,8 @@ export function MobileStyleSheet({
                 style={rowBtnStyle}
               >
                 <Icon name={item.icon} size={16} />
-                <span style={{ flex: 1 }}>{t(subItemLabelKey(item.id))}</span>
+                <span style={rowLabelStyle}>{t(subItemLabelKey(item.id))}</span>
+                <Icon name="chevRight" size={13} />
               </button>
             );
           })}
@@ -102,6 +128,10 @@ const iconBtnStyle: CSSProperties = {
 
 const rowBtnStyle: CSSProperties = {
   display: 'flex',
+  width: '100%',
+  boxSizing: 'border-box',
+  minWidth: 0,
+  flexWrap: 'nowrap',
   alignItems: 'center',
   gap: 12,
   padding: '12px 14px',
@@ -112,4 +142,12 @@ const rowBtnStyle: CSSProperties = {
   fontSize: 14,
   cursor: 'default',
   textAlign: 'left',
+};
+
+const rowLabelStyle: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
 };

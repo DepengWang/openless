@@ -1,5 +1,13 @@
 #!/usr/bin/env node
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -11,15 +19,18 @@ const kotlinAndroidTestRoot = join(kotlinRoot, 'androidTest');
 const manifestsRoot = join(appRoot, 'android/manifests');
 const androidIconRoot = join(appRoot, 'src-tauri/icons/android');
 const aidlRoot = join(appRoot, 'android/aidl');
+const androidAssetsRoot = join(appRoot, 'android/assets');
 const androidAppRoot = join(appRoot, 'src-tauri/gen/android/app');
 const genRoot = join(appRoot, 'src-tauri/gen/android/app/src/main');
 const kotlinDest = join(genRoot, 'java/com/openless/app');
+const mainActivityPath = join(kotlinDest, 'MainActivity.kt');
 const kotlinTestDest = join(androidAppRoot, 'src/test/java/com/openless/app');
 const kotlinAndroidTestDest = join(androidAppRoot, 'src/androidTest/java/com/openless/app');
 const androidAppGradle = join(androidAppRoot, 'build.gradle.kts');
 const resDest = join(genRoot, 'res');
 const resXmlDest = join(genRoot, 'res/xml');
 const aidlDest = join(genRoot, 'aidl');
+const assetsDest = join(genRoot, 'assets');
 
 const KOTLIN_FILES = [
   'OpenLessAppContext.kt',
@@ -33,6 +44,7 @@ const KOTLIN_FILES = [
   'OpenLessOverlayService.kt',
   'OpenLessOverlayBridge.kt',
   'OpenLessAccessibilityService.kt',
+  'OpenLessAccessibilitySelection.kt',
   'OpenLessAccessibilityResult.kt',
   'OpenLessAccessibilityTarget.kt',
   'OpenLessPasteVerification.kt',
@@ -42,25 +54,59 @@ const KOTLIN_FILES = [
   'OpenLessShizukuUserServiceClient.kt',
   'ShizukuPermissionActivity.kt',
   'OpenLessAccessibilityCommandReceiver.kt',
+  'OpenLessVocabularyReceiver.kt',
   'OverlayPermissionActivity.kt',
   'OpenLessUpdateInstaller.kt',
   'OpenLessContentReader.kt',
   'OpenLessContentWriter.kt',
+  'OpenLessImeService.kt',
+  'PendingEditReplacement.kt',
+  'ImeLearningPolicy.kt',
+  'DictationSpan.kt',
+  'ImePrivacyPolicy.kt',
+  'StrokeInputController.kt',
+  'StrokeInput.kt',
+  'LitePinyinController.kt',
+  'LitePinyinRepository.kt',
+  'LitePinyinUserFrequency.kt',
+  'LitePinyinLearnedPhrases.kt',
+  'OpenLessSettingsExport.kt',
+  'StrokePhraseRepository.kt',
+  'StrokeUserFrequency.kt',
+  'EnglishCandidateProvider.kt',
+  'EnglishUserFrequency.kt',
+  'OpenLessRuntimeService.kt',
+  'OpenLessBackendWarmupActivity.kt',
+  'OpenLessClipboardHistory.kt',
+  'OpenLessKeyboardSettingsActivity.kt',
+  'OpenLessProcessRestartStats.kt',
+  'OpenLessBuildInfo.kt',
 ];
 
 const KOTLIN_TEST_FILES = [
+  'ImeLearningPolicyTest.kt',
+  'PendingEditReplacementTest.kt',
+  'DictationSpanTest.kt',
+  'ImePrivacyPolicyTest.kt',
+  'LatinInputModeTest.kt',
   'OpenLessContentReaderTest.kt',
   'OpenLessCredentialCipherTest.kt',
   'OpenLessShizukuBridgeTest.kt',
   'OpenLessAccessibilityResultTest.kt',
+  'OpenLessAccessibilitySelectionTest.kt',
+  'OpenLessOverlayStateTest.kt',
   'OpenLessAccessibilityTargetTest.kt',
   'OpenLessPasteVerificationTest.kt',
   'OpenLessAccessibilityComponentIdsTest.kt',
 ];
-const KOTLIN_ANDROID_TEST_FILES = ['OpenLessCredentialVaultInstrumentedTest.kt'];
+const KOTLIN_ANDROID_TEST_FILES = [
+  'OpenLessCredentialVaultInstrumentedTest.kt',
+  'ImeLearningMigrationTest.kt',
+];
 
 const XML_FILES = [
   ['res/xml/openless_accessibility_config.xml', 'openless_accessibility_config.xml'],
+  ['res/xml/openless_ime_method.xml', 'openless_ime_method.xml'],
 ];
 
 const GENERATED_ACCESSIBILITY_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
@@ -76,6 +122,7 @@ const GENERATED_ACCESSIBILITY_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
 
 const GENERATED_STRINGS_SNIPPET = `
     <string name="openless_accessibility_description">OpenLess uses accessibility to detect the keyboard and paste dictation results without switching your current keyboard.</string>
+    <string name="openless_ime_label">OpenLess Voice</string>
 `;
 
 export const SHIZUKU_STRINGS_BY_LOCALE = {
@@ -134,10 +181,7 @@ export function mergeMissingStringResources(xml, stringsByName) {
     if (!content.includes('</resources>')) {
       throw new Error('strings.xml is missing </resources>');
     }
-    content = content.replace(
-      '</resources>',
-      `${formatStringResource(name, value)}\n</resources>`,
-    );
+    content = content.replace('</resources>', `${formatStringResource(name, value)}\n</resources>`);
     changed = true;
   }
   return { content, changed };
@@ -199,10 +243,15 @@ function mergeStringsXml(dryRun) {
     console.log(`Created ${stringsPath}`);
   } else {
     let existing = readFileSync(stringsPath, 'utf8');
-    if (!existing.includes('openless_accessibility_description')) {
-      existing = existing.replace('</resources>', `${GENERATED_STRINGS_SNIPPET}\n</resources>`);
-    }
-    const merged = mergeMissingStringResources(existing, SHIZUKU_STRINGS_BY_LOCALE.values);
+    const generatedStrings = mergeMissingStringResources(existing, {
+      openless_accessibility_description:
+        'OpenLess uses accessibility to detect the keyboard and paste dictation results without switching your current keyboard.',
+      openless_ime_label: 'OpenLess Voice',
+    });
+    const merged = mergeMissingStringResources(
+      generatedStrings.content,
+      SHIZUKU_STRINGS_BY_LOCALE.values,
+    );
     if (!dryRun) {
       writeFileSync(stringsPath, merged.content, 'utf8');
       console.log(`Merged OpenLess strings into ${stringsPath}`);
@@ -314,6 +363,22 @@ function ensureInstrumentationRunner(dryRun) {
   console.log(`Added Android instrumentation runner to ${androidAppGradle}`);
 }
 
+function ensureMainActivityOpen(dryRun) {
+  if (!existsSync(mainActivityPath)) return;
+  const existing = readFileSync(mainActivityPath, 'utf8');
+  const updated = existing.replace(
+    /(?:open\s+)*class MainActivity\s*:/,
+    'open class MainActivity:',
+  );
+  if (updated === existing) return;
+  if (dryRun) {
+    console.log(`[dry-run] Would make MainActivity inheritable for background warmup`);
+    return;
+  }
+  writeFileSync(mainActivityPath, updated, 'utf8');
+  console.log(`Made MainActivity inheritable for background warmup`);
+}
+
 function main() {
   const { dryRun } = parseArgs(process.argv.slice(2));
 
@@ -331,22 +396,19 @@ function main() {
     copyDirectoryContents(aidlRoot, aidlDest, dryRun);
   }
   copyDirectoryContents(androidIconRoot, resDest, dryRun);
+  if (existsSync(androidAssetsRoot)) {
+    copyDirectoryContents(androidAssetsRoot, assetsDest, dryRun);
+  }
   copyNamedFiles(KOTLIN_FILES, kotlinRoot, kotlinDest, dryRun);
+  ensureMainActivityOpen(dryRun);
   copyNamedFiles(KOTLIN_TEST_FILES, kotlinTestRoot, kotlinTestDest, dryRun);
-  copyNamedFiles(
-    KOTLIN_ANDROID_TEST_FILES,
-    kotlinAndroidTestRoot,
-    kotlinAndroidTestDest,
-    dryRun,
-  );
+  copyNamedFiles(KOTLIN_ANDROID_TEST_FILES, kotlinAndroidTestRoot, kotlinAndroidTestDest, dryRun);
   ensureInstrumentationRunner(dryRun);
 
   for (const [relSrc, destName] of XML_FILES) {
     const src = join(manifestsRoot, relSrc);
     const dest = join(resXmlDest, destName);
-    const content = existsSync(src)
-      ? readFileSync(src, 'utf8')
-      : GENERATED_ACCESSIBILITY_CONFIG;
+    const content = existsSync(src) ? readFileSync(src, 'utf8') : GENERATED_ACCESSIBILITY_CONFIG;
     if (dryRun) {
       console.log(`[dry-run] Would write ${dest}`);
       continue;

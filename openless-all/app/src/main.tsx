@@ -1,47 +1,77 @@
-import React from "react";
-import ReactDOM from "react-dom/client";
-import { App } from "./App";
-import { detectOS } from "./components/WindowChrome";
-import i18n from "./i18n"; // 副作用：触发 i18next init
-import { initThemeMode } from "./lib/themeMode";
-import "./styles/tokens.css";
-import "./styles/global.css";
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { App } from './App';
+import { TooltipProvider } from './components/Tooltip';
+import { afterPaint, markStartup } from './lib/startupMetrics';
+import { initInteractionMode } from './lib/interactionMode';
+import { applyFontScale, readFontScale } from './lib/fontScale';
+import { initTypography } from './lib/typography';
+import { CoreStartupScreen } from './components/CoreStartupScreen';
+import { detectOS } from './components/WindowChrome';
+import { i18nReady } from './i18n';
+import { initThemeMode } from './lib/themeMode';
+import { installEncryptedSyncUiBridge } from './lib/encryptedSyncUiBridge';
+import './styles/tokens.css';
+import './styles/global.css';
+import './styles/overlays.css';
+import './styles/refinements.css';
 
-import type { OS } from "./components/WindowChrome";
+import type { OS } from './components/WindowChrome';
 
 const params = new URLSearchParams(window.location.search);
-const windowKind = params.get("window");
-const isCapsule = windowKind === "capsule";
-const isQa = windowKind === "qa";
-const isSelectionPolishPreview = windowKind === "selection-polish-preview";
-const isLessComputer = windowKind === "less-computer";
-const isLessComputerGlow = windowKind === "less-computer-glow";
-const osQuery = params.get("os") as OS | null;
+const windowKind = params.get('window');
+const isCapsule = windowKind === 'capsule';
+const isCapsuleRail = windowKind === 'capsule-rail';
+const isQa = windowKind === 'qa';
+const isSelectionVoiceIntent = windowKind === 'selection-voice-intent';
+const isVoiceEdit = windowKind === 'voice-edit';
+const isLessComputer = windowKind === 'less-computer';
+const isLessComputerGlow = windowKind === 'less-computer-glow';
+// Auxiliary windows share the bundle but never run main-window startup work.
+const isMainWindow = !windowKind;
+const osQuery = params.get('os') as OS | null;
 const os = osQuery ?? detectOS();
 document.documentElement.dataset.olPlatform = os;
 initThemeMode();
+initInteractionMode();
+initTypography();
+if (isMainWindow) applyFontScale(readFontScale());
+markStartup('frontend');
 
-const root = ReactDOM.createRoot(document.getElementById("root")!);
+const root = ReactDOM.createRoot(document.getElementById('root')!);
 
 const renderApp = () => {
   root.render(
     <React.StrictMode>
-      <App
-        isCapsule={isCapsule}
-        isQa={isQa}
-        isSelectionPolishPreview={isSelectionPolishPreview}
-        isLessComputer={isLessComputer}
-        isLessComputerGlow={isLessComputerGlow}
-        forcedOs={os}
-      />
+      <TooltipProvider>
+        <App
+          isCapsule={isCapsule}
+          isCapsuleRail={isCapsuleRail}
+          isQa={isQa}
+          isSelectionVoiceIntent={isSelectionVoiceIntent}
+          isVoiceEdit={isVoiceEdit}
+          isLessComputer={isLessComputer}
+          isLessComputerGlow={isLessComputerGlow}
+          forcedOs={os}
+        />
+      </TooltipProvider>
     </React.StrictMode>,
   );
 };
 
-// i18n 必须就绪后才能渲染：否则首次渲染拿到的 t() 返回 key 字面量。
-// react-i18next useSuspense=false 时不会自动等，只有事件触发后重渲染才能拿到译文。
-if (i18n.isInitialized) {
-  renderApp();
-} else {
-  i18n.on("initialized", renderApp);
-}
+// Mount only after the selected local language chunk is ready; avoid mixed-language startup.
+void i18nReady
+  .then(() => {
+    // Start listening before rendering, but don't hold the first frame behind Keychain I/O.
+    if (isMainWindow)
+      void installEncryptedSyncUiBridge()
+        .then(() => markStartup('sync'))
+        .catch(() => {});
+    renderApp();
+    afterPaint('react');
+  })
+  .catch((error: unknown) => {
+    root.render(
+      <CoreStartupScreen error={String(error)} compact={isCapsule || isLessComputerGlow} />,
+    );
+  });

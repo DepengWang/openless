@@ -25,11 +25,12 @@ BOOL APIENTRY DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
   return TRUE;
 }
 
-STDAPI DllCanUnloadNow() {
+__control_entrypoint(DllExport) STDAPI DllCanUnloadNow(void) {
   return (g_lock_count == 0 && g_object_count == 0) ? S_OK : S_FALSE;
 }
 
-STDAPI DllGetClassObject(REFCLSID clsid, REFIID iid, void** object) {
+_Check_return_ STDAPI DllGetClassObject(_In_ REFCLSID clsid, _In_ REFIID iid,
+                                        _Outptr_ LPVOID FAR *object) {
   if (object == nullptr) {
     return E_POINTER;
   }
@@ -39,7 +40,7 @@ STDAPI DllGetClassObject(REFCLSID clsid, REFIID iid, void** object) {
     return CLASS_E_CLASSNOTAVAILABLE;
   }
 
-  auto* factory = new (std::nothrow) OpenLessClassFactory();
+  auto *factory = new (std::nothrow) OpenLessClassFactory();
   if (factory == nullptr) {
     return E_OUTOFMEMORY;
   }
@@ -49,10 +50,6 @@ STDAPI DllGetClassObject(REFCLSID clsid, REFIID iid, void** object) {
   return hr;
 }
 
-STDAPI DllRegisterServer() {
-  return RegisterOpenLessTextService(g_module);
-}
+STDAPI DllRegisterServer() { return RegisterOpenLessTextService(g_module); }
 
-STDAPI DllUnregisterServer() {
-  return UnregisterOpenLessTextService();
-}
+STDAPI DllUnregisterServer() { return UnregisterOpenLessTextService(); }

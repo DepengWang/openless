@@ -1,15 +1,13 @@
-#![cfg_attr(target_os = "linux", allow(dead_code, unused_variables))]
 //! Local persistence: history JSON, user preferences JSON, vocab JSON, and
 //! platform-backed credentials vault.
 //!
 //! Storage roots:
 //! - macOS:   `~/Library/Application Support/OpenLess`
 //! - Windows: `%APPDATA%\OpenLess`
-//! - Linux:   `$XDG_DATA_HOME/OpenLess` or `~/.local/share/OpenLess`
 //! - Android: `{Context.getFilesDir()}/OpenLess` (never `/data/local/tmp`)
 //!
 //! Credential storage policy: provider credentials are stored in the OS
-//! credential vault (macOS Keychain, Windows Credential Manager, Linux keyring).
+//! credential vault (macOS Keychain, Windows Credential Manager).
 //! A legacy plaintext JSON file is read once as a migration source and removed
 //! after a successful vault write; new writes never persist plaintext secrets.
 //!
@@ -37,31 +35,30 @@ mod history;
 mod paths;
 mod preferences;
 mod style_pack;
-mod style_pack_archive;
 
 pub use activity::*;
 pub use correction::*;
 pub use credentials::*;
 pub use dictionary::*;
 pub use history::*;
+pub(crate) use openless_core::{
+    validate_style_pack_archive_bytes, STYLE_PACK_ARCHIVE_MAX_COMPRESSED_BYTES,
+};
 pub use paths::*;
 pub use preferences::*;
 pub use style_pack::*;
-pub(crate) use style_pack_archive::{
-    validate_style_pack_archive_bytes, STYLE_PACK_ARCHIVE_MAX_COMPRESSED_BYTES,
-};
 
 #[cfg(target_os = "android")]
 pub use android_storage::init_android_storage_roots;
-#[cfg(target_os = "android")]
-pub(crate) use android_storage::{android_log_dir, android_openless_log_candidates};
 #[cfg(any(target_os = "android", test))]
 use android_storage::is_memory_only_path;
+#[cfg(target_os = "android")]
+pub(crate) use android_storage::{android_log_dir, android_openless_log_candidates};
 
 const HISTORY_CAP: usize = 200;
 const PREFERENCES_FILE: &str = "preferences.json";
 
-fn data_dir() -> Result<PathBuf> {
+pub(crate) fn data_dir() -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var("HOME").context("HOME not set")?;

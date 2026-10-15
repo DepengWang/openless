@@ -1,20 +1,22 @@
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
-import { ChevronDown } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
+import { Icon } from './Icon';
+import { Popover } from '@base-ui/react/popover';
+import { Collapse } from './ui/Disclosure';
 import { useTranslation } from 'react-i18next';
-import { formatComboParts, modifiersFromPressedCodes } from '../lib/hotkey';
+import {
+  chordModifiersFromPressedCodes,
+  formatComboParts,
+  MODIFIER_CHORD_PRIMARY,
+  modifiersFromPressedCodes,
+} from '../lib/hotkey';
+import {
+  primaryFromKeyboardEvent,
+  formatShortcutSaveError,
+  shortcutFromMouseEvent,
+} from '../lib/hotkeyRecorder';
 import { KbdGroup } from './Kbd';
 import { setShortcutRecordingActive, validateShortcutBinding } from '../lib/ipc';
 import type { ShortcutBinding } from '../lib/types';
-
-/** 主行与「正在录入」面板切换时的水平滑动距离（px）。 */
-const SLIDE_DISTANCE = 48;
-/** 下拉菜单展开后的固定高度（px）：菜单按钮行高恒定，用固定值动画避免每次测量。 */
-const MENU_HEIGHT = 34;
-/** 滑动切换用 spring（与 Style.tsx 编辑抽屉同款）。只动 transform/opacity，不驱动布局，避免抽搐。 */
-const slideSpring = { type: 'spring' as const, damping: 26, stiffness: 280 };
-/** 下拉菜单展开/收起缓动，与 --ol-motion-soft 一致。 */
-const menuEase = [0.22, 0.8, 0.22, 1] as const;
 
 export function ShortcutRecorder({
   value,
@@ -28,49 +30,44 @@ export function ShortcutRecorder({
   resetLabel,
   comboOnly = false,
   sideSpecificModifiers = false,
+  allowMacDictationKey = false,
+  allowMouseButtons = false,
 }: {
   value: ShortcutBinding | null;
   onSave: (binding: ShortcutBinding) => Promise<void>;
   disabled?: boolean;
-  /** 提供则下拉菜单里的「停用」可点（问答/切风格等可停用快捷键）。 */
+  /** When provided, the menu's Disable is clickable (shortcuts that may be disabled, e.g. QA / style switch). */
   onDisable?: () => void | Promise<void>;
   disableLabel?: string;
-  /** 置灰「停用」（核心快捷键不可停用），配合 disableHint 展示原因。 */
+  /** Grays out Disable (core shortcuts can't be disabled); pair with disableHint for the reason. */
   disableDisabled?: boolean;
   disableHint?: string;
-  /** 提供则下拉菜单里渲染「重置」——恢复该快捷键的默认绑定。 */
+  /** When provided, renders Reset in the menu — restores the shortcut's default binding. */
   onReset?: () => void | Promise<void>;
   resetLabel?: string;
-  /** 仅允许组合键（修饰键+主键 / 功能键）；拒绝单修饰键，因为全局热键无法注册它。 */
+  /** Combos only (modifier+key / function key); reject lone modifiers since global hotkeys can't register them. */
   comboOnly?: boolean;
-  /** 听写 start/stop 专用：录制 cmd-left / ctrl-right 等侧向修饰键。 */
+  /** Dictation start/stop only: record side-specific modifiers like cmd-left / ctrl-right. */
   sideSpecificModifiers?: boolean;
+  /** macOS dictation only: choose the dedicated key as the single trigger. */
+  allowMacDictationKey?: boolean;
+  /** Windows dictation only; other shortcut consumers cannot install mouse hooks. */
+  allowMouseButtons?: boolean;
 }) {
   const { t } = useTranslation();
   const [recording, setRecording] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const nativeSelected = allowMacDictationKey && value?.primary === 'MacDictationKey';
+  const nativeError =
+    error &&
+    ['Permission', 'Busy', 'Unavailable', 'Changed'].find((kind) =>
+      error.includes(`macDictationKey${kind}`),
+    );
   const pendingModifier = useRef<ShortcutBinding | null>(null);
   const pendingTimer = useRef<number | null>(null);
   const pressedCodes = useRef<Set<string>>(new Set());
-  const rootRef = useRef<HTMLDivElement | null>(null);
-
-  // 菜单打开时：Esc 或点击菜单外部即收起，避免菜单"赖着不关"。
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onKeyDown = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') setMenuOpen(false);
-    };
-    const onPointerDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('mousedown', onPointerDown);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('mousedown', onPointerDown);
-    };
-  }, [menuOpen]);
+  const saving = useRef(false);
+  const recordingRef = useRef<HTMLDivElement>(null);
 
   const clearPressedCodes = () => {
     pressedCodes.current.clear();
@@ -89,17 +86,12 @@ export function ShortcutRecorder({
     clearPressedCodes();
   };
 
-  useEffect(() => () => {
-    resetRecordingState();
-    void setShortcutRecordingActive(false);
-  }, []);
-
-  useEffect(() => {
-    void setShortcutRecordingActive(recording);
-    return () => {
-      if (recording) void setShortcutRecordingActive(false);
-    };
-  }, [recording]);
+  useEffect(
+    () => () => {
+      resetRecordingState();
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!disabled || !recording) return;
@@ -108,27 +100,78 @@ export function ShortcutRecorder({
   }, [disabled, recording]);
 
   const finish = async (binding: ShortcutBinding) => {
+    if (saving.current) return;
+    saving.current = true;
     try {
       await validateShortcutBinding(binding);
       await onSave(binding);
       resetRecordingState();
       setRecording(false);
       setError(null);
-    } catch {
-      setError(t('settings.recording.comboConflict'));
+    } catch (reason) {
+      setError(formatShortcutSaveError(reason, t('settings.recording.shortcutSaveFailed')));
+    } finally {
+      saving.current = false;
     }
   };
 
-  /** 开始录入：同时收起菜单——「录制快捷键」按下后，重置/停用两个按钮随之消失。 */
+  // The browser doesn't deliver Fn keydown: subscribe to the Rust CGEventTap-forwarded
+  // event before activating backend recording, so a Fn pressed right as recording
+  // starts can't arrive before the listener is registered. Read finish via ref so the
+  // effect doesn't re-register on finish identity changes.
+  const finishRef = useRef(finish);
+  finishRef.current = finish;
+  useEffect(() => {
+    if (!recording) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const handle = await listen('fn-shortcut-pressed', () => {
+          if (cancelled) return;
+          void finishRef.current({ primary: 'Fn', modifiers: [] });
+        });
+        if (cancelled) handle();
+        else unlisten = handle;
+      } catch (error) {
+        console.warn('[shortcut] fn-shortcut-pressed listener failed', error);
+      }
+      if (cancelled) return;
+      try {
+        await setShortcutRecordingActive(true);
+        if (cancelled) await setShortcutRecordingActive(false);
+      } catch (error) {
+        console.warn('[shortcut] recording state sync failed', error);
+      }
+    })();
+    const onMouseDown = (e: MouseEvent) => {
+      if (cancelled || !allowMouseButtons) return;
+      const binding = shortcutFromMouseEvent(e);
+      if (!binding) return;
+      e.preventDefault();
+      e.stopPropagation();
+      clearPendingModifier();
+      void finishRef.current(binding);
+    };
+    window.addEventListener('mousedown', onMouseDown, true);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      window.removeEventListener('mousedown', onMouseDown, true);
+      void setShortcutRecordingActive(false);
+    };
+  }, [recording, allowMouseButtons]);
+
+  /** The displayed key is the single recording entry point. */
   const startRecording = () => {
     if (disabled || recording) return;
-    setMenuOpen(false);
     setError(null);
     resetRecordingState();
     setRecording(true);
   };
 
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+  const onKeyDown = (e: globalThis.KeyboardEvent) => {
     if (!recording || disabled) return;
     e.preventDefault();
     e.stopPropagation();
@@ -142,6 +185,20 @@ export function ShortcutRecorder({
       pressedCodes.current.add(e.code);
       if (comboOnly) {
         return;
+      }
+      if (sideSpecificModifiers) {
+        const modifiers = chordModifiersFromPressedCodes(pressedCodes.current);
+        if (modifiers.length >= 2) {
+          clearPendingModifier();
+          const binding = { primary: MODIFIER_CHORD_PRIMARY, modifiers };
+          pendingModifier.current = binding;
+          pendingTimer.current = window.setTimeout(() => {
+            if (pendingModifier.current === binding) {
+              void finish(binding);
+            }
+          }, 650);
+          return;
+        }
       }
       const primary = modifierPrimaryFromCode(e.code, e.key);
       if (!primary || pendingModifier.current?.primary === primary) return;
@@ -158,16 +215,25 @@ export function ShortcutRecorder({
     clearPendingModifier();
     const primary = primaryFromKeyboardEvent(e);
     if (primary) {
-      void finish({ primary, modifiers: modifiersFromPressedCodes(pressedCodes.current, sideSpecificModifiers) });
+      void finish({
+        primary,
+        modifiers: modifiersFromPressedCodes(pressedCodes.current, sideSpecificModifiers),
+      });
     }
   };
 
-  const onKeyUp = (e: KeyboardEvent<HTMLDivElement>) => {
+  const onKeyUp = (e: globalThis.KeyboardEvent) => {
     if (!recording || disabled || !isModifierKey(e.key)) return;
     e.preventDefault();
     e.stopPropagation();
     pressedCodes.current.delete(e.code);
     if (comboOnly) return;
+    if (pendingModifier.current?.primary === MODIFIER_CHORD_PRIMARY) {
+      const binding = pendingModifier.current;
+      clearPendingModifier();
+      void finish(binding);
+      return;
+    }
     const primary = modifierPrimaryFromCode(e.code, e.key);
     if (primary && pendingModifier.current?.primary === primary) {
       const binding = pendingModifier.current;
@@ -176,19 +242,42 @@ export function ShortcutRecorder({
     }
   };
 
-  const doReset = () => {
-    setMenuOpen(false);
+  const keyHandlers = useRef({ down: onKeyDown, up: onKeyUp });
+  keyHandlers.current = { down: onKeyDown, up: onKeyUp };
+  useLayoutEffect(() => {
+    if (!recording || disabled) return;
+    // Shortcut capture cannot depend on focus arriving after a portaled popup
+    // opens (or reopens during its exit). Own keys before any surrounding UI.
+    const down = (event: globalThis.KeyboardEvent) => keyHandlers.current.down(event);
+    const up = (event: globalThis.KeyboardEvent) => keyHandlers.current.up(event);
+    window.addEventListener('keydown', down, true);
+    window.addEventListener('keyup', up, true);
+    return () => {
+      window.removeEventListener('keydown', down, true);
+      window.removeEventListener('keyup', up, true);
+    };
+  }, [recording, disabled]);
+
+  const doReset = async () => {
     setError(null);
-    if (onReset) void onReset();
+    try {
+      await onReset?.();
+    } catch (reason) {
+      setError(formatShortcutSaveError(reason, t('settings.recording.shortcutSaveFailed')));
+    }
   };
 
-  const doDisable = () => {
-    setMenuOpen(false);
+  const doDisable = async () => {
     setError(null);
-    if (onDisable) void onDisable();
+    try {
+      await onDisable?.();
+    } catch (reason) {
+      setError(formatShortcutSaveError(reason, t('settings.recording.shortcutSaveFailed')));
+    }
   };
 
-  // 「停用」可点：有 onDisable 且未被置灰（录音快捷键置灰，核心热键不可停用）。
+  // Disable is clickable: onDisable exists and it isn't grayed out (the dictation
+  // shortcut is grayed; core hotkeys can't be disabled).
   const canDisable = Boolean(onDisable) && !disableDisabled;
 
   const rootStyle: CSSProperties = {
@@ -196,6 +285,10 @@ export function ShortcutRecorder({
     flexDirection: 'column',
     gap: 6,
     width: '100%',
+    // The shortcut recorder in settings rows no longer spans the full row (previously
+    // the value hugged left and the chevron flew to the far edge); capped to the input
+    // width, sitting compactly after the label column.
+    maxWidth: 360,
   };
   const recorderRowStyle: CSSProperties = {
     display: 'flex',
@@ -203,27 +296,6 @@ export function ShortcutRecorder({
     gap: 8,
     flexWrap: 'wrap',
     width: '100%',
-  };
-  const chevronButtonStyle: CSSProperties = {
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: 26,
-    height: 26,
-    padding: 0,
-    border: 0,
-    borderRadius: 6,
-    background: 'transparent',
-    color: 'var(--ol-ink-4)',
-    fontFamily: 'inherit',
-    cursor: 'pointer',
-    transition: 'background 0.16s var(--ol-motion-quick), color 0.16s var(--ol-motion-quick)',
-  };
-  const controlsGroupStyle: CSSProperties = {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 4,
-    marginLeft: 'auto',
   };
   const menuButtonStyle: CSSProperties = {
     fontSize: 12,
@@ -233,7 +305,7 @@ export function ShortcutRecorder({
     background: 'transparent',
     color: 'var(--ol-ink-2)',
     fontFamily: 'inherit',
-    fontWeight: 500,
+    fontWeight: 'var(--ol-font-weight-medium)',
     cursor: 'pointer',
     transition: 'background 0.16s var(--ol-motion-quick), color 0.16s var(--ol-motion-quick)',
   };
@@ -243,138 +315,101 @@ export function ShortcutRecorder({
     borderColor: 'rgba(37,99,235,0.25)',
     color: 'var(--ol-blue)',
   };
-  const disabledMenuButtonStyle: CSSProperties = {
-    ...menuButtonStyle,
-    opacity: 0.45,
-    cursor: 'default',
-  };
-  const menuRowStyle: CSSProperties = {
-    display: 'flex',
-    gap: 8,
-    paddingTop: 2,
-  };
 
   return (
-    <div style={rootStyle} ref={rootRef}>
-      {/* mode="wait"：主行与「正在录入」面板不重叠渲染；切换只做 transform/opacity 动画，
-          不驱动布局，面板运动过程不抽搐。所有滑入/滑出统一向右。 */}
-      <AnimatePresence mode="wait" initial={false}>
-        {recording ? (
-          <motion.div
-            key="recording"
-            initial={{ x: SLIDE_DISTANCE, opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            exit={{ x: SLIDE_DISTANCE, opacity: 0 }}
-            transition={slideSpring}
-            tabIndex={-1}
-            onKeyDown={onKeyDown}
-            onKeyUp={onKeyUp}
-            ref={el => el?.focus()}
-            style={{
-              minHeight: 36,
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'center',
-              padding: '8px 12px',
-              borderRadius: 8,
-              background: 'rgba(37,99,235,0.06)',
-              border: '1px solid rgba(37,99,235,0.2)',
-              fontSize: 12,
-              color: 'var(--ol-blue)',
-              outline: 'none',
-            }}
+    <div style={rootStyle} className="ol-shortcut-recorder">
+      <Popover.Root
+        open={recording}
+        onOpenChange={(next) => {
+          if (next) startRecording();
+          else {
+            setRecording(false);
+            setError(null);
+            resetRecordingState();
+          }
+        }}
+      >
+        <div style={recorderRowStyle}>
+          <Popover.Trigger
+            className="ol-shortcut-binding"
+            disabled={disabled}
+            onClick={startRecording}
+            aria-label={t('settings.recording.comboRecordBtn')}
           >
-            {t('settings.recording.comboRecordHint')}
-            <div style={{ fontSize: 11, color: 'var(--ol-ink-4)', marginTop: 4 }}>Esc 取消</div>
-          </motion.div>
-        ) : (
-          <motion.div
-            key="idle"
-            initial={{ x: SLIDE_DISTANCE, opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            exit={{ x: SLIDE_DISTANCE, opacity: 0 }}
-            transition={slideSpring}
+            {value ? <KbdGroup keys={formatComboParts(value)} /> : <span>＋</span>}
+          </Popover.Trigger>
+          {allowMacDictationKey && (
+            <button
+              type="button"
+              aria-pressed={nativeSelected}
+              disabled={disabled || recording}
+              title={t('macDictationKey.description')}
+              style={nativeSelected ? menuPrimaryStyle : menuButtonStyle}
+              onClick={() => void finish({ primary: 'MacDictationKey', modifiers: [] })}
+            >
+              {t('macDictationKey.label')}
+            </button>
+          )}
+          {onReset && (
+            <button
+              type="button"
+              onClick={() => void doReset()}
+              disabled={disabled || recording}
+              style={menuButtonStyle}
+              aria-label={resetLabel ?? t('settings.recording.comboResetBtn')}
+              title={resetLabel ?? t('settings.recording.comboResetBtn')}
+            >
+              <Icon name="refresh" size={13} />
+            </button>
+          )}
+          {(onDisable || disableDisabled) && (
+            <button
+              type="button"
+              onClick={() => void doDisable()}
+              disabled={disabled || recording || !canDisable}
+              title={canDisable ? (disableLabel ?? t('settings.shortcuts.disable')) : disableHint}
+              aria-label={disableLabel ?? t('settings.shortcuts.disable')}
+              style={menuButtonStyle}
+            >
+              <Icon name="close" size={13} />
+            </button>
+          )}
+        </div>
+        <Popover.Portal className="ol-popup-portal">
+          <Popover.Positioner
+            className="ol-select-positioner"
+            positionMethod="fixed"
+            side="right"
+            align="start"
+            sideOffset={8}
+            collisionPadding={8}
           >
-            <div style={recorderRowStyle}>
-              {/* 键帽逐键展示（Kbd 组件，用户拍板的快捷键展示标准），替代整块灰底文本。
-                  录入入口在展开菜单里（录制快捷键）；主行只留箭头，统一靠最右。 */}
-              {value && <KbdGroup keys={formatComboParts(value)} />}
-              <div style={controlsGroupStyle}>
-                <motion.button
-                  whileTap={{ scale: 0.9 }}
-                  onClick={() => setMenuOpen(open => !open)}
-                  aria-label={t('settings.recording.comboMenuToggle', 'More options')}
-                  aria-expanded={menuOpen}
-                  title={t('settings.recording.comboMenuToggle', 'More options')}
-                  style={chevronButtonStyle}
-                >
-                  <motion.span
-                    animate={{ rotate: menuOpen ? 180 : 0 }}
-                    transition={{ duration: 0.16, ease: menuEase }}
-                    style={{ display: 'inline-flex' }}
-                  >
-                    <ChevronDown size={14} strokeWidth={2.2} />
-                  </motion.span>
-                </motion.button>
+            <Popover.Popup
+              className="ol-select-popup ol-shortcut-popup"
+              initialFocus={recordingRef}
+              aria-label={t('settings.recording.comboRecordBtn')}
+            >
+              <div tabIndex={-1} ref={recordingRef} className="ol-shortcut-recording">
+                {t('settings.recording.comboRecordHint')}
+                <small>
+                  Esc · {t('common.cancel')}
+                  {allowMouseButtons && <> · {t('settings.recording.mouseSideHint')}</>}
+                </small>
               </div>
-            </div>
-            {/* 下拉菜单：整个板块向下展开，出现 录制快捷键 / 重置 / 停用 三个按钮。
-                高度用固定值动画（菜单内容高度恒定），避免 'auto' 每次测量带来的卡顿。 */}
-            <AnimatePresence initial={false}>
-              {menuOpen && (
-                <motion.div
-                  key="menu"
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: MENU_HEIGHT, opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: 0.16, ease: menuEase }}
-                  style={{ overflow: 'hidden' }}
-                >
-                  <div style={menuRowStyle}>
-                    <motion.button
-                      initial={{ y: 4, opacity: 0 }}
-                      animate={{ y: 0, opacity: 1 }}
-                      transition={{ duration: 0.16, ease: menuEase }}
-                      whileHover={{ y: -1 }}
-                      whileTap={{ scale: 0.96 }}
-                      onClick={startRecording}
-                      style={menuPrimaryStyle}
-                    >
-                      {t('settings.recording.comboRecordBtn')}
-                    </motion.button>
-                    {onReset && (
-                      <motion.button
-                        initial={{ y: 4, opacity: 0 }}
-                        animate={{ y: 0, opacity: 1 }}
-                        transition={{ duration: 0.16, ease: menuEase, delay: 0.03 }}
-                        whileHover={{ y: -1 }}
-                        whileTap={{ scale: 0.96 }}
-                        onClick={doReset}
-                        style={menuButtonStyle}
-                      >
-                        {resetLabel ?? t('settings.recording.comboResetBtn', 'Reset')}
-                      </motion.button>
-                    )}
-                    <motion.button
-                      initial={{ y: 4, opacity: 0 }}
-                      animate={{ y: 0, opacity: 1 }}
-                      transition={{ duration: 0.16, ease: menuEase, delay: 0.06 }}
-                      whileHover={canDisable ? { y: -1 } : undefined}
-                      whileTap={canDisable ? { scale: 0.96 } : undefined}
-                      onClick={canDisable ? doDisable : undefined}
-                      title={canDisable ? undefined : disableHint}
-                      style={canDisable ? menuButtonStyle : disabledMenuButtonStyle}
-                    >
-                      {disableLabel ?? t('settings.shortcuts.disable', 'Disable')}
-                    </motion.button>
-                  </div>
-                </motion.div>
+              {error && (
+                <div role="alert" style={{ fontSize: 12, color: 'var(--ol-err)' }}>
+                  {nativeError ? t(`macDictationKey.${nativeError}`) : error}
+                </div>
               )}
-            </AnimatePresence>
-          </motion.div>
-        )}
-      </AnimatePresence>
-      {error && <div style={{ fontSize: 11, color: 'var(--ol-red, #ef4444)' }}>{error}</div>}
+            </Popover.Popup>
+          </Popover.Positioner>
+        </Popover.Portal>
+      </Popover.Root>
+      <Collapse open={!!error && !recording}>
+        <div role="alert" style={{ fontSize: 12, color: 'var(--ol-err)' }}>
+          {nativeError ? t(`macDictationKey.${nativeError}`) : error}
+        </div>
+      </Collapse>
     </div>
   );
 }
@@ -394,47 +429,4 @@ function modifierPrimaryFromCode(code: string, key: string): string {
   if (code === 'MetaLeft') return 'LeftCommand';
   if (key === 'Shift') return 'Shift';
   return '';
-}
-
-function primaryFromKeyboardEvent(e: KeyboardEvent): string {
-  const printable = primaryFromPrintableCode(e.code);
-  if (printable) return printable;
-  if (e.key.length === 1) return e.key;
-  const codeToName: Record<string, string> = {
-    Space: 'Space',
-    Enter: 'Enter',
-    Tab: 'Tab',
-    Backspace: 'Backspace',
-    Delete: 'Delete',
-    ArrowUp: 'ArrowUp',
-    ArrowDown: 'ArrowDown',
-    ArrowLeft: 'ArrowLeft',
-    ArrowRight: 'ArrowRight',
-    Home: 'Home',
-    End: 'End',
-    PageUp: 'PageUp',
-    PageDown: 'PageDown',
-  };
-  if (/^F\d{1,2}$/.test(e.key)) return e.key;
-  return codeToName[e.code] || e.key;
-}
-
-function primaryFromPrintableCode(code: string): string {
-  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
-  if (/^Digit[0-9]$/.test(code)) return code.slice(5);
-  const codeToPrimary: Record<string, string> = {
-    Backquote: '`',
-    Minus: '-',
-    Equal: '=',
-    BracketLeft: '[',
-    BracketRight: ']',
-    Backslash: '\\',
-    Semicolon: ';',
-    Quote: "'",
-    Comma: ',',
-    Period: '.',
-    Slash: '/',
-    IntlBackslash: '\\',
-  };
-  return codeToPrimary[code] || '';
 }

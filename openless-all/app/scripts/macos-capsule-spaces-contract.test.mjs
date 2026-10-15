@@ -6,15 +6,17 @@ function assertMatch(source, pattern, name) {
   }
 }
 
-// 契约函数 show_capsule_window_no_activate 的实现现位于编译进二进制的
-// coordinator/capsule_focus.rs（2026-06 板块化重构从 coordinator.rs 迁出，行为不变；
-// 函数可见性随迁移改为 pub(super)）。契约必须校验真正编译的那份，否则会出现
-// 「测试绿、线上坏」的假信心。
+// The contract function show_capsule_window_no_activate lives in the explicit Tauri Host Module.
+// The contract must validate the copy that is actually compiled, otherwise tests can be green
+// while production is broken.
 const capsuleFocusRs = (
   await readFile(new URL('../src-tauri/src/coordinator/capsule_focus.rs', import.meta.url), 'utf-8')
 ).replace(/\r\n/g, '\n');
-const functionMatch = capsuleFocusRs.match(
-  /#\[cfg\(target_os = "macos"\)\]\s*(?:pub\((?:crate|super)\) )?fn show_capsule_window_no_activate[\s\S]*?\n}\n\n#\[cfg\(target_os = "linux"\)\]/,
+const coordinatorHostRs = (
+  await readFile(new URL('../src-tauri/src/tauri_coordinator_host.rs', import.meta.url), 'utf-8')
+).replace(/\r\n/g, '\n');
+const functionMatch = coordinatorHostRs.match(
+  /#\[cfg\(target_os = "macos"\)\]\s*(?:pub\((?:crate|super)\) )?fn show_capsule_window_no_activate[\s\S]*?\n}\n\n#\[cfg\(not\(any\(target_os = "macos", target_os = "windows"\)\)\)\]/,
 );
 
 if (!functionMatch) {
@@ -48,12 +50,14 @@ for (const forbidden of ['window.show()', 'set_focus', 'NSApp.activate', 'makeKe
   }
 }
 
-// === 胶囊跟随「鼠标光标所在屏」契约（多屏 / 多 Space）===
-// 根因：定位用 AX caret、layout 去重缓存却用胶囊自己的 current_monitor，两者看
-// 不同的屏；光标移到另一块屏时缓存误判「没变化」→ 跳过重新定位 → 胶囊被锁死
-// 在第一块屏（别屏只闪一下）。修复后两条路径必须共用 capsule_target_monitor，
-// 且以鼠标光标为首选信号。这些不变量纯靠源码 grep 守护，无法在无多屏硬件的
-// 单测里覆盖，正是契约测试的用武之地。
+// === Contract: the capsule follows "the screen the mouse cursor is on" (multi-screen / Space) ===
+// Root cause: positioning used the AX caret while the layout dedup cache used the capsule's own
+// current_monitor — the two look at different screens. When the cursor moves to another screen,
+// the cache misjudges "nothing changed" → skips repositioning → the capsule is locked to the
+// first screen (only flashing on the other). After the fix both paths must share
+// capsule_target_monitor, with the mouse cursor as the preferred signal. These invariants are
+// guarded purely by source grep and cannot be covered by unit tests without multi-screen
+// hardware — exactly what contract tests are for.
 const libRs = (
   await readFile(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf-8')
 ).replace(/\r\n/g, '\n');
@@ -66,96 +70,221 @@ assertMatch(
 
 assertMatch(
   libRs,
-  /跟随鼠标光标所在显示器[\s\S]*?if let Some\(mon\) = capsule_target_monitor\(window\)/,
+  /follow the monitor under the mouse cursor[\s\S]*?if let Some\(mon\) = capsule_target_monitor\(window\)/,
   'macOS capsule positioning must follow capsule_target_monitor (the mouse screen), not its own current_monitor',
 );
 
 assertMatch(
-  capsuleFocusRs,
+  coordinatorHostRs,
   /#\[cfg\(target_os = "macos"\)\][\s\S]*?crate::capsule_target_monitor\(window\)/,
   'macOS capsule layout cache key must reuse capsule_target_monitor, or it will skip repositioning when the cursor moves to another screen',
 );
 
-// === 卡片借走胶囊窗口后必须完整归还（位置！）契约 ===
+// === Contract: a card that borrows the capsule window must return it fully (position!) ===
 //
-// 词条卡片和落字回退卡片都不是自己的窗口 —— 它们借用录音胶囊那一个 "capsule"
-// 窗口，弹出时把它缩到卡片大小、挪到右下角。收起时必须原样还回去。
+// The vocab suggestion card and the insert-fallback card have no windows of their own — they
+// borrow the recording capsule's single "capsule" window, shrinking it to card size and moving it
+// to the bottom-right while shown. On dismiss it must be returned exactly as it was.
 //
-// 「还位置」这一步曾经漏过一次，真机表现是：用过一次带添加词的卡片之后，
-// 下一次录音的胶囊出现在右下角，再也回不到底部居中。漏这一步之所以致命，
-// 是因为 maybe_position_capsule_bottom_center 的去重缓存只记「显示器 + 翻译态」，
-// 卡片这一挪它一无所知 —— 下次录音拿到相同的显示器快照就判定「没变化」，
-// 直接跳过重新定位。窗口被挪走了，而唯一会把它挪回来的那段代码以为自己不用动。
+// The "return the position" step was missed once; on real hardware, after using the
+// add-word card once, the next recording's capsule appeared bottom-right and never went back to
+// bottom-center. The miss was fatal because maybe_position_capsule_bottom_center's dedup cache
+// only records "monitor + translation state" and knows nothing about the card moving the window —
+// the next recording got the same monitor snapshot, judged "no change", and skipped repositioning
+// outright. The window had been moved, while the only code that would move it back thought it had
+// nothing to do.
 //
-// 所以复位和清缓存两件事都要做，各堵一个方向；穿透状态同理（emit_capsule 靠
-// capsule_cursor_passthrough 跳过重复调用，缓存与窗口真实状态分家就会跳过
-// 该调的那一次，表现是胶囊上的 ✓/✕ 点不动）。
+// So both reset and cache invalidation are required, each blocking one direction; the same applies
+// to passthrough state (emit_capsule relies on capsule_cursor_passthrough to skip redundant calls;
+// if the cache and the window's real state diverge, a needed call gets skipped and the ✓/✕ buttons
+// on the capsule stop responding).
 //
-// 这段修复在 2026-08 丢过一次（只存在于未合并的本地分支上，主线重新长回了
-// 漏位置的版本），靠单测抓不到 —— 它全是 Tauri 窗口调用，跑在 main thread
-// 闭包里。契约测试是唯一能钉住它的手段。
+// This fix was lost once in 2026-08 (it existed only on an unmerged local branch; main regrew the
+// version missing the position restore) and unit tests cannot catch it — it is all Tauri window
+// calls running inside main-thread closures. A contract test is the only way to pin it.
 const coordinatorRs = (
   await readFile(new URL('../src-tauri/src/coordinator.rs', import.meta.url), 'utf-8')
 ).replace(/\r\n/g, '\n');
 
-function extractFn(source, name) {
-  const match = source.match(new RegExp(`pub\\(crate\\) fn ${name}[\\s\\S]*?\\n}\\n`));
-  if (!match) {
-    throw new Error(`${name}: function not found in coordinator.rs`);
+function extractBalancedBlock(source, openBrace) {
+  let depth = 0;
+  let inString = false;
+  let inChar = false;
+  let escaped = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  let rawStringHashes = null;
+  for (let index = openBrace; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (inLineComment) {
+      if (char === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (char === '/' && next === '*') {
+        blockCommentDepth += 1;
+        index += 1;
+      } else if (char === '*' && next === '/') {
+        blockCommentDepth -= 1;
+        index += 1;
+      }
+      continue;
+    }
+    if (rawStringHashes !== null) {
+      const terminator = `"${'#'.repeat(rawStringHashes)}`;
+      if (source.startsWith(terminator, index)) {
+        index += terminator.length - 1;
+        rawStringHashes = null;
+      }
+      continue;
+    }
+    if (inString || inChar) {
+      const terminator = inString ? '"' : "'";
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === terminator) {
+        inString = false;
+        inChar = false;
+      }
+      continue;
+    }
+    if (char === '/' && next === '/') {
+      inLineComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      blockCommentDepth = 1;
+      index += 1;
+      continue;
+    }
+    if (char === 'r') {
+      let hashEnd = index + 1;
+      while (source[hashEnd] === '#') hashEnd += 1;
+      if (source[hashEnd] === '"') {
+        rawStringHashes = hashEnd - index - 1;
+        index = hashEnd;
+        continue;
+      }
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    // Rust lifetimes start with a letter after the apostrophe; only enter the
+    // character-literal state when the closing apostrophe is locally evident.
+    if (char === "'" && (next === '\\' || source[index + 2] === "'")) {
+      inChar = true;
+      continue;
+    }
+    if (char === '{') depth += 1;
+    if (char === '}' && --depth === 0) {
+      return source.slice(openBrace, index + 1);
+    }
   }
-  return match[0];
+  throw new Error('unterminated Rust block');
 }
 
-// 弹卡片 = 把共享窗口挪走，去重缓存必须当场作废。
+function extractFn(source, name) {
+  const signature = new RegExp(
+    `(?:pub\\([^)]*\\)\\s*)?(?:async\\s+)?fn\\s+${name}(?:<[^>{}]*>)?\\s*\\(`,
+  );
+  const match = signature.exec(source);
+  if (!match) {
+    throw new Error(`${name}: function not found`);
+  }
+  const openBrace = source.indexOf('{', match.index);
+  if (openBrace === -1) {
+    throw new Error(`${name}: function body not found`);
+  }
+  const body = extractBalancedBlock(source, openBrace);
+  return source.slice(match.index, openBrace) + body;
+}
+
+function extractCfgBlock(source, target) {
+  const marker = `#[cfg(target_os = "${target}")]`;
+  const markerIndex = source.indexOf(marker);
+  if (markerIndex === -1) {
+    throw new Error(`${target}: cfg block not found`);
+  }
+  const openBrace = source.indexOf('{', markerIndex + marker.length);
+  if (openBrace === -1) {
+    throw new Error(`${target}: cfg block body not found`);
+  }
+  return source.slice(markerIndex, openBrace) + extractBalancedBlock(source, openBrace);
+}
+
+const setCursorPassthroughRs = extractFn(coordinatorHostRs, 'set_cursor_passthrough');
+assertMatch(
+  setCursorPassthroughRs,
+  /window\.set_ignore_cursor_events\(passthrough\)[\s\S]*?cursor_passthrough[\s\S]*?store\(passthrough, Ordering::SeqCst\)/,
+  'the narrow capsule-window capability must update the Tauri window and its host-owned passthrough cache together',
+);
+const setCardHitTestModeRs = extractFn(coordinatorHostRs, 'set_card_hit_test_mode');
+const restoreCapsuleHitTestModeRs = extractFn(coordinatorHostRs, 'restore_capsule_hit_test_mode');
+assertMatch(
+  setCardHitTestModeRs,
+  /hit_test_mode[\s\S]*?store\(HIT_TEST_MODE_CARD, Ordering::SeqCst\)[\s\S]*?window\.set_ignore_cursor_events\(false\)[\s\S]*?cursor_passthrough[\s\S]*?store\(false, Ordering::SeqCst\)[\s\S]*?configure_card_hit_test/,
+  'card mode must make the shared window interactive and keep its host-owned hit-test cache in sync',
+);
+assertMatch(
+  restoreCapsuleHitTestModeRs,
+  /hit_test_mode[\s\S]*?store\(HIT_TEST_MODE_CAPSULE, Ordering::SeqCst\)[\s\S]*?set_cursor_passthrough\(true\)[\s\S]*?invalidate_layout\(\)[\s\S]*?maybe_position_capsule_bottom_center/,
+  'restoring capsule mode must restore passthrough and style-aware position through the host capability',
+);
+const maybePositionCapsuleRs = extractFn(coordinatorHostRs, 'maybe_position_capsule_bottom_center');
+assertMatch(
+  maybePositionCapsuleRs,
+  /position_capsule_bottom_center_with_style_and_transcript/,
+  'capsule restore must route through the style-aware geometry helper',
+);
+const positionCapsuleRs = extractFn(
+  libRs,
+  'position_capsule_bottom_center_with_style_and_transcript',
+);
+const macosPositionCapsuleRs = extractCfgBlock(positionCapsuleRs, 'macos');
+assertMatch(
+  macosPositionCapsuleRs,
+  /window\.set_size[\s\S]*?window\.set_position/,
+  'macOS style-aware capsule restoration must update both window size and position',
+);
+
+// Showing a card = moving the shared window away; the dedup cache must be invalidated on the spot.
 for (const name of ['show_vocab_suggestion_card', 'show_insert_fallback_card']) {
   const body = extractFn(coordinatorRs, name);
   assertMatch(
     body,
-    /\*inner\.capsule_layout\.lock\(\) = None;/,
+    /capsule\.invalidate_layout\(\)/,
     `${name} moves the shared capsule window, so it must invalidate the capsule_layout dedup cache`,
   );
   assertMatch(
     body,
-    /capsule_cursor_passthrough\s*\.store\(false, Ordering::SeqCst\)/,
-    `${name} calls set_ignore_cursor_events directly, so it must keep capsule_cursor_passthrough in sync`,
+    /capsule\.set_card_hit_test_mode\(\)/,
+    `${name} must enter card hit-test mode through the host capability that keeps its cache in sync`,
   );
 }
 
-// 收卡片 = 把窗口完整还回去：穿透、尺寸、位置，一样都不能少。
+// Dismissing a card = returning the window fully: passthrough, size, position — nothing skipped.
 for (const name of ['hide_vocab_suggestion_card', 'hide_insert_fallback_card']) {
   const body = extractFn(coordinatorRs, name);
   assertMatch(
     body,
-    /set_ignore_cursor_events\(true\)/,
-    `${name} must restore cursor passthrough, or the capsule keeps blocking that strip of screen`,
+    /capsule\.restore_capsule_hit_test_mode\(\)/,
+    `${name} must restore passthrough and capsule geometry through the host capability`,
   );
   assertMatch(
     body,
-    /capsule_cursor_passthrough\s*\.store\(true, Ordering::SeqCst\)/,
-    `${name} must keep the capsule_cursor_passthrough cache in sync with the window it just touched`,
+    /capsule\.hide\(\)[\s\S]*?capsule\.restore_capsule_hit_test_mode\(\)/,
+    `${name} must hide the window before the host restores its geometry`,
   );
-  assertMatch(
-    body,
-    /capsule_window_bounds\(false\)[\s\S]*?set_size/,
-    `${name} must restore the capsule window size, or the next capsule is squeezed into a card-sized window`,
-  );
-  assertMatch(
-    body,
-    /\*inner\.capsule_layout\.lock\(\) = None;/,
-    `${name} must invalidate the capsule_layout dedup cache, or the next recording skips repositioning and the capsule stays bottom-right`,
-  );
-  assertMatch(
-    body,
-    /position_capsule_bottom_center\(&window, false\)/,
-    `${name} must move the capsule window back to bottom-center; restoring size alone leaves it in the card's bottom-right corner`,
-  );
-  // 顺序不变量：尺寸和位置要一起动，窗口还亮着时改就有概率被合成出一帧
-  //「卡片被拉宽、还横着飞过半个屏幕」。
-  const hideAt = body.indexOf('window.hide()');
-  const resizeAt = body.indexOf('set_size');
-  if (hideAt === -1 || hideAt > resizeAt) {
-    throw new Error(
-      `${name} must hide the window before changing its geometry, or the restore animates on screen`,
-    );
+  // Ordering invariant: geometry restoration must happen after hiding, or the restore can
+  // composite a frame of "card stretched wide, still flying across half the screen".
+  const hideAt = body.indexOf('capsule.hide()');
+  const restoreAt = body.indexOf('restore_capsule_hit_test_mode()');
+  if (hideAt === -1 || hideAt > restoreAt) {
+    throw new Error(`${name} must hide the window before restoring its geometry`);
   }
 }

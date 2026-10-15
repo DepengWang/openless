@@ -9,13 +9,15 @@ pub struct NetworkCheckResult {
 
 #[tauri::command]
 pub async fn check_network() -> NetworkCheckResult {
-    // 探一个真实存在的接口。旧逻辑探 `/health` —— 实测返回 404，链路正常也永远判
-    // 离线；且用 HEAD（后端只挂 GET）。改成 GET `/packs`，拿到任意 HTTP 响应即算通。
+    // Probe a real endpoint. The old logic probed `/health` — it actually returns 404, so the
+    // status stayed "offline" even with a working link; it also used HEAD while the backend only
+    // mounts GET. Now GET `/packs` with any HTTP response counts as online.
     //
-    // 单发、不走 send_with_retry：这是每 30s 跑一次的状态探针，要的是「快」。10 次
-    // 退避重试会让被过滤 / 黑洞的网络下探测拖到近一分钟、状态灯像卡死。偶发的瞬时
-    // 误判由下一个 30s 周期自动纠正。仍用 net::http() 共享连接池。
-    let url = format!("{MARKETPLACE_BASE_URL}/packs?limit=1");
+    // Single shot, no send_with_retry: this status probe runs every 30s and needs to be fast. Ten
+    // backoff retries would stretch the probe to nearly a minute on filtered / black-holed
+    // networks, making the status light look stuck. Occasional transient misjudgments are
+    // corrected automatically on the next 30s cycle. Still uses net::http()'s shared pool.
+    let url = format!("{}/packs?limit=1", openless_core::MARKETPLACE_BASE_URL);
     let start = std::time::Instant::now();
     match net::http()
         .get(&url)
@@ -34,23 +36,37 @@ pub async fn check_network() -> NetworkCheckResult {
     }
 }
 
+/// Splash-video first-launch decision: read the `splashSeenVersion` marker in preferences.json
+/// and compare it with the current app major version (first segment of `CARGO_PKG_VERSION`,
+/// 2.0.0-Beta.1 → "2"). On mismatch (including never written) core writes the marker back and
+/// returns true, so the frontend plays the bundled splash animation once; afterwards it always
+/// returns false within the same generation.
 #[tauri::command]
-pub fn get_hotkey_status(coord: CoordinatorState<'_>) -> HotkeyStatus {
-    #[cfg(mobile)]
-    {
-        let _ = coord;
-        return HotkeyStatus {
+pub fn take_splash_playback(core: CoreState<'_>) -> bool {
+    let major = env!("CARGO_PKG_VERSION")
+        .split('.')
+        .next()
+        .unwrap_or("0")
+        .to_string();
+    core.take_splash_playback(&major)
+}
+
+#[tauri::command]
+pub async fn get_hotkey_status(core: CoreState<'_>) -> Result<HotkeyStatus, String> {
+    Ok(core
+        .services()
+        .platform
+        .hotkey_status()
+        .await
+        .unwrap_or_else(|error| HotkeyStatus {
             adapter: crate::types::HotkeyAdapterKind::Unavailable,
             state: crate::types::HotkeyStatusState::Failed,
-            message: Some("移动端不支持全局热键".into()),
+            message: Some(error.message.clone()),
             last_error: Some(crate::types::HotkeyInstallError {
-                code: "unavailable".into(),
-                message: "Global hotkeys are not available on mobile".into(),
+                code: format!("{:?}", error.code).to_ascii_lowercase(),
+                message: error.message,
             }),
-        };
-    }
-    #[cfg(not(mobile))]
-    coord.hotkey_status()
+        }))
 }
 
 #[tauri::command]
@@ -82,19 +98,23 @@ pub fn get_windows_ime_status() -> WindowsImeStatus {
 }
 
 #[tauri::command]
-#[cfg(mobile)]
-pub async fn list_microphone_devices() -> Result<Vec<crate::recorder::MicrophoneDevice>, String> {
-    Ok(Vec::new())
-}
-
-#[tauri::command]
-#[cfg(not(mobile))]
-pub async fn list_microphone_devices() -> Result<Vec<crate::recorder::MicrophoneDevice>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        crate::recorder::list_input_devices().map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("microphone device worker failed: {e}"))?
+pub async fn list_microphone_devices(
+    core: CoreState<'_>,
+) -> Result<Vec<crate::recorder::MicrophoneDevice>, String> {
+    core.services()
+        .platform
+        .microphone_devices()
+        .await
+        .map(|devices| {
+            devices
+                .into_iter()
+                .map(|device| crate::recorder::MicrophoneDevice {
+                    name: device.name,
+                    is_default: device.is_default,
+                })
+                .collect()
+        })
+        .map_err(|error| error.message)
 }
 
 #[tauri::command]
@@ -112,9 +132,16 @@ pub async fn start_microphone_level_monitor(
     app: AppHandle,
     device_name: String,
 ) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let warm_hub = crate::recorder::warm_capture_hub();
+    let warm_hub_for_error = Arc::clone(&warm_hub);
+    let app_for_error = app.clone();
+    let result = match tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<MicrophoneMonitorState>();
-        if let Some(existing) = state.lock().take() {
+        let _operation = state.operation.lock();
+        if !warm_hub.begin_preview() {
+            return Err("dictation is using the microphone".into());
+        }
+        if let Some(existing) = state.recorder.lock().take() {
             existing.stop();
         }
 
@@ -130,13 +157,29 @@ pub async fn start_microphone_level_monitor(
             let _ = level_app.emit("microphone:level", serde_json::json!({ "level": level }));
         });
         let (recorder, _runtime_errors, _archive_active) =
-            Recorder::start(microphone_device_name, consumer, level_handler, None)
-                .map_err(|e| e.to_string())?;
-        *state.lock() = Some(recorder);
+            match Recorder::start(microphone_device_name, consumer, level_handler, None) {
+                Ok(started) => started,
+                Err(error) => {
+                    warm_hub.end_preview();
+                    return Err(error.to_string());
+                }
+            };
+        *state.recorder.lock() = Some(recorder);
         Ok(())
     })
     .await
-    .map_err(|e| format!("start microphone monitor task failed: {e}"))?
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let state = app_for_error.state::<MicrophoneMonitorState>();
+            let _operation = state.operation.lock();
+            if state.recorder.lock().is_none() {
+                warm_hub_for_error.end_preview();
+            }
+            return Err(format!("start microphone monitor task failed: {error}"));
+        }
+    };
+    result
 }
 
 #[tauri::command]
@@ -147,22 +190,42 @@ pub async fn stop_microphone_level_monitor(app: AppHandle) {
         return;
     }
     #[cfg(not(mobile))]
-    let _ = tauri::async_runtime::spawn_blocking(move || {
+    let warm_hub = crate::recorder::warm_capture_hub();
+    #[cfg(not(mobile))]
+    let warm_hub_for_error = Arc::clone(&warm_hub);
+    #[cfg(not(mobile))]
+    let app_for_error = app.clone();
+    #[cfg(not(mobile))]
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<MicrophoneMonitorState>();
-        let recorder = state.lock().take();
+        let _operation = state.operation.lock();
+        let recorder = state.recorder.lock().take();
         if let Some(recorder) = recorder {
             recorder.stop();
         }
+        warm_hub.end_preview();
     })
     .await;
+    #[cfg(not(mobile))]
+    if result.is_err() {
+        let state = app_for_error.state::<MicrophoneMonitorState>();
+        let _operation = state.operation.lock();
+        if state.recorder.lock().is_none() {
+            warm_hub_for_error.end_preview();
+        }
+    }
+    #[cfg(not(mobile))]
+    let _ = result;
 }
 
-/// 把当前会话的 openless.log 复制到用户选择的位置（前端用 plugin-dialog 拿 target_path）。
-/// 路径来自 lib::log_dir_path() —— mac: ~/Library/Logs/OpenLess/openless.log，
-/// windows: %LOCALAPPDATA%\OpenLess\Logs\openless.log。
+/// Copy the current session's openless.log to a user-chosen location (the frontend obtains
+/// target_path via plugin-dialog). The path comes from lib::log_dir_path() —
+/// mac: ~/Library/Logs/OpenLess/openless.log,
+/// windows: %LOCALAPPDATA%\OpenLess\Logs\openless.log.
 ///
-/// Android 上 dialog 返回 `content://` URI，不能用 `std::fs::copy`；走 JNI
-/// ContentResolver 写入，避免 tauri-plugin-fs detachFd 导致 0 字节文件。
+/// On Android the dialog returns a `content://` URI which `std::fs::copy` cannot handle; write
+/// through the JNI ContentResolver instead, avoiding the 0-byte files caused by
+/// tauri-plugin-fs's detachFd.
 #[tauri::command]
 pub fn export_error_log(target_path: String) -> Result<(), String> {
     let src = resolve_openless_log_path()?;
@@ -190,6 +253,17 @@ pub fn export_error_log(target_path: String) -> Result<(), String> {
     }
 }
 
+/// Android：直接把当前会话日志写入公共 Downloads，绕过部分 ROM 上
+/// 无法正常弹出的 CREATE_DOCUMENT / SAF 保存对话框。
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub fn export_error_log_to_downloads(file_name: String) -> Result<String, String> {
+    let src = resolve_openless_log_path()?;
+    let bytes = std::fs::read(&src).map_err(|e| format!("读取日志失败：{e}"))?;
+    crate::android::jni::android::write_public_download(&file_name, &bytes)
+        .map_err(|e| format!("导出日志失败：{e}"))
+}
+
 fn resolve_openless_log_path() -> Result<std::path::PathBuf, String> {
     let mut candidates = Vec::new();
     #[cfg(target_os = "android")]
@@ -211,15 +285,17 @@ fn resolve_openless_log_path() -> Result<std::path::PathBuf, String> {
 
 // ─────────────────────────── cursor context (debug only) ───────────────────────────
 
-/// 探一次「宿主 app 光标周围的正文」，把结果原样交给调用方。
+/// Probe "the body text around the host app's cursor" once and hand the result to the caller.
 ///
-/// **调试用，不接任何产品链路**（里程碑 1 的产物就是「模块可用但没人调它」）。
-/// 存在的意义是装机之后能在各个真实 app 里挨个点一遍，肉眼确认：读到的内容对不对、
-/// 终端和密码框有没有被拦住、卡死的 app 会不会把界面冻住。
+/// **Debug only, wired into no product path** (milestone 1 delivered "module works but nobody
+/// calls it"). It exists so that, after install, one can click through real apps one by one and
+/// visually confirm: the content reads correctly, terminals and password fields are blocked, and
+/// a hung app does not freeze the UI.
 ///
-/// `delayMs` 是这个命令能用起来的关键：从 devtools 里 invoke 时前台 app 是 OpenLess
-/// 自己，读到的永远是我们自己的窗口。传个 3000 就有三秒时间切到备忘录 / VS Code /
-/// 微信里点进输入框，探针在那时才真正开始读。
+/// `delayMs` is what makes this command usable: when invoked from devtools the foreground app is
+/// OpenLess itself, so it would always read our own window. Pass 3000 and there are three seconds
+/// to switch to Notes / VS Code / WeChat and click into an input field before the probe actually
+/// reads.
 ///
 /// ```js
 /// await window.__TAURI_INTERNALS__.invoke('debug_read_cursor_context', { delayMs: 3000 })
@@ -230,21 +306,22 @@ pub async fn debug_read_cursor_context(
     delay_ms: Option<u64>,
 ) -> crate::host_document::HostDocumentReadResult {
     if let Some(delay) = delay_ms.filter(|ms| *ms > 0) {
-        // 上限 30s：这是手动调试入口，不该能被参数拖成一个永不返回的命令。
+        // Cap at 30s: this is a manual debug entry point and must not be dragged into a
+        // never-returning command by arguments.
         tokio::time::sleep(std::time::Duration::from_millis(delay.min(30_000))).await;
     }
     let budget = budget_chars
         .filter(|chars| *chars > 0)
-        .unwrap_or(crate::host_document::DEFAULT_BUDGET_CHARS);
+        .unwrap_or(crate::host_document::DEFAULT_BUDGET_CHARS)
+        .min(crate::host_document::MAX_BUDGET_CHARS);
 
     let result = crate::host_document::probe_around_cursor(budget).await;
-    // 同步打进日志：装机验证时多半是切到别的 app 手动点，回头翻日志比翻 devtools 顺手。
+    // Also log it: install verification usually involves switching to another app and clicking
+    // manually, and digging through the log is easier than digging through devtools.
     log::info!(
-        "[cursor-context] status={:?} reason={:?} app={:?} bundle={:?} chars={} elapsed={}ms",
+        "[cursor-context] status={:?} reason={:?} chars={} elapsed={}ms",
         result.status,
         result.reason,
-        result.app_name,
-        result.bundle_id,
         result
             .window
             .as_ref()
@@ -254,8 +331,3 @@ pub async fn debug_read_cursor_context(
     );
     result
 }
-
-// ─────────────────────────── unused but exported (silences dead_code) ───────────────────────────
-
-#[allow(dead_code)]
-fn _ensure_snapshot_used(_: CredentialsSnapshot) {}

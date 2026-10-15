@@ -2,9 +2,7 @@ package com.openless.app
 
 import android.view.accessibility.AccessibilityNodeInfo
 
-/**
- * Pure helpers for validating editable focus targets (unit-testable without a live service).
- */
+/** Pure helpers for validating editable focus targets (unit-testable without a live service). */
 internal object OpenLessAccessibilityTarget {
     private const val ACTION_PASTE_ID = 0x00008000
     private const val ACTION_SET_TEXT_ID = 0x00200000
@@ -24,6 +22,21 @@ internal object OpenLessAccessibilityTarget {
     fun passesWindowChecks(cachedWindowId: Int, activeWindowId: Int): Boolean {
         if (cachedWindowId < 0 || activeWindowId < 0) return false
         return cachedWindowId == activeWindowId
+    }
+
+    fun isSelectionRangeValid(text: String?, start: Int, end: Int): Boolean {
+        if (text == null || start < 0 || end < 0 || start == end) return false
+        val from = minOf(start, end)
+        val to = maxOf(start, end)
+        return to <= text.length && from < to
+    }
+
+    /** Validates both a non-empty selection and a caret used as a full-field target. */
+    fun isFieldTargetValid(text: String?, start: Int, end: Int): Boolean {
+        if (text == null || start < 0 || end < 0) return false
+        val from = minOf(start, end)
+        val to = maxOf(start, end)
+        return to <= text.length && from <= to
     }
 
     fun hasPasteOrSetTextAction(actions: List<AccessibilityNodeInfo.AccessibilityAction>): Boolean {
@@ -74,8 +87,8 @@ internal object OpenLessAccessibilityTarget {
     }
 
     /**
-     * Limited cache validation without tree walks or pseudo node identity.
-     * Caller must prefer [AccessibilityNodeInfo.findFocus] first.
+     * Limited cache validation without tree walks or pseudo node identity. Caller must prefer
+     * [AccessibilityNodeInfo.findFocus] first.
      */
     fun isValidCachedEditable(
         cached: AccessibilityNodeInfo,

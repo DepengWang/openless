@@ -1,327 +1,836 @@
-// SettingsModal.tsx — 居中弹窗，左侧单层侧栏。
-//
-// 重构（2026-05）：原本是「外层弹窗侧栏 + 设置页内层侧栏」双层嵌套，用户点
-// 「设置」还要再面对第二个侧栏。现在拍平成单层 —— 通用 / 服务 / 隐私 / 高级 /
-// 关于 五个 tab + 帮助外链组。每个 tab 的内容见 pages/settings/tabs.tsx，
-// 分组原则：按「用户带着什么问题来」归类 —— 怎么录（通用）/ 识别润色由谁提供
-// （服务，含本地模型）/ 数据去哪了（隐私）/ 实验功能（高级）/ 版本与更新（关于）。
-//
-// 设计原则：每个可见控件都必须可用。
-
-import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
+// Settings categories reuse the existing consumers; complex experiments open in the right pane.
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { Icon } from './Icon';
 import { SavedToast } from './SavedToast';
 import { useSavedToastListener } from '../lib/savedEvent';
 import { openExternal } from '../lib/ipc';
-import { useMobileLayout } from '../lib/useMobileLayout';
+import { getPlatformCapabilities, getCachedPlatformCapabilities } from '../lib/platform';
+import { useMobileLayout, useConservativeLayout } from '../lib/useMobileLayout';
 import type { OS } from './WindowChrome';
-import { AboutTab, GeneralTab, ServicesTab, PrivacyTab, AdvancedTab } from '../pages/settings/tabs';
-import { chipSelectedStyle } from '../pages/settings/shared';
+import {
+  AboutTab,
+  GeneralTab,
+  InputMethodTab,
+  ServicesTab,
+  PrivacyTab,
+  AdvancedTab,
+  ShortcutsTab,
+  AppearanceTab,
+} from '../pages/settings/tabs';
+import {
+  searchSettingsSections,
+  visibleSettingsSections,
+  visibleAdvancedPages,
+  isTestingFeaturePage,
+  type AdvancedPageId,
+  type SettingsSectionId,
+} from '../pages/settings/navigation';
+import { ChannelEditorHostContext } from '../pages/settings/ChannelEditorHostContext';
+import { useHotkeySettings } from '../state/HotkeySettingsContext';
+import {
+  useExperimentalAsr,
+  ExperimentalAsrGuidance,
+} from '../pages/settings/ExperimentalAsrSection';
+import { ProviderLeaveContext, useProviderForm } from '../pages/settings/ProviderForm';
+import { usePageTransition, useOverlayMotion } from '../lib/motion';
 
-// 稳定 tab ID（与 i18n key `modal.sections.*` 一致）。
-export type SettingsSectionId =
-  | 'general'
-  | 'services'
-  | 'privacy'
-  | 'advanced'
-  | 'about';
+export type { SettingsSectionId } from '../pages/settings/navigation';
 
 interface SettingsModalProps {
   os: OS;
   onClose: () => void;
   initialSettingsSection?: SettingsSectionId;
+  /** Keeps the closing surface mounted until its exit finishes. */
+  closing?: boolean;
 }
 
-interface ModalNavItem {
-  id: string;
-  icon: string;
-  external?: boolean;
-  href?: string;
-}
-
-const HELP_URL = 'https://github.com/Open-Less/openless#readme';
-const RELEASE_NOTES_URL = 'https://github.com/Open-Less/openless/releases';
-
-// 第一组：可选中的 tab；第二组：外部链接（永远不 active）。
-const TAB_ITEMS: ModalNavItem[] = [
-  { id: 'general', icon: 'settings' },
-  { id: 'services', icon: 'cloud' },
-  { id: 'privacy', icon: 'shield' },
-  { id: 'advanced', icon: 'bolt' },
-  { id: 'about', icon: 'info' },
-];
-const LINK_ITEMS: ModalNavItem[] = [
-  { id: 'helpCenter', icon: 'help', external: true, href: HELP_URL },
-  { id: 'releaseNotes', icon: 'doc', external: true, href: RELEASE_NOTES_URL },
+const LINKS = [
+  { id: 'helpCenter', icon: 'help', href: 'https://github.com/Open-Less/openless#readme' },
+  { id: 'releaseNotes', icon: 'doc', href: 'https://github.com/Open-Less/openless/releases' },
 ];
 
-export function SettingsModal({ os: _os, onClose, initialSettingsSection }: SettingsModalProps) {
-  const { t } = useTranslation();
+export function SettingsModal({
+  os,
+  onClose,
+  initialSettingsSection,
+  closing = false,
+}: SettingsModalProps) {
+  const { t, i18n } = useTranslation();
+  // The provider form's writes settle before close/section switch (async saves don't
+  // lose drafts); the revision counter excludes credential content.
+  const providerForm = useProviderForm();
   const mobile = useMobileLayout();
-  const [section, setSection] = useState<SettingsSectionId>(initialSettingsSection ?? 'general');
+  const conservative = useConservativeLayout();
+  const [requestedSection, setSection] = useState<SettingsSectionId>(
+    initialSettingsSection ?? 'general',
+  );
+  const [requestedAdvancedPage, setAdvancedPage] = useState<AdvancedPageId | null>(null);
+  const [query, setQuery] = useState('');
+  const [platformCaps, setPlatformCaps] = useState(getCachedPlatformCapabilities);
+  const experimentalAsr = useExperimentalAsr(platformCaps?.platform === 'desktop' && os === 'mac');
+  const { prefs, updatePrefs } = useHotkeySettings();
+  const [asrNavigation, setAsrNavigation] = useState(0);
+  const openExperimentalAsrChannels = async () => {
+    const navigated = await providerForm.finish(async () => {
+      await updatePrefs((current) => ({ ...current, pipelineMode: 'traditional' }));
+      channelCloseRef.current?.();
+      setAsrNavigation((value) => value + 1);
+      setQuery('');
+      setAdvancedPage(null);
+      setSection('services');
+    });
+    if (!navigated) throw new Error(t('common.operationFailed'));
+  };
   const savedToast = useSavedToastListener();
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  // A settings destination, not a dialog floating inside another framed surface.
+  // Fade the entire workspace, including its opaque background. Fading only the
+  // child left a solid sheet that disappeared in a single frame on unmount.
+  useOverlayMotion(overlayRef, closing, 'backdrop', true, 'settings');
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const destination = usePageTransition(
+    `${requestedSection}:${requestedAdvancedPage ?? ''}`,
+    scrollRef,
+    mobile,
+  );
+  const [sectionKey, advancedKey] = destination.split(':');
+  const section = sectionKey as SettingsSectionId;
+  const advancedPage = (advancedKey || null) as AdvancedPageId | null;
+  const searchRef = useRef<HTMLInputElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const mountedRef = useRef(false);
+  const [channelContainer, setChannelContainer] = useState<HTMLDivElement | null>(null);
+  const [channelBackground, setChannelBackground] = useState<HTMLDivElement | null>(null);
+  const channelCloseRef = useRef<(() => void) | null>(null);
+  const closeSettings = () => {
+    void providerForm.finish(() => {
+      channelCloseRef.current?.();
+      onClose();
+    });
+  };
+  const supportsShortcuts = platformCaps?.supportsDesktopHotkey ?? os !== 'android';
+  const sections = visibleSettingsSections(supportsShortcuts, platformCaps?.platform).map(
+    (item) => ({
+      ...item,
+      title: t(`modal.sections.${item.id}`),
+      description: t(`modal.descriptions.${item.id}`),
+      keywords: t(`modal.searchKeywords.${item.id}`),
+    }),
+  );
+  const searching = query.trim().length > 0;
+  const results = searchSettingsSections(sections, query);
+  const testingFeaturesEnabled = prefs?.testingFeaturesEnabled === true;
+  const advancedPages = visibleAdvancedPages(platformCaps?.platform, os, testingFeaturesEnabled);
+  const activeAdvancedPage =
+    section === 'advanced' && !searching
+      ? advancedPages.find((page) => page.id === advancedPage)
+      : undefined;
+  const contentTitle = searching
+    ? t('modal.searchResults')
+    : activeAdvancedPage
+      ? t(activeAdvancedPage.titleKey)
+      : t(`modal.sections.${section}`);
+  const contentDescription = searching
+    ? t('modal.searchCount', { count: results.length })
+    : activeAdvancedPage
+      ? t(`modal.advancedPages.${activeAdvancedPage.id}`)
+      : t(`modal.descriptions.${section}`);
 
-  // 与 sidebar nav 一致的滑动指示器：仅 tab 组有 pill；外链组永远不画 pill（desktop）。
-  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const [pillRect, setPillRect] = useState<{ top: number; height: number } | null>(null);
+  // The indicator thumb moves to the selected nav row's layout position; hidden
+  // while searching or in mobile layout.
+  const railNavRef = useRef<HTMLElement>(null);
+  const railBtnRefs = useRef(new Map<SettingsSectionId, HTMLButtonElement>());
+  const [railThumb, setRailThumb] = useState<{ top: number; height: number } | null>(null);
   useLayoutEffect(() => {
-    if (mobile) {
-      setPillRect(null);
+    if (mobile || searching) {
+      setRailThumb(null);
       return;
     }
-    const idx = TAB_ITEMS.findIndex(it => it.id === section);
-    const el = tabRefs.current[idx];
-    if (!el) return;
-    setPillRect({ top: el.offsetTop, height: el.offsetHeight });
-  }, [section, mobile]);
+    const nav = railNavRef.current;
+    const btn = railBtnRefs.current.get(section);
+    if (!nav || !btn) {
+      setRailThumb(null);
+      return;
+    }
+    const measure = () => {
+      const next = { top: btn.offsetTop, height: btn.offsetHeight };
+      setRailThumb((current) =>
+        current?.top === next.top && current.height === next.height ? current : next,
+      );
+    };
+    measure();
+    // Translated labels may wrap when the language, font scale or window width changes.
+    const observer = new ResizeObserver(measure);
+    observer.observe(nav);
+    observer.observe(btn);
+    return () => observer.disconnect();
+  }, [section, searching, mobile, sections.length, i18n.resolvedLanguage]);
 
-  return (
+  useEffect(() => {
+    let cancelled = false;
+    void getPlatformCapabilities().then((caps) => {
+      if (!cancelled) setPlatformCaps(caps);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!supportsShortcuts && section === 'shortcuts') setSection('general');
+  }, [supportsShortcuts, section]);
+
+  useEffect(() => {
+    if (platformCaps && platformCaps.platform !== 'android' && section === 'inputMethod') {
+      setSection('general');
+    }
+  }, [platformCaps, section]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    if (!previousFocusRef.current && document.activeElement instanceof HTMLElement) {
+      previousFocusRef.current = document.activeElement;
+    }
+    // Do not summon a software keyboard when opening mobile settings.
+    (mobile ? closeRef.current : searchRef.current)?.focus({ preventScroll: true });
+    return () => {
+      mountedRef.current = false;
+      window.requestAnimationFrame(() => {
+        if (!mountedRef.current && previousFocusRef.current?.isConnected)
+          previousFocusRef.current.focus();
+      });
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [section, searching, advancedPage]);
+
+  useEffect(() => {
+    if (advancedPage && !advancedPages.some((page) => page.id === advancedPage))
+      setAdvancedPage(isTestingFeaturePage(advancedPage) ? 'testingFeatures' : null);
+  }, [advancedPage, platformCaps, os, testingFeaturesEnabled]);
+
+  const openAdvancedPage = (page: AdvancedPageId) => {
+    setAdvancedPage(page);
+    window.requestAnimationFrame(() => headingRef.current?.focus());
+  };
+
+  const backToAdvanced = () => {
+    const previousPage = advancedPage;
+    setAdvancedPage(isTestingFeaturePage(previousPage) ? 'testingFeatures' : null);
+    window.requestAnimationFrame(() => {
+      surfaceRef.current
+        ?.querySelector<HTMLElement>(`[data-ol-advanced-entry="${previousPage}"]`)
+        ?.focus();
+    });
+  };
+
+  const selectSection = (next: SettingsSectionId, fromSearch = false) => {
+    void providerForm.finish(() => {
+      channelCloseRef.current?.();
+      setSection(next);
+      setAdvancedPage(null);
+      setQuery('');
+      if (fromSearch) window.requestAnimationFrame(() => headingRef.current?.focus());
+    });
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Nested selectors and shortcut recorders own their keys before the dialog does.
+    if (event.defaultPrevented || event.nativeEvent.isComposing) return;
+    const nestedPopup = document.querySelector('[role="listbox"], [data-base-ui-portal]');
+    const target = event.target instanceof Element ? event.target : null;
+    if (nestedPopup || target?.closest('[role="dialog"]') !== surfaceRef.current) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (query) {
+        setQuery('');
+        searchRef.current?.focus();
+      } else if (activeAdvancedPage) backToAdvanced();
+      else closeSettings();
+    }
+    if (event.key === 'Tab') {
+      const focusable = Array.from(
+        surfaceRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]',
+        ) ?? [],
+      ).filter((element) => element.getClientRects().length > 0 && !element.closest('[inert]'));
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (
+        event.shiftKey &&
+        (document.activeElement === first || document.activeElement === headingRef.current)
+      ) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    }
+  };
+
+  // Search box: desktop puts it at the top of the sidebar (mirroring macOS System
+  // Settings' "search above the nav" layout); mobile keeps it full-width under the
+  // title bar.
+  const searchBox = (
     <div
-      onClick={mobile ? undefined : onClose}
       style={{
-        position: mobile ? 'fixed' : 'absolute',
-        inset: 0,
-        // 白/实底哲学：遮罩只做半透明压暗（overlay token），不再叠 backdrop-filter 玻璃模糊。
-        background: mobile ? 'var(--ol-surface)' : 'var(--ol-overlay-bg)',
         display: 'flex',
-        alignItems: mobile ? 'stretch' : 'center',
-        justifyContent: mobile ? 'stretch' : 'center',
-        padding: mobile ? 0 : 28,
-        zIndex: 50,
-        animation: mobile ? undefined : 'ol-modal-backdrop-in 0.18s var(--ol-motion-soft)',
-      }}>
-
-      <div
-        className="ol-settings-surface"
-        data-ol-mobile={mobile ? 'true' : undefined}
-        onClick={(e) => e.stopPropagation()}
+        alignItems: 'center',
+        gap: 8,
+        padding: '7px 10px',
+        borderRadius: 8,
+        border: '0.5px solid var(--ol-line-strong)',
+        background: 'var(--ol-surface)',
+        minWidth: 0,
+      }}
+    >
+      <Icon name="search" size={15} />
+      <input
+        ref={searchRef}
+        type="search"
+        value={query}
+        onChange={(event) => {
+          channelCloseRef.current?.();
+          setQuery(event.target.value);
+        }}
+        placeholder={t('modal.searchPlaceholder')}
+        aria-label={t('modal.searchPlaceholder')}
         style={{
           width: '100%',
-          maxWidth: mobile ? undefined : 880,
-          height: '100%',
-          maxHeight: mobile ? undefined : 600,
-          background: 'var(--ol-settings-content-bg)',
-          borderRadius: mobile ? 0 : 14,
-          border: mobile ? 'none' : '0.5px solid var(--ol-line)',
-          boxShadow: mobile ? 'none' : 'var(--ol-shadow-xl)',
+          minWidth: 0,
+          border: 0,
+          outline: 'none',
+          background: 'transparent',
+          color: 'var(--ol-ink)',
+          font: 'inherit',
+          fontSize: 14,
+        }}
+      />
+      {query && (
+        <button
+          type="button"
+          aria-label={t('modal.clearSearch')}
+          onClick={() => {
+            setQuery('');
+            searchRef.current?.focus();
+          }}
+          style={{ ...iconButtonStyle, width: 22, height: 22 }}
+        >
+          <Icon name="close" size={12} />
+        </button>
+      )}
+    </div>
+  );
+
+  return (
+    <ProviderLeaveContext.Provider value={providerForm.register}>
+      <div
+        ref={overlayRef}
+        className="ol-settings-workspace"
+        style={{
+          position: mobile ? 'fixed' : 'absolute',
+          inset: 0,
+          background: 'var(--ol-surface)',
           display: 'flex',
-          flexDirection: mobile ? 'column' : 'row',
-          overflow: 'hidden',
-          animation: mobile ? undefined : 'ol-modal-card-in 0.24s var(--ol-motion-spring)',
-          position: 'relative',
-        }}>
-
-        {mobile ? (
-          <div style={{
-            flexShrink: 0,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: 'calc(10px + env(safe-area-inset-top, 0px)) 12px 10px',
-            borderBottom: '0.5px solid var(--ol-line-soft)',
-          }}>
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label={t('common.close')}
-              style={mobileHeaderBtnStyle}
-            >
-              <Icon name="close" size={16} />
-            </button>
-            <div
-              className="ol-thinscroll"
-              style={{ flex: 1, minWidth: 0, display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 2 }}
-            >
-              {TAB_ITEMS.map(it => {
-                const active = section === it.id;
-                return (
-                  <button
-                    key={it.id}
-                    type="button"
-                    onClick={() => setSection(it.id as SettingsSectionId)}
-                    className={active ? 'ol-nav-btn ol-nav-btn-active' : 'ol-nav-btn'}
-                    style={mobileTabChipStyle(active)}
-                  >
-                    {t(`modal.sections.${it.id}`)}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ) : (
-        <aside
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 0,
+          zIndex: mobile ? 70 : 50,
+          pointerEvents: closing ? 'none' : undefined,
+        }}
+      >
+        <div
+          ref={surfaceRef}
+          role="dialog"
+          // Existing menus and child dialogs portal to document.body. Keep those
+          // accessible; FloatingShell makes the covered application inert.
+          aria-label={t('shell.footer.settings')}
+          className="ol-settings-surface"
+          data-ol-mobile={mobile ? 'true' : undefined}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={handleKeyDown}
           style={{
-            width: 200, flexShrink: 0,
-            background: 'var(--ol-settings-rail-bg)',
-            borderRight: '0.5px solid var(--ol-line-soft)',
-            padding: '18px 12px',
-            display: 'flex', flexDirection: 'column', gap: 14,
-          }}>
-
-          {/* tab 组 */}
-          <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', gap: 1 }}>
-            {pillRect && (
-              <div
-                aria-hidden
-                style={{
-                  position: 'absolute',
-                  left: 0,
-                  right: 0,
-                  top: pillRect.top,
-                  height: pillRect.height,
-                  background: 'var(--ol-segmented-active-bg)',
-                  borderRadius: 8,
-                  boxShadow: 'var(--ol-segmented-active-shadow)',
-                  transition: 'top 0.36s var(--ol-motion-spring), height 0.36s var(--ol-motion-spring)',
-                  pointerEvents: 'none',
-                  zIndex: 0,
-                }}
-              />
-            )}
-            {TAB_ITEMS.map((it, idx) => {
-              const active = section === it.id;
-              return (
-                <button
-                  key={it.id}
-                  ref={el => { tabRefs.current[idx] = el; }}
-                  onClick={() => setSection(it.id as SettingsSectionId)}
-                  className={active ? 'ol-nav-btn ol-nav-btn-active' : 'ol-nav-btn'}
-                  style={navBtnStyle}>
-                  <Icon name={it.icon} size={14} />
-                  <span style={{ flex: 1 }}>{t(`modal.sections.${it.id}`)}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* 外链组 */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 1, paddingTop: 8, borderTop: '0.5px solid var(--ol-line-soft)' }}>
-            {LINK_ITEMS.map(it => (
+            width: '100%',
+            maxWidth: '100%',
+            height: '100%',
+            maxHeight: '100%',
+            minHeight: 0,
+            background: 'var(--ol-settings-content-bg)',
+            borderRadius: 0,
+            border: 'none',
+            boxShadow: 'none',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+          }}
+        >
+          {/* Desktop no longer has a title bar spanning both columns;
+            the sidebar and content each run to the top, with title/auto-save/close
+            folded into the right column's top. Mobile keeps the full-width header
+            (title + close + full-row search). */}
+          {mobile && (
+            <header
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 12,
+                padding: 'calc(12px + env(safe-area-inset-top, 0px)) 16px 12px',
+                borderBottom: '0.5px solid var(--ol-line-soft)',
+                flexShrink: 0,
+              }}
+            >
+              <div style={{ flex: 1, order: 0, fontSize: 17, fontWeight: 650 }}>
+                {t('shell.footer.settings')}
+              </div>
               <button
-                key={it.id}
-                onClick={() => { if (it.href) void openExternal(it.href); }}
-                className="ol-nav-btn"
-                style={navBtnStyle}>
-                <Icon name={it.icon} size={14} />
-                <span style={{ flex: 1 }}>{t(`modal.sections.${it.id}`)}</span>
-                <Icon name="external" size={11} />
+                ref={closeRef}
+                type="button"
+                onClick={closeSettings}
+                aria-label={t('common.close')}
+                style={{ ...iconButtonStyle, order: 1 }}
+              >
+                <Icon name="close" size={17} />
               </button>
-            ))}
-          </div>
-        </aside>
-        )}
-
-        {/* ─── 内容区 ────────────────────────────────────────────── */}
-        <div style={{ flex: 1, minWidth: 0, overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column' }}>
-          <SavedToast
-            saveState={savedToast.state}
-            message={savedToast.message}
-            slideFrom="top"
-            offsetStyle={{ position: 'absolute', top: mobile ? 12 : 16, right: mobile ? 14 : 54 }}
-          />
-          {!mobile && (
-          <button
-            onClick={onClose}
-            style={{
-              position: 'absolute', top: 14, right: 14, zIndex: 2,
-              width: 28, height: 28, border: 0, borderRadius: 999,
-              background: 'transparent', color: 'var(--ol-ink-3)',
-              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              cursor: 'default',
-              transition: 'background 0.16s var(--ol-motion-quick)',
-            }}
-            // hover 底色适配白/实底内容区：旧 token 是白玻璃 rgba（白底上不可见），改用 surface-2。
-            onMouseEnter={e => (e.currentTarget.style.background = 'var(--ol-surface-2)')}
-            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-            title={t('common.close')}>
-            <Icon name="close" size={14} />
-          </button>
+              <div style={{ order: 2, flex: '1 0 100%', minWidth: 0 }}>{searchBox}</div>
+            </header>
           )}
-
-          {!mobile && (
-          <h2 style={{ margin: 0, padding: '22px 28px 8px', fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', flexShrink: 0 }}>
-            {t(`modal.sections.${section}`)}
-          </h2>
-          )}
-
           <div
-            className="ol-thinscroll ol-scroll-fade"
             style={{
               flex: 1,
               minHeight: 0,
-              overflow: 'auto',
-              padding: mobile ? '12px 16px calc(16px + env(safe-area-inset-bottom, 0px))' : '10px 28px 28px',
-            }}>
-            {/* key=section 让切 tab 时整块重挂载，ol-tab-fade 轻微淡入。 */}
+              display: 'flex',
+              flexDirection: mobile ? 'column' : 'row',
+            }}
+          >
+            <aside
+              style={{
+                width: mobile ? undefined : 226,
+                flexShrink: 0,
+                minHeight: 0,
+                overflow: 'auto',
+                padding: mobile ? '8px 12px' : os === 'mac' ? '48px 12px 16px' : '20px 12px',
+                background: 'var(--ol-settings-rail-bg)',
+                borderRight: mobile ? undefined : '0.5px solid var(--ol-line-soft)',
+                borderBottom: mobile ? '0.5px solid var(--ol-line-soft)' : undefined,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 12,
+              }}
+            >
+              {!mobile && (
+                <button
+                  ref={closeRef}
+                  type="button"
+                  className="ol-settings-return"
+                  onClick={closeSettings}
+                >
+                  <Icon name="chevLeft" size={16} />
+                  {t('uiRefinement.back')}
+                </button>
+              )}
+              {!mobile && searchBox}
+              <nav
+                ref={railNavRef}
+                aria-label={t('modal.categoriesLabel')}
+                className="ol-thinscroll"
+                style={{
+                  position: 'relative',
+                  display: 'flex',
+                  flexDirection: mobile ? 'row' : 'column',
+                  gap: 4,
+                  overflowX: mobile ? 'auto' : undefined,
+                }}
+              >
+                {/* Sliding blue thumb: top/height follow the active category button, spring-eased. */}
+                {!mobile && railThumb && (
+                  <div
+                    aria-hidden="true"
+                    className="ol-settings-rail-thumb"
+                    style={{
+                      position: 'absolute',
+                      left: 0,
+                      right: 0,
+                      top: 0,
+                      transform: `translate3d(0, ${railThumb.top}px, 0)`,
+                      height: railThumb.height,
+                      borderRadius: 8,
+                      background: 'var(--ol-blue-soft)',
+                      pointerEvents: 'none',
+                    }}
+                  />
+                )}
+                {sections.map((item) => {
+                  const active = !searching && requestedSection === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      aria-current={active ? 'page' : undefined}
+                      ref={(el) => {
+                        if (el) railBtnRefs.current.set(item.id, el);
+                        else railBtnRefs.current.delete(item.id);
+                      }}
+                      onClick={() => selectSection(item.id)}
+                      className={
+                        mobile
+                          ? active
+                            ? 'ol-nav-btn ol-nav-btn-active'
+                            : 'ol-nav-btn'
+                          : 'ol-settings-rail-btn'
+                      }
+                      style={
+                        mobile
+                          ? {
+                              ...navButtonStyle,
+                              flexShrink: 0,
+                              padding: '8px 10px',
+                              whiteSpace: 'nowrap',
+                              background: active ? 'var(--ol-blue-soft)' : 'transparent',
+                              color: active ? 'var(--ol-blue)' : 'var(--ol-ink-2)',
+                              fontWeight: active ? 'var(--ol-font-weight-semibold)' : 400,
+                            }
+                          : {
+                              ...navButtonStyle,
+                              position: 'relative',
+                              zIndex: 1,
+                              flexShrink: 0,
+                              padding: '10px',
+                              whiteSpace: 'normal',
+                            }
+                      }
+                    >
+                      {!mobile && <Icon name={item.icon} size={16} />}
+                      <span style={{ minWidth: 0, overflowWrap: mobile ? undefined : 'anywhere' }}>
+                        {item.title}
+                      </span>
+                    </button>
+                  );
+                })}
+              </nav>
+              {!mobile && <HelpLinks />}
+            </aside>
             <div
-              key={section}
-              style={{ display: 'flex', flexDirection: 'column', gap: 12, animation: 'ol-tab-fade 0.2s var(--ol-motion-soft)' }}>
-              {section === 'general' && <GeneralTab />}
-              {section === 'services' && <ServicesTab />}
-              {section === 'privacy' && <PrivacyTab />}
-              {section === 'advanced' && <AdvancedTab />}
-              {section === 'about' && <AboutTab />}
-            </div>
-            {mobile && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 20, paddingTop: 16, borderTop: '0.5px solid var(--ol-line-soft)' }}>
-                {LINK_ITEMS.map(it => (
-                  <button
-                    key={it.id}
-                    type="button"
-                    onClick={() => { if (it.href) void openExternal(it.href); }}
-                    className="ol-nav-btn"
-                    style={navBtnStyle}
+              ref={setChannelContainer}
+              className="ol-settings-content-pane"
+              data-ol-advanced={section === 'advanced' && !searching ? 'true' : undefined}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                minHeight: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                position: 'relative',
+              }}
+            >
+              <ChannelEditorHostContext.Provider
+                value={{
+                  container: channelContainer,
+                  background: channelBackground,
+                  registerClose: (close) => {
+                    channelCloseRef.current = close;
+                  },
+                }}
+              >
+                <div
+                  ref={setChannelBackground}
+                  style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
+                >
+                  <SavedToast
+                    saveState={savedToast.state}
+                    message={savedToast.message}
+                    slideFrom="top"
+                    offsetStyle={{ position: 'absolute', top: 12, right: 16 }}
+                  />
+                  {/* Desktop: the category title + auto-save hint + close button form
+                the right column's own top bar (like System Settings: the toolbar
+                belongs to the content area, no longer spanning the sidebar). */}
+                  {(!mobile || activeAdvancedPage) && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 12,
+                        padding: mobile
+                          ? '18px 24px 0'
+                          : os === 'mac'
+                            ? '48px 28px 0'
+                            : '24px 28px 0',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {activeAdvancedPage && (
+                        <button
+                          type="button"
+                          className="ol-settings-back"
+                          onClick={backToAdvanced}
+                          aria-label={t(
+                            isTestingFeaturePage(advancedPage)
+                              ? 'modal.backToTestingFeatures'
+                              : 'modal.backToAdvanced',
+                          )}
+                          title={t(
+                            isTestingFeaturePage(advancedPage)
+                              ? 'modal.backToTestingFeatures'
+                              : 'modal.backToAdvanced',
+                          )}
+                        >
+                          <Icon name="chevLeft" size={19} />
+                        </button>
+                      )}
+                      <h2
+                        ref={headingRef}
+                        tabIndex={-1}
+                        style={{
+                          margin: 0,
+                          flex: 1,
+                          minWidth: 0,
+                          fontSize: 21,
+                          fontWeight: 650,
+                          letterSpacing: '-0.025em',
+                          outline: 'none',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {contentTitle}
+                      </h2>
+                      {!mobile && (
+                        <span style={{ color: 'var(--ol-ink-3)', fontSize: 12, flexShrink: 0 }}>
+                          {t('modal.autoSaveHint')}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  <div
+                    style={{ padding: mobile ? '18px 16px 12px' : '8px 28px 12px', flexShrink: 0 }}
                   >
-                    <Icon name={it.icon} size={14} />
-                    <span style={{ flex: 1 }}>{t(`modal.sections.${it.id}`)}</span>
-                    <Icon name="external" size={11} />
-                  </button>
-                ))}
-              </div>
-            )}
+                    {mobile && !activeAdvancedPage && (
+                      <h2
+                        ref={headingRef}
+                        tabIndex={-1}
+                        style={{
+                          margin: 0,
+                          fontSize: 20,
+                          fontWeight: 650,
+                          letterSpacing: '-0.025em',
+                          outline: 'none',
+                        }}
+                      >
+                        {contentTitle}
+                      </h2>
+                    )}
+                    {activeAdvancedPage?.id !== 'localModels' && (
+                      <p
+                        style={{
+                          margin: mobile && !activeAdvancedPage ? '7px 0 0' : 0,
+                          fontSize: 13,
+                          lineHeight: 1.6,
+                          color: 'var(--ol-ink-3)',
+                        }}
+                        aria-live="polite"
+                      >
+                        {contentDescription}
+                      </p>
+                    )}
+                  </div>
+                  <div
+                    ref={scrollRef}
+                    className={[
+                      'ol-thinscroll ol-settings-scroll',
+                      conservative ? 'ol-conservative-scope' : '',
+                    ].join(' ')}
+                    style={{
+                      flex: 1,
+                      minHeight: 0,
+                      overflow: 'auto',
+                      padding: mobile
+                        ? '0 16px calc(20px + env(safe-area-inset-bottom, 0px))'
+                        : section === 'services'
+                          ? '0 28px 6px'
+                          : '0 28px 28px',
+                    }}
+                  >
+                    {searching && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {results.map((item) => (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => selectSection(item.id, true)}
+                            style={{
+                              ...navButtonStyle,
+                              border: '0.5px solid var(--ol-line)',
+                              padding: 16,
+                              alignItems: 'flex-start',
+                              background: 'var(--ol-surface)',
+                            }}
+                          >
+                            <Icon name={item.icon} size={18} />
+                            <span style={{ flex: 1, minWidth: 0 }}>
+                              <span
+                                style={{
+                                  display: 'block',
+                                  fontWeight: 'var(--ol-font-weight-semibold)',
+                                  marginBottom: 5,
+                                }}
+                              >
+                                {item.title}
+                              </span>
+                              <span
+                                style={{ fontSize: 12, color: 'var(--ol-ink-3)', lineHeight: 1.6 }}
+                              >
+                                {item.description}
+                              </span>
+                            </span>
+                            <Icon name="chevRight" size={14} />
+                          </button>
+                        ))}
+                        {results.length === 0 && (
+                          <div
+                            style={{
+                              padding: '24px 16px',
+                              border: '0.5px solid var(--ol-line)',
+                              borderRadius: 10,
+                              textAlign: 'center',
+                            }}
+                          >
+                            <p style={{ fontSize: 13, color: 'var(--ol-ink-3)' }}>
+                              {t('modal.noResults')}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setQuery('');
+                                searchRef.current?.focus();
+                              }}
+                              style={{
+                                ...navButtonStyle,
+                                margin: '12px auto 0',
+                                color: 'var(--ol-blue)',
+                              }}
+                            >
+                              {t('modal.clearSearch')}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {/* Category replacement keeps each form's lifecycle separate. */}
+                    <div
+                      key={section}
+                      className="ol-settings-sections"
+                      data-section={section}
+                      style={{
+                        display: searching ? 'none' : 'flex',
+                        flexDirection: 'column',
+                        gap: 16,
+                      }}
+                    >
+                      {section === 'general' && <GeneralTab />}
+                      {section === 'inputMethod' && <InputMethodTab />}
+                      {section === 'shortcuts' && <ShortcutsTab />}
+                      {section === 'appearance' && <AppearanceTab />}
+                      {section === 'services' && <ServicesTab asrNavigation={asrNavigation} />}
+                      {section === 'privacy' && <PrivacyTab />}
+                      {section === 'advanced' && (
+                        <AdvancedTab
+                          pages={advancedPages}
+                          page={advancedPage}
+                          onOpenPage={openAdvancedPage}
+                          experimentalAsr={experimentalAsr}
+                          onOpenAsr={openExperimentalAsrChannels}
+                        />
+                      )}
+                      {section === 'about' && <AboutTab />}
+                    </div>
+                    {mobile && !searching && <HelpLinks />}
+                  </div>
+                </div>
+              </ChannelEditorHostContext.Provider>
+            </div>
           </div>
         </div>
       </div>
+      <ExperimentalAsrGuidance
+        controller={experimentalAsr}
+        onOpenAsr={openExperimentalAsrChannels}
+      />
+    </ProviderLeaveContext.Provider>
+  );
+}
+
+function HelpLinks() {
+  const { t } = useTranslation();
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        paddingTop: 16,
+        marginTop: 20,
+        borderTop: '0.5px solid var(--ol-line-soft)',
+      }}
+    >
+      {LINKS.map((link) => (
+        <button
+          key={link.id}
+          type="button"
+          onClick={() => void openExternal(link.href)}
+          className="ol-nav-btn"
+          style={navButtonStyle}
+        >
+          <Icon name={link.icon} size={14} />
+          <span style={{ flex: 1 }}>{t(`modal.sections.${link.id}`)}</span>
+          <Icon name="external" size={11} />
+        </button>
+      ))}
     </div>
   );
 }
 
-const mobileHeaderBtnStyle: CSSProperties = {
-  width: 36,
-  height: 36,
-  flexShrink: 0,
-  border: 0,
-  borderRadius: 10,
-  background: 'transparent',
-  color: 'var(--ol-ink-3)',
+const iconButtonStyle: CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
-  cursor: 'default',
-};
-
-function mobileTabChipStyle(active: boolean): CSSProperties {
-  return {
-    flexShrink: 0,
-    padding: '6px 12px',
-    borderRadius: 999,
-    fontFamily: 'inherit',
-    fontSize: 12,
-    fontWeight: active ? 600 : 500,
-    cursor: 'default',
-    ...chipSelectedStyle(active),
-  };
-}
-
-const navBtnStyle = {
-  display: 'flex', alignItems: 'center', gap: 10,
-  padding: '7px 10px',
-  borderRadius: 8, border: 0,
+  flexShrink: 0,
+  width: 30,
+  height: 30,
+  padding: 0,
+  border: 0,
+  borderRadius: 8,
   background: 'transparent',
-  fontFamily: 'inherit', fontSize: 13,
-  cursor: 'default', textAlign: 'left' as const,
-  position: 'relative' as const,
-  zIndex: 1,
-  transition: 'color 0.16s var(--ol-motion-quick), background 0.16s var(--ol-motion-quick)',
+  color: 'var(--ol-ink-3)',
+  cursor: 'pointer',
+};
+const navButtonStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  padding: '8px 10px',
+  border: 0,
+  borderRadius: 8,
+  background: 'transparent',
+  color: 'var(--ol-ink-2)',
+  font: 'inherit',
+  fontSize: 14,
+  cursor: 'pointer',
+  textAlign: 'left',
 };
