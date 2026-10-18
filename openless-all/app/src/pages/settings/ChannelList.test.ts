@@ -40,6 +40,7 @@ const expectedByPlatform: Record<OS, readonly string[]> = {
   win: ['foundry-local-whisper', 'sherpa-onnx-local'],
   // arm64 Android links sherpa-onnx; Foundry stays Windows-only.
   android: ['sherpa-onnx-local'],
+  harmony: [],
 };
 
 // Production receives this catalog from Core. The test supplies only the

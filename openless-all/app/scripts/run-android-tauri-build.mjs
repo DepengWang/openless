@@ -11,7 +11,7 @@ import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { parseAndroidAbis, ANDROID_ABI_MATRIX } from './android-abi-matrix.mjs';
+import { parseAndroidAbis, ANDROID_ABI_MATRIX, entryForAbi } from './android-abi-matrix.mjs';
 import {
   SHERPA_ONNX_ANDROID_ABI,
   SHERPA_ONNX_ANDROID_LIBS,
@@ -29,9 +29,21 @@ async function prepareLocalAsrLibs(targets, env) {
   if (!targets.includes('aarch64')) return;
   const libDir = await ensureSherpaOnnxAndroidLibs();
   env.SHERPA_ONNX_LIB_DIR = libDir;
-  const jniLibs = join(appRoot, 'src-tauri', 'gen', 'android', 'app', 'src', 'main', 'jniLibs', SHERPA_ONNX_ANDROID_ABI);
+  const jniLibs = join(
+    appRoot,
+    'src-tauri',
+    'gen',
+    'android',
+    'app',
+    'src',
+    'main',
+    'jniLibs',
+    SHERPA_ONNX_ANDROID_ABI,
+  );
   if (!existsSync(join(appRoot, 'src-tauri', 'gen', 'android'))) {
-    throw new Error('Generated Android project not found under src-tauri/gen/android; run "npm run tauri -- android init --ci" first.');
+    throw new Error(
+      'Generated Android project not found under src-tauri/gen/android; run "npm run tauri -- android init --ci" first.',
+    );
   }
   mkdirSync(jniLibs, { recursive: true });
   for (const lib of SHERPA_ONNX_ANDROID_LIBS) copyFileSync(join(libDir, lib), join(jniLibs, lib));
@@ -57,6 +69,16 @@ async function main() {
   const targets = resolveTargets();
   const env = { ...process.env };
   await prepareLocalAsrLibs(targets, env);
+  const rimeBuilder = fileURLToPath(new URL('./build-mobile-rime.py', import.meta.url));
+  for (const target of targets) {
+    const rime = spawnSync(
+      env.PYTHON ?? 'python3',
+      [rimeBuilder, 'android', '--stage', '--abi', entryForAbi(target).gradleAbi],
+      { stdio: 'inherit', env },
+    );
+    if (rime.error) throw rime.error;
+    if (rime.status !== 0) process.exit(rime.status ?? 1);
+  }
   const args = ['tauri', 'android', 'build', '--apk', '--split-per-abi', '--target', ...targets];
   if (mode === '--debug') {
     args.push('--debug');
