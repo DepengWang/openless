@@ -147,7 +147,13 @@ if (defaultChannelNameForProvider('openai', '') !== '') {
   throw new Error('non-OrcaRouter channel naming must remain unchanged');
 }
 
-for (const provider of ['local-qwen3', 'local-qwen3-mlx', 'local-qwen3-c', 'local-whisper']) {
+for (const provider of [
+  'local-qwen3',
+  'local-qwen3-mlx',
+  'local-qwen3-c',
+  'local-whisper',
+  'sherpa-onnx-local',
+]) {
   if (channelTestMode('asr', provider, 'unsupported') !== 'local-model') {
     throw new Error(`${provider} must use the local model channel test`);
   }

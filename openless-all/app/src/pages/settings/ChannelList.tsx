@@ -208,6 +208,7 @@ const LOCAL_MODEL_CHANNEL_PROVIDERS = new Set([
   'local-qwen3-mlx',
   'local-qwen3-c',
   'local-whisper',
+  'sherpa-onnx-local',
 ]);
 
 export function channelTestMode(
