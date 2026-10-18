@@ -5013,7 +5013,20 @@ impl OpenLessBackend {
             .resolve_session_provider(ProviderSlot::Asr, &preferences.active_asr_provider)
             .await
         {
-            Ok(provider) => Self::local_asr_runtime(&provider.provider_type).is_some(),
+            Ok(provider) => {
+                let Some(runtime) = Self::local_asr_runtime(&provider.provider_type) else {
+                    return AsrRoute::Cloud;
+                };
+                // Sherpa is a real local route only when the selected model is
+                // installed on this ABI. The native engine otherwise rejects
+                // the dictation after the route has already been displayed.
+                if runtime == crate::LocalAsrRuntime::SherpaOnnx
+                    && self.local_asr_switch_target(&preferences).is_none()
+                {
+                    return AsrRoute::Unavailable;
+                }
+                true
+            }
             Err(error)
                 if error.code == BackendErrorCode::InvalidState
                     && self.local_asr_switch_target(&preferences).is_some() =>

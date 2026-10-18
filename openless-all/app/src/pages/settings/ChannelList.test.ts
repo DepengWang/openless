@@ -65,8 +65,12 @@ const descriptors: ProviderDescriptor[] = [
   supportedRequestFormats: [],
 }));
 
-const asrPresets = (os: OS, supportsQwen3Mlx = true, currentProviderId?: string) =>
-  presetsFor('asr', os, supportsQwen3Mlx, currentProviderId, descriptors);
+const asrPresets = (
+  os: OS,
+  supportsQwen3Mlx = true,
+  currentProviderId?: string,
+  supportsLocalAsr = true,
+) => presetsFor('asr', os, supportsQwen3Mlx, currentProviderId, descriptors, supportsLocalAsr);
 
 for (const os of Object.keys(expectedByPlatform) as OS[]) {
   const ids = new Set(asrPresets(os).map((preset) => preset.id));
@@ -92,6 +96,13 @@ for (const os of Object.keys(expectedByPlatform) as OS[]) {
 const intelMacIds = new Set(asrPresets('mac', false).map((preset) => preset.id));
 if (intelMacIds.has('local-qwen3-mlx') || intelMacIds.has('local-qwen3-c')) {
   throw new Error('legacy models must not be offered on either Intel or Apple Silicon macOS');
+}
+
+const unsupportedAndroidIds = new Set(
+  asrPresets('android', true, undefined, false).map((preset) => preset.id),
+);
+if (unsupportedAndroidIds.has('sherpa-onnx-local')) {
+  throw new Error('sherpa-onnx must stay hidden on Android ABIs without the native runtime');
 }
 
 const legacyQwenEditIds = new Set(
