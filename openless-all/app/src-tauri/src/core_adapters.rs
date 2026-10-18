@@ -56,14 +56,14 @@ impl openless_core::TaskSpawner for TauriTaskSpawner {
 pub(crate) struct TauriNativeAsrDependencies {
     foundry: Arc<crate::asr::local::FoundryLocalRuntime>,
     sherpa: Arc<crate::asr::local::SherpaOnnxRuntime>,
-    #[cfg(target_os = "windows")]
+    #[cfg(local_asr_sherpa)]
     foundry_generation: Arc<AtomicU64>,
-    #[cfg(target_os = "windows")]
+    #[cfg(local_asr_sherpa)]
     sherpa_generation: Arc<AtomicU64>,
 }
 
 impl TauriNativeAsrDependencies {
-    #[cfg(target_os = "windows")]
+    #[cfg(local_asr_sherpa)]
     pub(crate) fn new(
         foundry: Arc<crate::asr::local::FoundryLocalRuntime>,
         sherpa: Arc<crate::asr::local::SherpaOnnxRuntime>,
@@ -76,7 +76,7 @@ impl TauriNativeAsrDependencies {
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(local_asr_sherpa))]
     pub(crate) fn new() -> Self {
         Self {
             foundry: Arc::new(crate::asr::local::FoundryLocalRuntime::new()),
@@ -195,22 +195,28 @@ pub(crate) fn backend_dependencies(
             .register(*provider_type, Arc::clone(&production_asr))
             .expect("built-in ASR provider ids are non-empty");
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(local_asr_sherpa)]
     let native_asr: Arc<dyn TranscriptionEngine> = Arc::new(TauriNativeTranscriptionEngine::new(
         native_asr_dependencies,
         model_store.clone(),
         Arc::clone(&backend),
     ));
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(local_asr_sherpa))]
     let _ = native_asr_dependencies;
+    // Foundry is Windows-only; Sherpa runs wherever sherpa-onnx is linked
+    // (Windows and arm64 Android — see build.rs).
     #[cfg(target_os = "windows")]
     for provider_type in [
         crate::asr::local::foundry::PROVIDER_ID,
         "foundry-local",
         "foundry-whisper",
-        crate::asr::local::sherpa::PROVIDER_ID,
-        "sherpa-onnx",
     ] {
+        transcription
+            .register(provider_type, Arc::clone(&native_asr))
+            .expect("native ASR provider ids are non-empty");
+    }
+    #[cfg(local_asr_sherpa)]
+    for provider_type in [crate::asr::local::sherpa::PROVIDER_ID, "sherpa-onnx"] {
         transcription
             .register(provider_type, Arc::clone(&native_asr))
             .expect("native ASR provider ids are non-empty");
@@ -350,17 +356,13 @@ impl openless_core::ModelRuntimeAdapter for TauriLocalAsrRuntimeAdapter {
     fn engine_available(&self, runtime: openless_core::LocalAsrRuntime) -> bool {
         match runtime {
             openless_core::LocalAsrRuntime::Generic => false,
-            openless_core::LocalAsrRuntime::Foundry
-            | openless_core::LocalAsrRuntime::SherpaOnnx => cfg!(target_os = "windows"),
+            openless_core::LocalAsrRuntime::Foundry => cfg!(target_os = "windows"),
+            openless_core::LocalAsrRuntime::SherpaOnnx => cfg!(local_asr_sherpa),
         }
     }
 
     fn supports_model(&self, target: &openless_core::LocalAsrTarget) -> bool {
-        match target.runtime {
-            openless_core::LocalAsrRuntime::Generic => false,
-            openless_core::LocalAsrRuntime::Foundry
-            | openless_core::LocalAsrRuntime::SherpaOnnx => cfg!(target_os = "windows"),
-        }
+        self.engine_available(target.runtime)
     }
 
     fn inspect_native_models(
@@ -624,7 +626,7 @@ impl openless_core::ModelRuntimeAdapter for TauriLocalAsrRuntimeAdapter {
         model_dir: PathBuf,
         progress: openless_core::ModelPrepareProgressSink,
     ) -> BoxFuture<'static, Result<String, BackendError>> {
-        #[cfg(target_os = "windows")]
+        #[cfg(local_asr_sherpa)]
         self.invalidate_scheduled_release(target.runtime);
         let foundry = Arc::clone(&self.native.foundry);
         let sherpa = Arc::clone(&self.native.sherpa);
@@ -755,7 +757,7 @@ impl openless_core::ModelRuntimeAdapter for TauriLocalAsrRuntimeAdapter {
         &self,
         runtime: openless_core::LocalAsrRuntime,
     ) -> BoxFuture<'static, Result<(), BackendError>> {
-        #[cfg(target_os = "windows")]
+        #[cfg(local_asr_sherpa)]
         self.invalidate_scheduled_release(runtime);
         let foundry = Arc::clone(&self.native.foundry);
         let sherpa = Arc::clone(&self.native.sherpa);
@@ -805,7 +807,7 @@ impl openless_core::ModelRuntimeAdapter for TauriLocalAsrRuntimeAdapter {
         }
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(local_asr_sherpa)]
     fn invalidate_scheduled_release(&self, runtime: openless_core::LocalAsrRuntime) {
         match runtime {
             openless_core::LocalAsrRuntime::Foundry => &self.native.foundry_generation,
@@ -824,9 +826,9 @@ impl TauriLocalAsrRuntimeAdapter {
         provider_type: String,
         _activation_generation: Option<u64>,
     ) -> BoxFuture<'static, Result<(), BackendError>> {
-        #[cfg(target_os = "windows")]
+        #[cfg(local_asr_sherpa)]
         let foundry = Arc::clone(&self.native.foundry);
-        #[cfg(target_os = "windows")]
+        #[cfg(local_asr_sherpa)]
         let sherpa = Arc::clone(&self.native.sherpa);
         Box::pin(async move {
             if target.runtime != openless_core::LocalAsrRuntime::Generic {
@@ -834,11 +836,18 @@ impl TauriLocalAsrRuntimeAdapter {
                 // verifies the receipt. preload can also be called standalone, so the really
                 // loaded alias must be checked — never fake success, and never overturn a
                 // successful prepare with Unsupported like the old implementation did.
-                #[cfg(target_os = "windows")]
+                #[cfg(local_asr_sherpa)]
                 {
                     let ready = match target.runtime {
+                        #[cfg(target_os = "windows")]
                         openless_core::LocalAsrRuntime::Foundry => {
                             foundry.is_loaded_for(target.model_id())
+                        }
+                        // Foundry is Windows-only; nothing is ever loaded for it elsewhere.
+                        #[cfg(not(target_os = "windows"))]
+                        openless_core::LocalAsrRuntime::Foundry => {
+                            let _ = &foundry;
+                            false
                         }
                         openless_core::LocalAsrRuntime::SherpaOnnx => {
                             let status = sherpa.status_snapshot(target.model_id()).await;
@@ -854,11 +863,11 @@ impl TauriLocalAsrRuntimeAdapter {
                         )
                     });
                 }
-                #[cfg(not(target_os = "windows"))]
+                #[cfg(not(local_asr_sherpa))]
                 {
                     return Err(BackendError::new(
                         BackendErrorCode::Unsupported,
-                        "Foundry and Sherpa are only available on Windows",
+                        "Foundry and Sherpa are not available on this platform",
                     ));
                 }
             }
@@ -1474,15 +1483,15 @@ impl openless_core::PlatformApi for TauriPlatformApi {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(local_asr_sherpa)]
 struct TauriNativeTranscriptionEngine {
     dependencies: TauriNativeAsrDependencies,
     model_store: Option<Arc<openless_core::ModelStore>>,
-    #[cfg(target_os = "windows")]
+    #[cfg(local_asr_sherpa)]
     backend: BackendSlot,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(local_asr_sherpa)]
 impl TauriNativeTranscriptionEngine {
     fn new(
         dependencies: TauriNativeAsrDependencies,
@@ -1492,45 +1501,45 @@ impl TauriNativeTranscriptionEngine {
         Self {
             dependencies,
             model_store,
-            #[cfg(target_os = "windows")]
+            #[cfg(local_asr_sherpa)]
             backend: _backend,
         }
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(local_asr_sherpa)]
 #[derive(Clone)]
 enum TauriNativeTranscriptionSessionKind {
-    #[cfg(target_os = "windows")]
+    #[cfg(local_asr_sherpa)]
     Foundry {
         provider: Arc<crate::asr::local::FoundryLocalWhisperAsr>,
         runtime: Arc<crate::asr::local::FoundryLocalRuntime>,
     },
-    #[cfg(target_os = "windows")]
+    #[cfg(local_asr_sherpa)]
     Sherpa {
         provider: Arc<crate::asr::local::SherpaOnnxAsr>,
         runtime: Arc<crate::asr::local::SherpaOnnxRuntime>,
     },
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(local_asr_sherpa)]
 #[derive(Clone)]
 struct TauriNativeTranscriptionSession {
     kind: TauriNativeTranscriptionSessionKind,
     asr_call_label: openless_core::AsrCallLabel,
-    #[cfg(target_os = "windows")]
+    #[cfg(local_asr_sherpa)]
     backend: BackendSlot,
-    #[cfg(target_os = "windows")]
+    #[cfg(local_asr_sherpa)]
     session_id: SessionId,
-    #[cfg(target_os = "windows")]
+    #[cfg(local_asr_sherpa)]
     generation: u64,
-    #[cfg(target_os = "windows")]
+    #[cfg(local_asr_sherpa)]
     current_generation: Arc<AtomicU64>,
     keep_loaded_secs: u32,
     released: Arc<AtomicBool>,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(local_asr_sherpa)]
 impl TranscriptionEngine for TauriNativeTranscriptionEngine {
     fn start(
         &self,
@@ -1541,7 +1550,7 @@ impl TranscriptionEngine for TauriNativeTranscriptionEngine {
         // The two Windows runtimes count generations independently; switching to Sherpa must not
         // permanently invalidate Foundry's release. Settings-page prepare/release also shares
         // these generations: an old session must not unload a newly enabled model.
-        #[cfg(target_os = "windows")]
+        #[cfg(local_asr_sherpa)]
         let current_generation = Arc::clone(
             if context.asr.provider_type == openless_core::LocalAsrRuntime::Foundry.provider_id() {
                 &self.dependencies.foundry_generation
@@ -1549,21 +1558,21 @@ impl TranscriptionEngine for TauriNativeTranscriptionEngine {
                 &self.dependencies.sherpa_generation
             },
         );
-        #[cfg(target_os = "windows")]
+        #[cfg(local_asr_sherpa)]
         let generation = current_generation.fetch_add(1, Ordering::AcqRel) + 1;
         let keep_loaded_secs = context.asr.keep_loaded_secs.unwrap_or(0);
 
-        #[cfg(target_os = "windows")]
+        #[cfg(local_asr_sherpa)]
         let foundry = Arc::clone(&self.dependencies.foundry);
-        #[cfg(target_os = "windows")]
+        #[cfg(local_asr_sherpa)]
         let backend = Arc::clone(&self.backend);
-        #[cfg(target_os = "windows")]
+        #[cfg(local_asr_sherpa)]
         let sherpa = Arc::clone(&self.dependencies.sherpa);
         let model_store = self.model_store.clone();
 
         Box::pin(async move {
             let provider_type = context.asr.provider_type.as_str();
-            #[cfg(target_os = "windows")]
+            #[cfg(local_asr_sherpa)]
             let (kind, label_model) = if provider_type
                 == openless_core::LocalAsrRuntime::Foundry.provider_id()
             {
@@ -1585,6 +1594,9 @@ impl TranscriptionEngine for TauriNativeTranscriptionEngine {
                     });
                 (
                     TauriNativeTranscriptionSessionKind::Foundry {
+                        // Foundry is never registered off Windows (see backend_dependencies);
+                        // the non-Windows constructor only keeps this branch compiling there.
+                        #[cfg(target_os = "windows")]
                         provider: Arc::new(crate::asr::local::FoundryLocalWhisperAsr::new(
                             Arc::clone(&foundry),
                             model.clone(),
@@ -1593,6 +1605,11 @@ impl TranscriptionEngine for TauriNativeTranscriptionEngine {
                                 .runtime
                                 .clone()
                                 .unwrap_or_else(|| "auto".to_string()),
+                            context.asr.language.clone(),
+                        )),
+                        #[cfg(not(target_os = "windows"))]
+                        provider: Arc::new(crate::asr::local::FoundryLocalWhisperAsr::new(
+                            model.clone(),
                             context.asr.language.clone(),
                         )),
                         runtime: foundry,
@@ -1669,7 +1686,7 @@ impl TranscriptionEngine for TauriNativeTranscriptionEngine {
                 ));
             };
 
-            #[cfg(target_os = "windows")]
+            #[cfg(local_asr_sherpa)]
             let _ = partials;
 
             let asr_call_label =
@@ -1678,13 +1695,13 @@ impl TranscriptionEngine for TauriNativeTranscriptionEngine {
             Ok(Arc::new(TauriNativeTranscriptionSession {
                 kind,
                 asr_call_label,
-                #[cfg(target_os = "windows")]
+                #[cfg(local_asr_sherpa)]
                 backend,
-                #[cfg(target_os = "windows")]
+                #[cfg(local_asr_sherpa)]
                 session_id: _session_id,
-                #[cfg(target_os = "windows")]
+                #[cfg(local_asr_sherpa)]
                 generation,
-                #[cfg(target_os = "windows")]
+                #[cfg(local_asr_sherpa)]
                 current_generation,
                 keep_loaded_secs,
                 released: Arc::new(AtomicBool::new(false)),
@@ -1693,15 +1710,15 @@ impl TranscriptionEngine for TauriNativeTranscriptionEngine {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(local_asr_sherpa)]
 impl CoreAudioConsumer for TauriNativeTranscriptionSession {
     fn consume_pcm_chunk(&self, pcm: &[u8]) {
         match &self.kind {
-            #[cfg(target_os = "windows")]
+            #[cfg(local_asr_sherpa)]
             TauriNativeTranscriptionSessionKind::Foundry { provider, .. } => {
                 LegacyAudioConsumer::consume_pcm_chunk(provider.as_ref(), pcm);
             }
-            #[cfg(target_os = "windows")]
+            #[cfg(local_asr_sherpa)]
             TauriNativeTranscriptionSessionKind::Sherpa { provider, .. } => {
                 LegacyAudioConsumer::consume_pcm_chunk(provider.as_ref(), pcm);
             }
@@ -1709,27 +1726,27 @@ impl CoreAudioConsumer for TauriNativeTranscriptionSession {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(local_asr_sherpa)]
 impl TranscriptionSession for TauriNativeTranscriptionSession {
     fn asr_call_label(&self) -> Option<openless_core::AsrCallLabel> {
         Some(self.asr_call_label.clone())
     }
 
     fn finish(&self) -> BoxFuture<'static, Result<TranscriptOutput, BackendError>> {
-        #[cfg(target_os = "windows")]
+        #[cfg(local_asr_sherpa)]
         use crate::asr::local::foundry_runtime as foundry;
 
         let session = self.clone();
         let kind = self.kind.clone();
         Box::pin(async move {
-            #[cfg(target_os = "windows")]
+            #[cfg(local_asr_sherpa)]
             let mut recovery = None;
             // Don't arrange the release before each branch's `?`: all results flow through this
             // one point. cancel and finish may run concurrently; `released` guarantees resource
             // teardown is arranged only once, and an old generation can't clear a new session.
             let result = async {
             let output = match kind {
-                #[cfg(target_os = "windows")]
+                #[cfg(local_asr_sherpa)]
                 TauriNativeTranscriptionSessionKind::Foundry { provider, .. } => {
                     let timeout = openless_core::provider_rules::native_transcribe_timeout(
                         "foundry-local-whisper", provider.buffer_duration_ms());
@@ -1753,9 +1770,13 @@ impl TranscriptionSession for TauriNativeTranscriptionSession {
                             log::error!(
                                 "[core-adapter] Foundry retranscription reached terminal fallback error: {error:#}"
                             );
+                            #[cfg(target_os = "windows")]
+                            let message = foundry::FOUNDRY_FALLBACK_TERMINAL_USER_MESSAGE;
+                            #[cfg(not(target_os = "windows"))]
+                            let message = "Foundry is only available on Windows";
                             let mut backend_error = BackendError::new(
                                 BackendErrorCode::Provider,
-                                foundry::FOUNDRY_FALLBACK_TERMINAL_USER_MESSAGE,
+                                message,
                             );
                             backend_error.details = Some(serde_json::json!({
                                 "terminal": "foundry_fallback"
@@ -1767,7 +1788,7 @@ impl TranscriptionSession for TauriNativeTranscriptionSession {
                     recovery = result.primary_recovery;
                     result.raw
                 }
-                #[cfg(target_os = "windows")]
+                #[cfg(local_asr_sherpa)]
                 TauriNativeTranscriptionSessionKind::Sherpa { provider, .. } => {
                     let timeout = openless_core::provider_rules::native_transcribe_timeout(
                         "sherpa-onnx-local", provider.buffer_duration_ms());
@@ -1786,7 +1807,7 @@ impl TranscriptionSession for TauriNativeTranscriptionSession {
             if result.is_err() {
                 session.cancel_native();
             }
-            #[cfg(target_os = "windows")]
+            #[cfg(local_asr_sherpa)]
             session.release_native(result.is_err(), recovery);
             result
         })
@@ -1796,14 +1817,14 @@ impl TranscriptionSession for TauriNativeTranscriptionSession {
         let session = self.clone();
         Box::pin(async move {
             session.cancel_native();
-            #[cfg(target_os = "windows")]
+            #[cfg(local_asr_sherpa)]
             session.release_native(true, None);
             Ok(())
         })
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(local_asr_sherpa)]
 fn foundry_transcription_notices(
     backend: BackendSlot,
     session_id: SessionId,
@@ -1829,13 +1850,13 @@ fn foundry_transcription_notices(
     })
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(local_asr_sherpa)]
 impl TauriNativeTranscriptionSession {
     fn cancel_native(&self) {
         match &self.kind {
-            #[cfg(target_os = "windows")]
+            #[cfg(local_asr_sherpa)]
             TauriNativeTranscriptionSessionKind::Foundry { provider, .. } => provider.cancel(),
-            #[cfg(target_os = "windows")]
+            #[cfg(local_asr_sherpa)]
             TauriNativeTranscriptionSessionKind::Sherpa { provider, .. } => provider.cancel(),
         }
     }
@@ -1843,7 +1864,7 @@ impl TauriNativeTranscriptionSession {
     fn release_native(
         &self,
         discard: bool,
-        #[cfg(target_os = "windows")] recovery: Option<
+        #[cfg(local_asr_sherpa)] recovery: Option<
             crate::asr::local::foundry_runtime::FoundryPrimaryRecoveryToken,
         >,
     ) {
@@ -1851,7 +1872,7 @@ impl TauriNativeTranscriptionSession {
             return;
         }
         match &self.kind {
-            #[cfg(target_os = "windows")]
+            #[cfg(local_asr_sherpa)]
             TauriNativeTranscriptionSessionKind::Foundry { runtime, .. } => {
                 schedule_foundry_release(
                     Arc::clone(runtime),
@@ -1861,7 +1882,7 @@ impl TauriNativeTranscriptionSession {
                     Arc::clone(&self.current_generation),
                 );
             }
-            #[cfg(target_os = "windows")]
+            #[cfg(local_asr_sherpa)]
             TauriNativeTranscriptionSessionKind::Sherpa { runtime, .. } => {
                 schedule_sherpa_release(
                     Arc::clone(runtime),
@@ -1875,13 +1896,13 @@ impl TauriNativeTranscriptionSession {
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos", test))]
+#[cfg(any(target_os = "windows", target_os = "macos", local_asr_sherpa, test))]
 fn local_asr_release_delay(keep_loaded_secs: u32) -> Option<std::time::Duration> {
     (keep_loaded_secs != openless_core::LOCAL_ASR_KEEP_LOADED_FOREVER_SECS)
         .then(|| std::time::Duration::from_secs(keep_loaded_secs as u64))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(local_asr_sherpa)]
 fn schedule_foundry_release(
     runtime: Arc<crate::asr::local::FoundryLocalRuntime>,
     recovery: Option<crate::asr::local::foundry_runtime::FoundryPrimaryRecoveryToken>,
@@ -1889,6 +1910,10 @@ fn schedule_foundry_release(
     generation: u64,
     current_generation: Arc<AtomicU64>,
 ) {
+    // Foundry only runs on Windows; elsewhere there is never a loaded Foundry model to release.
+    #[cfg(not(target_os = "windows"))]
+    let _ = (runtime, recovery, keep_loaded_secs, generation, current_generation);
+    #[cfg(target_os = "windows")]
     tauri::async_runtime::spawn(async move {
         if current_generation.load(Ordering::Acquire) != generation {
             return;
@@ -1929,7 +1954,7 @@ fn schedule_foundry_release(
     });
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(local_asr_sherpa)]
 fn schedule_sherpa_release(
     runtime: Arc<crate::asr::local::SherpaOnnxRuntime>,
     keep_loaded_secs: u32,
@@ -1954,7 +1979,7 @@ fn schedule_sherpa_release(
     });
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "macos", local_asr_sherpa))]
 fn map_native_asr_error(error: impl std::fmt::Display) -> BackendError {
     BackendError::new(
         BackendErrorCode::Provider,

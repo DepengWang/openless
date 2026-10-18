@@ -2502,7 +2502,8 @@ impl PlatformCapabilities {
                 supports_overlay: true,
                 supports_desktop_hotkey: false,
                 supports_tray: false,
-                supports_local_asr: false,
+                // The app links sherpa-onnx on arm64 only; other ABIs stay cloud-only.
+                supports_local_asr: cfg!(target_arch = "aarch64"),
                 supports_local_qwen3_mlx: false,
                 supports_in_app_dictation: true,
                 supports_auto_update: true,
