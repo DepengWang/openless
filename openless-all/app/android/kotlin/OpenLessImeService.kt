@@ -1570,12 +1570,14 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             textSize = 17f
         }
         // Own View, overlaid on top of spaceButton (not inside its own
-        // text) — left-aligned, vertically centered, non-interactive so
-        // touches still reach the key beneath it. Shows BOTH labels
-        // stacked (拼音 always on top, 英文 always on the bottom — fixed
-        // position, per user request) rather than just naming the target
-        // mode — whichever is currently active is cherry red, the other
-        // gray, so long-press's effect is legible at a glance either way.
+        // text) — left-aligned and vertically centered. The hint keeps its
+        // own tap/long-press target, while upward swipes are delegated to
+        // spaceButton so the key's existing preview and commit handling is
+        // shared. Shows BOTH labels (拼音 always on top, 英文 always on the
+        // bottom — fixed position, per user request) rather than just naming
+        // the target mode — whichever is currently active is cherry red, the
+        // other gray, so long-press's effect is legible at a glance either
+        // way.
         val spaceHint = TextView(this).apply {
             val pinyinLabel = ui("拼音", "PINYIN")
             val englishLabel = ui("英文", "ENGLISH")
@@ -1603,6 +1605,71 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             // Keep the hint above the raised space key so its tap target is
             // the visible mode label rather than the key underneath it.
             translationZ = dp(10).toFloat()
+        }
+        var forwardingSpaceSwipe = false
+        var spaceHintLongPressed = false
+        var spaceHintDown: MotionEvent? = null
+        fun dispatchSpaceTouch(event: MotionEvent) {
+            val forwarded = MotionEvent.obtain(event)
+            val hintLocation = IntArray(2)
+            val spaceLocation = IntArray(2)
+            spaceHint.getLocationOnScreen(hintLocation)
+            spaceButton.getLocationOnScreen(spaceLocation)
+            forwarded.offsetLocation(
+                (hintLocation[0] - spaceLocation[0]).toFloat(),
+                (hintLocation[1] - spaceLocation[1]).toFloat(),
+            )
+            spaceButton.dispatchTouchEvent(forwarded)
+            forwarded.recycle()
+        }
+        spaceHint.setOnLongClickListener {
+            spaceHintLongPressed = true
+            toggleLatinInputMode()
+            true
+        }
+        spaceHint.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    spaceHintDown?.recycle()
+                    spaceHintDown = MotionEvent.obtain(event)
+                    forwardingSpaceSwipe = false
+                    spaceHintLongPressed = false
+                    false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!forwardingSpaceSwipe && !spaceHintLongPressed && spaceHintDown != null &&
+                        spaceHintDown!!.y - event.y >= dp(10)
+                    ) {
+                        forwardingSpaceSwipe = true
+                        view.cancelLongPress()
+                        view.isPressed = false
+                        view.parent?.requestDisallowInterceptTouchEvent(true)
+                        spaceHintDown?.let { dispatchSpaceTouch(it) }
+                        dispatchSpaceTouch(event)
+                        true
+                    } else if (forwardingSpaceSwipe) {
+                        dispatchSpaceTouch(event)
+                        true
+                    } else {
+                        false
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (forwardingSpaceSwipe) {
+                        dispatchSpaceTouch(event)
+                        view.isPressed = false
+                        forwardingSpaceSwipe = false
+                        spaceHintDown?.recycle()
+                        spaceHintDown = null
+                        true
+                    } else {
+                        spaceHintDown?.recycle()
+                        spaceHintDown = null
+                        false
+                    }
+                }
+                else -> forwardingSpaceSwipe
+            }
         }
         val spaceWrapper = FrameLayout(this).apply {
             addView(spaceButton, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
