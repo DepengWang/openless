@@ -2093,6 +2093,16 @@ pub const CATALOG: &[Msg] = &[
         text: row("切换式", "切換式", "Toggle", "トグル式", "토글 방식"),
     },
     Msg {
+        key: "settings.recording.audio_enhancement_label",
+        text: row(
+            "轻量麦克风增强",
+            "輕量麥克風增強",
+            "Lightweight microphone enhancement",
+            "軽量マイク拡張",
+            "가벼운 마이크 향상",
+        ),
+    },
+    Msg {
         key: "settings.recording.mute_during_recording_label",
         text: row(
             "录音时静音",
@@ -2755,6 +2765,46 @@ pub const CATALOG: &[Msg] = &[
             "Hold a key, speak, and your selected agent operates your computer. macOS only.",
             "キーを押して話すと、選択した Agent が PC を操作します。macOS のみ。",
             "키를 누르고 말하면 선택한 Agent가 PC를 조작합니다. macOS 전용.",
+        ),
+    },
+    Msg {
+        key: "settings.testing_features.title",
+        text: row(
+            "正在测试中的功能",
+            "正在測試中的功能",
+            "Features under testing",
+            "テスト中の機能",
+            "테스트 중인 기능",
+        ),
+    },
+    Msg {
+        key: "settings.testing_features.enable",
+        text: row(
+            "启用正在测试中的功能",
+            "啟用正在測試中的功能",
+            "Enable features under testing",
+            "テスト中の機能を有効にする",
+            "테스트 중인 기능 활성화",
+        ),
+    },
+    Msg {
+        key: "settings.testing_features.description",
+        text: row(
+            "开启后显示 Less Computer 和 Claude 控制台，可在支持的平台配置和使用。关闭会停止运行并隐藏入口，保留已有配置。仅在当前设备生效。",
+            "開啟後顯示 Less Computer 和 Claude 控制台，可在支援的平台設定和使用。關閉會停止執行並隱藏入口，保留既有設定。僅在目前裝置生效。",
+            "Show Less Computer and the Claude console for setup and use on supported platforms. Turning this off stops active tasks and hides their entries while keeping your settings. Applies only to this device.",
+            "対応するプラットフォームで Less Computer と Claude コンソールを表示し、設定・使用できます。オフにすると実行中のタスクを停止して項目を非表示にしますが、設定は保持されます。このデバイスのみに適用されます。",
+            "지원되는 플랫폼에서 Less Computer와 Claude 콘솔을 표시하고 설정 및 사용할 수 있습니다. 끄면 실행 중인 작업을 중지하고 항목을 숨기지만 설정은 유지됩니다. 이 기기에만 적용됩니다.",
+        ),
+    },
+    Msg {
+        key: "modal.advanced_pages.testing_features",
+        text: row(
+            "按需开启尚在测试中的功能。",
+            "依需要開啟尚在測試中的功能。",
+            "Opt in to features that are still being tested.",
+            "テスト中の機能を必要に応じて有効にします。",
+            "필요할 때 테스트 중인 기능을 활성화합니다.",
         ),
     },
     Msg {
@@ -3756,11 +3806,11 @@ pub const CATALOG: &[Msg] = &[
     Msg {
         key: "modal.descriptions.advanced",
         text: row(
-            "按需配置 Less Computer、多模态与调试功能。",
-            "按需設定 Less Computer、多模態與除錯功能。",
-            "Configure Less Computer, multimodal processing and debugging as needed.",
-            "必要に応じて Less Computer、マルチモーダル処理、デバッグを設定します。",
-            "필요에 따라 Less Computer, 멀티모달 처리 및 디버깅을 설정합니다.",
+            "按需配置测试功能、多模态与调试工具。",
+            "依需要設定測試功能、多模態與除錯工具。",
+            "Configure testing features, multimodal processing, and debugging tools.",
+            "テスト機能、マルチモーダル処理、デバッグツールを設定します。",
+            "테스트 기능, 멀티모달 처리 및 디버깅 도구를 설정합니다.",
         ),
     },
     Msg {
@@ -3951,6 +4001,16 @@ pub const CATALOG: &[Msg] = &[
             "Temporarily mute system output during voice input to avoid speaker echo.",
             "録音中にシステム出力を一時的にミュートし、スピーカーのエコーを防ぎます。",
             "녹음 중 시스템 출력을 일시적으로 음소거하여 스피커 에코를 방지합니다.",
+        ),
+    },
+    Msg {
+        key: "settings.recording.audio_enhancement_desc",
+        text: row(
+            "对本机麦克风应用轻量降噪、增益与软限幅，不包含回声消除。默认关闭。",
+            "對本機麥克風套用輕量降噪、增益與軟限幅，不包含回聲消除。預設關閉。",
+            "Applies light gain, soft limiting, and conservative noise suppression to the local microphone. It does not include echo cancellation. Off by default.",
+            "ローカルマイクに軽いノイズ抑制、ゲイン、ソフトリミッターを適用します。エコーキャンセルは含みません。既定ではオフです。",
+            "로컬 마이크에 가벼운 소음 억제, 게인과 소프트 리미터를 적용합니다. 에코 제거는 포함하지 않으며 기본값은 꺼짐입니다.",
         ),
     },
         Msg {
