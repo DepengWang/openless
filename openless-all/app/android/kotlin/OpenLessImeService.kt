@@ -3827,8 +3827,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private fun resetEditingStateForTargetChange() {
         englishComposingWord.clear()
         englishCandidateQueryEpoch++
-        litePinyinController.clear()
-        litePinyinController.resetAssociationContext()
+        rimePinyinController.clear()
+        rimePinyinController.resetAssociationContext()
         strokeController.resetForModeSwitch()
         clipboardSelectionMode = false
         clipboardSelectionAnchor = -1
