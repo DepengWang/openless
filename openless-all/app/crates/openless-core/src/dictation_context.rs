@@ -754,12 +754,13 @@ mod tests {
     use crate::style_packs::builtin_style_pack_for_mode;
 
     fn fallback_preferences() -> UserPreferences {
-        let mut preferences = UserPreferences::default();
-        preferences.local_asr_fallback_enabled = true;
-        preferences.sherpa_onnx_model = "sense-voice-small-zh".into();
-        preferences.sherpa_onnx_language_hint = "zh".into();
-        preferences.sherpa_onnx_keep_loaded_secs = 300;
-        preferences
+        UserPreferences {
+            local_asr_fallback_enabled: true,
+            sherpa_onnx_model: "sense-voice-small-zh".into(),
+            sherpa_onnx_language_hint: "zh".into(),
+            sherpa_onnx_keep_loaded_secs: 300,
+            ..UserPreferences::default()
+        }
     }
 
     fn cloud_asr() -> ProviderInvocation {

@@ -3705,18 +3705,22 @@ mod tests {
         (engine, progress, started)
     }
 
+    /// The engine, its progress sink, the providers started in order and the
+    /// polisher's call count.
+    type FallbackTestEngine = (
+        PipelineDictationEngine,
+        Arc<RecordingProgress>,
+        Arc<Mutex<Vec<String>>>,
+        Arc<AtomicUsize>,
+    );
+
     /// fallback_test_engine() with the polisher's result chosen, also
     /// returning how many times it was called.
     fn fallback_polish_test_engine(
         cloud: Vec<Result<TranscriptOutput, BackendError>>,
         local: Vec<Result<TranscriptOutput, BackendError>>,
         polish: Result<crate::ports::PolishOutput, BackendError>,
-    ) -> (
-        PipelineDictationEngine,
-        Arc<RecordingProgress>,
-        Arc<Mutex<Vec<String>>>,
-        Arc<AtomicUsize>,
-    ) {
+    ) -> FallbackTestEngine {
         racing_test_engine(&[], cloud, local, polish)
     }
 
@@ -3727,12 +3731,7 @@ mod tests {
         cloud: Vec<Result<TranscriptOutput, BackendError>>,
         local: Vec<Result<TranscriptOutput, BackendError>>,
         polish: Result<crate::ports::PolishOutput, BackendError>,
-    ) -> (
-        PipelineDictationEngine,
-        Arc<RecordingProgress>,
-        Arc<Mutex<Vec<String>>>,
-        Arc<AtomicUsize>,
-    ) {
+    ) -> FallbackTestEngine {
         let started = Arc::new(Mutex::new(Vec::new()));
         let polish_calls = Arc::new(AtomicUsize::new(0));
         let engine = PipelineDictationEngine::new(
@@ -3770,9 +3769,11 @@ mod tests {
 
     /// A polishing session (not raw mode) on CLOUD with the LOCAL fallback.
     fn polishing_fallback_context() -> Arc<DictationContext> {
-        let mut context = DictationContext::default();
-        context.asr = crate::dictation_context::ProviderInvocation::new(CLOUD, CLOUD);
-        context.asr_fallback = Some(crate::dictation_context::ProviderInvocation::new(LOCAL, LOCAL));
+        let mut context = DictationContext {
+            asr: crate::dictation_context::ProviderInvocation::new(CLOUD, CLOUD),
+            asr_fallback: Some(crate::dictation_context::ProviderInvocation::new(LOCAL, LOCAL)),
+            ..DictationContext::default()
+        };
         assert!(context.uses_llm_polisher(), "fixture must exercise the polisher");
         context.polish.polish_skip_max_chars = 0;
         Arc::new(context)
