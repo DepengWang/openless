@@ -16,6 +16,7 @@ import { getPlatformCapabilities } from '../../../lib/platform';
 import { Card } from '../../_atoms';
 import { ExperimentalSectionTitle, SettingRow, Toggle } from '../shared';
 import { useHotkeySettings } from '../../../state/HotkeySettingsContext';
+import { LocalModelPicker } from './LocalModelPicker';
 
 export function LocalModelsSection() {
   const { t } = useTranslation();
@@ -90,6 +91,10 @@ export function LocalModelsSection() {
               />
             </SettingRow>
           )}
+          {/* Android has no per-engine cards: the sherpa model used by the
+              fallback and by a turned-off cloud channel is picked here, without
+              having to create a local channel first. */}
+          {os === 'android' && <LocalModelPicker providerType="sherpa-onnx-local" />}
           <div style={{ marginTop: 16, borderTop: '0.5px solid var(--ol-line)', paddingTop: 16 }}>
             <LocalAsr embedded />
           </div>

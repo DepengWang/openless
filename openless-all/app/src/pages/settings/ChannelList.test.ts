@@ -38,7 +38,8 @@ const localProviders = [
 const expectedByPlatform: Record<OS, readonly string[]> = {
   mac: ['apple-speech'],
   win: ['foundry-local-whisper', 'sherpa-onnx-local'],
-  android: [],
+  // arm64 Android links sherpa-onnx; Foundry stays Windows-only.
+  android: ['sherpa-onnx-local'],
 };
 
 // Production receives this catalog from Core. The test supplies only the
