@@ -661,6 +661,24 @@ pub fn eligible_polish_context_turns(
         .collect()
 }
 
+/// Providers that recognize on this device: no network is involved, so a
+/// session on one of them treats polish as optional (see dictation_engine).
+pub(crate) fn is_local_asr_provider(provider: &str) -> bool {
+    matches!(
+        provider,
+        "local-qwen3"
+            | "local-qwen3-mlx"
+            | "local-qwen3-c"
+            | "local-whisper"
+            | "apple-whisper"
+            | "foundry-local"
+            | "foundry-whisper"
+            | "foundry-local-whisper"
+            | "sherpa-onnx"
+            | "sherpa-onnx-local"
+    )
+}
+
 /// The sherpa-onnx model a failed cloud ASR call falls back to: only when the
 /// user enabled it, this platform has local ASR, the session uses one of the
 /// shared cloud providers (a local provider has nothing to fall back to) and a

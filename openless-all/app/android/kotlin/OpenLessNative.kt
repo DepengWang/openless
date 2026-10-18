@@ -95,6 +95,9 @@ object OpenLessNative {
     @JvmStatic external fun nativeHasRegisteredActivityContext(): Boolean
 
     @JvmStatic external fun nativeBackendSnapshot(): String
+
+    /** "local", "cloud" or "unavailable" — which recognizer the next dictation uses. Blocks on a credential read: call off the main thread. */
+    @JvmStatic external fun nativeAsrRoute(): String?
     @JvmStatic external fun nativeImeCommand(json: String): String
 
     @JvmStatic

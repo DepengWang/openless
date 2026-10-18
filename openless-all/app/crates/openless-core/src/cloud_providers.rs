@@ -1241,7 +1241,7 @@ async fn run_cloud_polish(
     if let Some(error) = stream.take_error() {
         return Err(error);
     }
-    let polished = result.map_err(map_llm_error)?;
+    let polished = result.map_err(map_polish_error)?;
     if cancellation.is_cancelled() {
         return Err(cancelled_provider_error());
     }
@@ -1297,7 +1297,7 @@ async fn run_cloud_polish(
                 if let Some(error) = stream.take_error() {
                     return Err(error);
                 }
-                let text = result.map_err(map_llm_error)?;
+                let text = result.map_err(map_polish_error)?;
                 PolishOutput::text(text.trim().to_owned())
             }
         }
@@ -1520,6 +1520,18 @@ fn map_llm_error(error: impl std::fmt::Display) -> BackendError {
         BackendErrorCode::Provider,
         format!("LLM provider failed: {error}"),
     )
+}
+
+/// A polish failure, marked retryable when the network never answered
+/// (connection failure or timeout) — unlike a rejected key, exhausted quota or
+/// malformed reply. The dictation pipeline uses it to tell "offline" apart
+/// when the transcript came from a local model.
+fn map_polish_error(error: crate::polish::LLMError) -> BackendError {
+    let transient = matches!(
+        error,
+        crate::polish::LLMError::Network(_) | crate::polish::LLMError::Timeout
+    );
+    map_llm_error(error).retryable(transient)
 }
 
 pub struct SharedAuxiliaryTextPolisher {

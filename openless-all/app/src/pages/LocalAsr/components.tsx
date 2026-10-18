@@ -770,6 +770,7 @@ export function DownloadDialog({
   onRetryCatalog,
   onStart,
   onClose,
+  mirror,
 }: {
   entries: SidebarModelEntry[];
   selectedId: string | null;
@@ -790,6 +791,13 @@ export function DownloadDialog({
   onRetryCard: (id: string) => void;
   onStart: () => void;
   onClose: () => void;
+  /** Download source picker shown in the header, so the source is chosen where the download starts. */
+  mirror?: {
+    label: string;
+    value: string;
+    options: { value: string; label: string }[];
+    onChange: (value: string) => void;
+  };
 }) {
   const { t } = useTranslation();
   const stackLayout = useLayoutStack(760);
@@ -882,6 +890,24 @@ export function DownloadDialog({
           <div>
             <h2 id={titleId}>{t('localAsr.downloadDialogTitle')}</h2>
             <p id={descriptionId}>{t('localAsr.downloadDialogDesc')}</p>
+            {mirror && (
+              // A native select: on Android it opens the system picker, which no
+              // dialog layer or clipping can hide.
+              <label className="ol-model-dialog-mirror">
+                <span>{mirror.label}</span>
+                <select
+                  value={mirror.value}
+                  disabled={busy}
+                  onChange={(event) => mirror.onChange(event.target.value)}
+                >
+                  {mirror.options.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
           <button
             type="button"

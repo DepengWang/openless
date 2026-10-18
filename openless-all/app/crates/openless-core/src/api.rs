@@ -2305,6 +2305,19 @@ impl EngineProgressSink for BackendEngineProgress {
     }
 }
 
+/// Which kind of recognizer the next dictation uses — see OpenLessBackend::asr_route().
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AsrRoute {
+    Cloud,
+    Local,
+    /// Local recognition with no usable polish channel: the raw transcript
+    /// is the output (see capture_dictation_context_with_host).
+    LocalRaw,
+    /// No usable channel: the next dictation would fail to start.
+    Unavailable,
+}
+
 pub struct OpenLessBackend {
     config: BackendConfig,
     startup_error: Option<BackendError>,
@@ -4949,6 +4962,83 @@ impl OpenLessBackend {
         self.release_local_asr_provider(&previous.1).await
     }
 
+    /// The local model dictation switches to when the selected cloud ASR
+    /// channel is turned off: only where local ASR runs, with a sherpa-onnx
+    /// model selected and its files installed — otherwise the disabled-channel
+    /// error stands. Model, language and keep-loaded time are filled in from
+    /// the same preferences a manual switch would use (DictationContext::capture).
+    fn local_asr_switch_target(
+        &self,
+        preferences: &crate::UserPreferences,
+    ) -> Option<crate::dictation_context::ProviderInvocation> {
+        if !crate::shared_types::PlatformCapabilities::current().supports_local_asr {
+            return None;
+        }
+        let target = crate::LocalAsrTarget::parse(
+            crate::LocalAsrRuntime::SherpaOnnx,
+            preferences.sherpa_onnx_model.trim(),
+        )
+        .ok()?;
+        let installed = self
+            .deps
+            .services
+            .model_store
+            .as_ref()?
+            .is_installed(&target)
+            .unwrap_or(false);
+        installed.then(|| {
+            crate::dictation_context::ProviderInvocation::for_provider(
+                crate::LocalAsrRuntime::SherpaOnnx.provider_id(),
+            )
+        })
+    }
+
+    /// Which recognizer the next dictation will use, for hosts that show it
+    /// (the Android keyboard's status dot): the selected channel's own kind,
+    /// or Local when that channel is turned off and local_asr_switch_target()
+    /// steps in.
+    pub async fn asr_route(&self) -> AsrRoute {
+        let preferences = self.get_preferences();
+        let local = match self
+            .resolve_session_provider(ProviderSlot::Asr, &preferences.active_asr_provider)
+            .await
+        {
+            Ok(provider) => Self::local_asr_runtime(&provider.provider_type).is_some(),
+            Err(error)
+                if error.code == BackendErrorCode::InvalidState
+                    && self.local_asr_switch_target(&preferences).is_some() =>
+            {
+                true
+            }
+            Err(_) => return AsrRoute::Unavailable,
+        };
+        if !local {
+            return AsrRoute::Cloud;
+        }
+        // Same test the dictation context applies: a polish channel that is
+        // turned off or not configured means raw output.
+        let polish_usable = match self
+            .resolve_session_provider(ProviderSlot::Llm, &preferences.active_llm_provider)
+            .await
+        {
+            Ok(llm) => {
+                crate::cloud_providers::llm_channel_configured(
+                    self.deps.credential_store.as_ref(),
+                    &llm.provider_id,
+                    &llm.provider_type,
+                    llm.model.as_deref(),
+                )
+                .await
+            }
+            Err(_) => false,
+        };
+        if polish_usable {
+            AsrRoute::Local
+        } else {
+            AsrRoute::LocalRaw
+        }
+    }
+
     fn local_asr_runtime(provider: &str) -> Option<crate::LocalAsrRuntime> {
         match provider {
             "local-qwen3" | "local-qwen3-mlx" | "local-qwen3-c" | "local-whisper"
@@ -7393,8 +7483,28 @@ impl OpenLessBackend {
         );
         let traditional = pipeline_mode == crate::shared_types::PipelineMode::Traditional;
         let active_asr_provider = if traditional && purpose != DictationContextPurpose::QaText {
-            self.resolve_session_provider(ProviderSlot::Asr, &preferences.active_asr_provider)
-                .await?
+            match self
+                .resolve_session_provider(ProviderSlot::Asr, &preferences.active_asr_provider)
+                .await
+            {
+                Ok(provider) => provider,
+                // The selected cloud channel is turned off: dictate with the
+                // installed local model instead of refusing to start.
+                Err(error) if error.code == BackendErrorCode::InvalidState => {
+                    match self.local_asr_switch_target(&preferences) {
+                        Some(local) => {
+                            log::info!(
+                                "[dictation] ASR channel {} is disabled; using local {}",
+                                preferences.active_asr_provider,
+                                local.provider_type
+                            );
+                            local
+                        }
+                        None => return Err(error),
+                    }
+                }
+                Err(error) => return Err(error),
+            }
         } else {
             crate::dictation_context::ProviderInvocation::for_provider(
                 &preferences.active_asr_provider,
@@ -7474,6 +7584,17 @@ impl OpenLessBackend {
                 context.llm.model.as_deref(),
             )
             .await
+        {
+            context = context.with_unconfigured_llm_raw();
+        }
+        // Pure local: recognition runs on this device and the polish channel
+        // is turned off too — output the raw transcript instead of refusing to
+        // start. The error is kept below for a later translation request.
+        if purpose == DictationContextPurpose::Dictation
+            && traditional
+            && deferred_llm_error.is_some()
+            && context.uses_llm_polisher()
+            && crate::dictation_context::is_local_asr_provider(&context.asr.provider_type)
         {
             context = context.with_unconfigured_llm_raw();
         }
@@ -13420,6 +13541,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_recognition_with_a_disabled_llm_dictates_raw_text() {
+        let data_dir = TestDataDir::new("local-disabled-llm");
+        let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful(
+            "must not run",
+        ));
+        let backend = backend_with_dictation_engine(
+            data_dir.path().to_path_buf(),
+            Arc::new(crate::PipelineDictationEngine::new(
+                Arc::new(crate::testing::FixtureAudioRecorder::new(
+                    vec![vec![1, 0]],
+                    Vec::new(),
+                )),
+                Arc::new(crate::testing::FixtureTranscriptionEngine::successful(
+                    "raw words",
+                    80,
+                )),
+                polisher.clone(),
+            )),
+        );
+        let llm = backend
+            .create_channel(
+                ChannelKind::Llm,
+                "ark".to_string(),
+                "Unused LLM".to_string(),
+            )
+            .await
+            .unwrap();
+        let mut preferences = backend.get_preferences();
+        preferences.active_llm_provider = llm.clone();
+        preferences.active_asr_provider = "sherpa-onnx-local".to_string();
+        backend.set_preferences(preferences).unwrap();
+        backend
+            .set_active_provider(ProviderSlot::Llm, llm.clone())
+            .await
+            .unwrap();
+        backend
+            .set_channel_enabled(ChannelKind::Llm, llm, false)
+            .await
+            .unwrap();
+        // A polishing style: with cloud ASR this start would be refused.
+        backend.activate_style_pack("builtin.light").unwrap();
+        backend.start().await.unwrap();
+
+        backend
+            .start_dictation()
+            .await
+            .expect("local recognition dictates raw text without a polish channel");
+        let result = backend.stop_dictation().await.unwrap();
+
+        assert_eq!(result.polished_text, "raw words");
+        assert!(polisher.inputs().is_empty());
+        backend.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn raw_dictation_remains_usable_when_the_last_llm_channel_is_disabled() {
         let data_dir = TestDataDir::new("raw-disabled-llm");
         let polisher = Arc::new(crate::testing::FixtureTextPolisher::successful(
@@ -13449,6 +13625,9 @@ mod tests {
             .unwrap();
         let mut preferences = backend.get_preferences();
         preferences.active_llm_provider = llm.clone();
+        // Cloud ASR: with local recognition a disabled LLM means raw output
+        // instead (local_recognition_with_a_disabled_llm_dictates_raw_text).
+        preferences.active_asr_provider = "volcengine".to_string();
         preferences.working_languages = vec!["简体中文".to_string()];
         preferences.translation_target_language = "English".to_string();
         backend.set_preferences(preferences).unwrap();

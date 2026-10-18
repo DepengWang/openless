@@ -116,6 +116,9 @@ import type { RemoteSize } from './types';
 const OS = detectOS();
 const IS_WINDOWS = OS === 'win';
 const IS_QWEN_PLATFORM = OS === 'mac';
+// sherpa-onnx models: Windows and arm64 Android (this page only shows where
+// the backend reports local ASR support). Foundry stays Windows-only.
+const IS_SHERPA_PLATFORM = IS_WINDOWS || OS === 'android';
 
 function effectiveModelMirror(modelId: string, mirror: string): LocalAsrMirror {
   if (mirror === 'modelscope' && !modelId.startsWith('qwen3-asr-')) return 'huggingface';
@@ -493,6 +496,8 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
         void refreshFoundryStatus();
         void refreshFoundryCatalog();
         void refreshFoundryModelDir(selectedFoundryAlias);
+      }
+      if (IS_SHERPA_PLATFORM) {
         void refreshSherpaStatus();
         void refreshSherpaCatalog();
         void refreshSherpaModelDir(selectedSherpaAlias);
@@ -769,7 +774,7 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
   }, []);
 
   useEffect(() => {
-    if (!isTauri || !IS_WINDOWS) return;
+    if (!isTauri || !IS_SHERPA_PLATFORM) return;
     let unlisten: undefined | (() => void);
     let cancelled = false;
     (async () => {
@@ -800,7 +805,7 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
   }, []);
 
   useEffect(() => {
-    if (!isTauri || !IS_WINDOWS) return;
+    if (!isTauri || !IS_SHERPA_PLATFORM) return;
     let unlisten: undefined | (() => void);
     let cancelled = false;
     (async () => {
@@ -1721,7 +1726,7 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
       });
     }
     // Windows：sherpa-onnx + foundry
-    for (const c of IS_WINDOWS ? sherpaCatalog : []) {
+    for (const c of IS_SHERPA_PLATFORM ? sherpaCatalog : []) {
       const isDownloading =
         Boolean(sherpaDownloadProgress[c.alias]) &&
         (sherpaDownloadProgress[c.alias]?.phase === 'started' ||
@@ -2382,6 +2387,23 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
           }}
           onStart={startDownloadFromDialog}
           onClose={() => setDownloadDialog(false)}
+          // The settings-section mirror picker below is macOS-only; everywhere
+          // else this is the only way to leave HuggingFace, which is often
+          // unreachable (mainland China). Sherpa models have no ModelScope copy.
+          mirror={{
+            label: t('localAsr.mirrorLabel'),
+            value: IS_QWEN_PLATFORM
+              ? (settings?.mirror ?? 'huggingface')
+              : effectiveSherpaMirror(settings?.mirror ?? 'huggingface'),
+            options: [
+              { value: 'huggingface', label: t('localAsr.mirrorHuggingface') },
+              { value: 'hf-mirror', label: t('localAsr.mirrorHfMirror') },
+              ...(IS_QWEN_PLATFORM
+                ? [{ value: 'modelscope', label: t('localAsr.mirrorModelscope') }]
+                : []),
+            ],
+            onChange: (value) => void handleMirrorChange(value),
+          }}
         />
       )}
 

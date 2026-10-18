@@ -629,6 +629,9 @@ impl DictationEngine for PipelineDictationEngine {
                     EngineProgress::Notification(notification),
                 )?;
             }
+            // Set when the cloud ASR failed and the local fallback produced the
+            // transcript: the network is most likely down, so polish is skipped.
+            let mut local_fallback_used = false;
             let mut transcript = match transcription_result {
                 Ok(transcript) => {
                     session
@@ -681,6 +684,7 @@ impl DictationEngine for PipelineDictationEngine {
                     let retry_pcm = replay_pcm.filter(|_| first_error.retryable);
                     if let Some((transcript, label)) = local {
                         asr_call_label = label;
+                        local_fallback_used = true;
                         transcript
                     } else {
                         match retry_pcm {
@@ -792,8 +796,15 @@ impl DictationEngine for PipelineDictationEngine {
                 }),
             )?;
             // Issue #1032: short transcripts skip polish (user-configured threshold).
+            // After a local fallback the cloud was unreachable a moment ago;
+            // a polish request would only add its timeout before failing too.
             let uses_polisher = context.uses_llm_polisher()
-                && !context.skips_polish_for_short_text(&transcript.text);
+                && !context.skips_polish_for_short_text(&transcript.text)
+                && !local_fallback_used;
+            // Local recognition makes polish optional: when it fails because
+            // the network never answered, the raw transcript is the result.
+            let local_asr_used = local_fallback_used
+                || crate::dictation_context::is_local_asr_provider(&context.asr.provider_type);
             let (polish_output, polish_failed, polish_ms) = if uses_polisher {
                 publish_progress(
                     &session,
@@ -830,9 +841,11 @@ impl DictationEngine for PipelineDictationEngine {
                 };
                 let result = match output {
                     Ok(text) => (text, false),
+                    // Offline after local recognition: the raw transcript is the
+                    // expected output. A rejected key or quota is still reported.
                     Err(error) if can_fallback_to_raw(policy, &error) => (
                         crate::ports::PolishOutput::text(transcript.text.clone()),
-                        true,
+                        !(local_asr_used && error.retryable),
                     ),
                     Err(error) => {
                         let polish_ms = Some(polish_started.elapsed().as_millis() as u64);
@@ -3509,7 +3522,28 @@ mod tests {
         cloud: Vec<Result<TranscriptOutput, BackendError>>,
         local: Vec<Result<TranscriptOutput, BackendError>>,
     ) -> (PipelineDictationEngine, Arc<RecordingProgress>, Arc<Mutex<Vec<String>>>) {
+        let (engine, progress, started, _) = fallback_polish_test_engine(
+            cloud,
+            local,
+            Ok(crate::ports::PolishOutput::text("unused")),
+        );
+        (engine, progress, started)
+    }
+
+    /// fallback_test_engine() with the polisher's result chosen, also
+    /// returning how many times it was called.
+    fn fallback_polish_test_engine(
+        cloud: Vec<Result<TranscriptOutput, BackendError>>,
+        local: Vec<Result<TranscriptOutput, BackendError>>,
+        polish: Result<crate::ports::PolishOutput, BackendError>,
+    ) -> (
+        PipelineDictationEngine,
+        Arc<RecordingProgress>,
+        Arc<Mutex<Vec<String>>>,
+        Arc<AtomicUsize>,
+    ) {
         let started = Arc::new(Mutex::new(Vec::new()));
+        let polish_calls = Arc::new(AtomicUsize::new(0));
         let engine = PipelineDictationEngine::new(
             Arc::new(FixtureRecorder {
                 stops: Arc::new(AtomicUsize::new(0)),
@@ -3528,13 +3562,105 @@ mod tests {
                 started: Arc::clone(&started),
             }),
             Arc::new(FixturePolisher {
-                result: Ok(crate::ports::PolishOutput::text("unused")),
-                calls: Arc::new(AtomicUsize::new(0)),
+                result: polish,
+                calls: Arc::clone(&polish_calls),
                 cancels: Arc::new(AtomicUsize::new(0)),
                 contexts: Arc::new(Mutex::new(Vec::new())),
             }),
         );
-        (engine, Arc::new(RecordingProgress::default()), started)
+        (engine, Arc::new(RecordingProgress::default()), started, polish_calls)
+    }
+
+    /// A polishing session (not raw mode) on CLOUD with the LOCAL fallback.
+    fn polishing_fallback_context() -> Arc<DictationContext> {
+        let mut context = DictationContext::default();
+        context.asr = crate::dictation_context::ProviderInvocation::new(CLOUD, CLOUD);
+        context.asr_fallback = Some(crate::dictation_context::ProviderInvocation::new(LOCAL, LOCAL));
+        assert!(context.uses_llm_polisher(), "fixture must exercise the polisher");
+        context.polish.polish_skip_max_chars = 0;
+        Arc::new(context)
+    }
+
+    #[tokio::test]
+    async fn a_local_fallback_skips_polish_and_reports_no_failure() {
+        let (engine, progress, started, polish_calls) = fallback_polish_test_engine(
+            vec![Err(BackendError::new(BackendErrorCode::Provider, "offline").retryable(true))],
+            vec![transcript("本地识别")],
+            Err(BackendError::new(BackendErrorCode::Provider, "offline")),
+        );
+        let session_id = SessionId::new();
+        engine.start(session_id, polishing_fallback_context(), progress.clone()).await.unwrap();
+
+        let result = engine.finish(session_id, progress).await.unwrap();
+
+        assert_eq!(result.raw_text, "本地识别");
+        assert_eq!(result.polished_text, "本地识别");
+        assert!(!result.polish_failed);
+        // The cloud was unreachable a moment ago: no polish request at all.
+        assert_eq!(polish_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(started.lock().unwrap().as_slice(), &[CLOUD, LOCAL]);
+    }
+
+    fn local_polishing_context() -> Arc<DictationContext> {
+        let mut context = (*polishing_fallback_context()).clone();
+        context.asr = crate::dictation_context::ProviderInvocation::new(LOCAL, LOCAL);
+        context.asr_fallback = None;
+        Arc::new(context)
+    }
+
+    #[tokio::test]
+    async fn a_rejected_polish_after_local_recognition_is_still_reported() {
+        let (engine, progress, _, polish_calls) = fallback_polish_test_engine(
+            vec![],
+            vec![transcript("本地识别")],
+            Err(BackendError::new(BackendErrorCode::Provider, "invalid api key")),
+        );
+        let session_id = SessionId::new();
+        engine.start(session_id, local_polishing_context(), progress.clone()).await.unwrap();
+
+        let result = engine.finish(session_id, progress).await.unwrap();
+
+        assert_eq!(result.polished_text, "本地识别");
+        assert!(result.polish_failed, "a rejected key must not be hidden as offline");
+        assert_eq!(polish_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn an_offline_polish_after_local_recognition_is_raw_output_not_a_failure() {
+        let (engine, progress, started, polish_calls) = fallback_polish_test_engine(
+            vec![],
+            vec![transcript("本地识别")],
+            Err(BackendError::new(BackendErrorCode::Provider, "offline").retryable(true)),
+        );
+        let mut context = (*polishing_fallback_context()).clone();
+        context.asr = crate::dictation_context::ProviderInvocation::new(LOCAL, LOCAL);
+        context.asr_fallback = None;
+        let session_id = SessionId::new();
+        engine.start(session_id, Arc::new(context), progress.clone()).await.unwrap();
+
+        let result = engine.finish(session_id, progress).await.unwrap();
+
+        assert_eq!(result.polished_text, "本地识别");
+        assert!(!result.polish_failed);
+        assert_eq!(polish_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(started.lock().unwrap().as_slice(), &[LOCAL]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_polish_after_cloud_recognition_is_still_reported() {
+        let (engine, progress, _, polish_calls) = fallback_polish_test_engine(
+            vec![transcript("云端识别")],
+            vec![],
+            Err(BackendError::new(BackendErrorCode::Provider, "offline")),
+        );
+        let session_id = SessionId::new();
+        engine.start(session_id, polishing_fallback_context(), progress.clone()).await.unwrap();
+
+        let result = engine.finish(session_id, progress).await.unwrap();
+
+        assert_eq!(result.polished_text, "云端识别");
+        assert!(result.polish_failed);
+        assert_eq!(polish_calls.load(Ordering::SeqCst), 1);
     }
 
     fn fallback_context() -> Arc<DictationContext> {
