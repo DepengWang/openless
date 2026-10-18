@@ -1290,6 +1290,28 @@ mod jni_exports {
         }
     }
 
+    /// "<local>,<cloud>,<latest>" from history, latest being "local", "cloud"
+    /// or empty; null when the backend is not up.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeAsrUsage(
+        env: *mut JNIEnv,
+        _class: JClass,
+    ) -> jstring {
+        let Some(usage) = CORE_BACKEND.get().and_then(|backend| backend.asr_usage().ok()) else {
+            return std::ptr::null_mut();
+        };
+        let latest = match usage.last_local {
+            Some(true) => "local",
+            Some(false) => "cloud",
+            None => "",
+        };
+        let encoded = format!("{},{},{}", usage.local, usage.cloud, latest);
+        match JniEnv::from_raw(env) {
+            Ok(mut env) => crate::android::jni::android::export_jstring(&mut env, &encoded),
+            Err(_) => std::ptr::null_mut(),
+        }
+    }
+
     #[no_mangle]
     pub unsafe extern "system" fn Java_com_openless_app_OpenLessNative_nativeBackendSnapshot(
         env: *mut JNIEnv,

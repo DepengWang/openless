@@ -2318,6 +2318,16 @@ pub enum AsrRoute {
     Unavailable,
 }
 
+/// Which recognizer produced the dictations in history — see
+/// OpenLessBackend::asr_usage().
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AsrUsage {
+    pub local: u64,
+    pub cloud: u64,
+    /// Whether the latest dictation was recognized locally; None without history.
+    pub last_local: Option<bool>,
+}
+
 pub struct OpenLessBackend {
     config: BackendConfig,
     startup_error: Option<BackendError>,
@@ -5037,6 +5047,30 @@ impl OpenLessBackend {
         } else {
             AsrRoute::LocalRaw
         }
+    }
+
+    /// How many dictations in history the local model and the cloud each
+    /// recognized, and which one the latest used. Counted from history, so it
+    /// survives restarts and follows the user's retention and deletions.
+    pub fn asr_usage(&self) -> Result<AsrUsage, BackendError> {
+        let mut usage = AsrUsage::default();
+        let mut latest: Option<(String, bool)> = None;
+        for entry in self.history.list()? {
+            let Some(provider) = entry.asr_provider.as_deref() else {
+                continue;
+            };
+            let local = crate::dictation_context::is_local_asr_provider(provider);
+            if local {
+                usage.local += 1;
+            } else {
+                usage.cloud += 1;
+            }
+            if latest.as_ref().is_none_or(|(created_at, _)| entry.created_at > *created_at) {
+                latest = Some((entry.created_at, local));
+            }
+        }
+        usage.last_local = latest.map(|(_, local)| local);
+        Ok(usage)
     }
 
     fn local_asr_runtime(provider: &str) -> Option<crate::LocalAsrRuntime> {
@@ -10017,6 +10051,36 @@ mod tests {
             asr_ms: None,
             polish_ms: None,
         }
+    }
+
+    #[test]
+    fn asr_usage_counts_local_and_cloud_dictations_and_the_latest_kind() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-core-backend-asr-usage-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let backend = backend_with_dictation_engine(data_dir.clone(), Arc::new(FakeEngine));
+        assert_eq!(backend.asr_usage().unwrap(), AsrUsage::default());
+
+        let entries = [
+            ("a", "2026-10-18T10:00:00+00:00", Some("volcengine")),
+            ("b", "2026-10-18T10:01:00+00:00", Some("sherpa-onnx-local")),
+            ("c", "2026-10-18T10:02:00+00:00", None),
+            ("d", "2026-10-18T10:03:00+00:00", Some("volcengine")),
+            ("e", "2026-10-18T10:04:00+00:00", Some("sherpa-onnx-local")),
+        ];
+        for (id, created_at, provider) in entries {
+            let mut entry = history_session(id);
+            entry.created_at = created_at.into();
+            entry.asr_provider = provider.map(Into::into);
+            backend.append_history(entry, 30, None).unwrap();
+        }
+
+        assert_eq!(
+            backend.asr_usage().unwrap(),
+            AsrUsage { local: 2, cloud: 2, last_local: Some(true) }
+        );
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[test]
