@@ -42,11 +42,14 @@ internal object ImeDraftReplacement {
         hintStart: Int?,
     ): Plan? {
         if (original.isEmpty()) return null
-        if (selected == original) return ReplaceSelection
         val around = before + selected + after
         // Index of the host caret inside `around`.
         val caret = before.length
         val wanted = if (hintStart != null && caretOffset != null) hintStart - (caretOffset - caret) else null
+        // A remembered anchor must still identify the current selection. If it
+        // does not, fall through to the anchored lookup instead of replacing
+        // an unrelated duplicate that happens to be selected now.
+        if (selected == original && (hintStart == null || caretOffset == hintStart)) return ReplaceSelection
         val start = locate(around, original, caret, wanted)
         if (start < 0) return null
         val end = start + original.length
@@ -63,20 +66,26 @@ internal object ImeDraftReplacement {
 
     /**
      * Index in [around] of the occurrence of [original] to replace, or -1 if
-     * there is none: the one starting closest to [wanted] when that is known,
-     * otherwise the one closest to [caret] (an occurrence the caret is inside
-     * or touching counts as distance 0). On a tie the later occurrence wins —
+     * there is none. When an absolute target is known, only that exact
+     * occurrence is safe: choosing a nearby duplicate could replace unrelated
+     * text after the original was edited. Without offsets, choose the
+     * occurrence closest to [caret] (an occurrence the caret is inside or
+     * touching counts as distance 0). On a tie the later occurrence wins —
      * text that was just dictated ends at the caret.
      */
     fun locate(around: String, original: String, caret: Int, wanted: Int?): Int {
         if (original.isEmpty()) return -1
+        if (wanted != null) {
+            if (wanted < 0 || wanted + original.length > around.length) return -1
+            return if (around.regionMatches(wanted, original, 0, original.length)) wanted else -1
+        }
+
         var best = -1
         var bestDistance = Int.MAX_VALUE
         var index = around.indexOf(original)
         while (index >= 0) {
             val end = index + original.length
             val distance = when {
-                wanted != null -> kotlin.math.abs(index - wanted)
                 caret < index -> index - caret
                 caret > end -> caret - end
                 else -> 0

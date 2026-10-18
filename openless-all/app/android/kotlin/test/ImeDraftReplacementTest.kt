@@ -36,7 +36,7 @@ class ImeDraftReplacementTest {
         assertEquals(ReplaceSelection, plan("天气", before = "今天", selected = "天气", after = "好", caretOffset = null))
     }
 
-    @Test fun lostSelectionFallsBackToTheRememberedOffset() {
+    @Test fun lostSelectionUsesTheRememberedOffset() {
         // "好" occurs at 1, 4 and 7; it was selected at 4 and the host has since dropped the selection.
         val field = "你好今天好明天好"
         assertEquals(SelectRange(4, 5), plan("好", before = field, hintStart = 4))
@@ -45,10 +45,26 @@ class ImeDraftReplacementTest {
         assertEquals(SelectRange(1, 2), plan("好", before = field.take(7), after = field.drop(7), hintStart = 1))
     }
 
-    @Test fun rememberedOffsetToleratesASmallShift() {
-        // "好的" was selected at 7; two chars typed at the start of the field
-        // while the draft was open moved it to 9. Still the nearer of the two.
-        assertEquals(SelectRange(9, 11), plan("好的", before = "嗯，好的，明天见。好的，后天见。", hintStart = 7))
+    @Test fun changedSelectedOccurrenceDoesNotReplaceADuplicate() {
+        // The original at offset 4 was changed while the draft was open; the
+        // same text is now selected at offset 1, which must not be replaced.
+        assertNull(
+            plan(
+                "好",
+                before = "你",
+                selected = "好",
+                after = "今天坏明天好",
+                caretOffset = 1,
+                hintStart = 4,
+            ),
+        )
+    }
+
+    @Test fun rememberedOffsetDoesNotReplaceAChangedOccurrenceWithADuplicate() {
+        // The original at the remembered offset was changed while the draft
+        // was open; the later duplicate is unrelated and must be left alone.
+        val field = "嗯，坏，明天见。好的，后天见。"
+        assertNull(plan("好的", before = field, hintStart = 7))
     }
 
     @Test fun withoutARememberedOffsetTheOccurrenceNearestTheCaretWins() {

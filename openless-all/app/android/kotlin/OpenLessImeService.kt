@@ -3278,6 +3278,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         "${keyboardPanelHeightDp()}:${raiseHeightDp(this)}:$inputMode:$latinInputMode:${personalizedLearningAllowed()}"
 
     override fun onFinishInputView(finishingInput: Boolean) {
+        if (draftEdit != null && (recording || processing)) cancelDictation()
         closeDraft()
         super.onFinishInputView(finishingInput)
     }
@@ -3299,6 +3300,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     }
 
     override fun onFinishInput() {
+        if (draftEdit != null && (recording || processing)) cancelDictation()
         closeDraft()
         cancelImeSession()
         englishCandidateQueryEpoch++
@@ -3380,6 +3382,13 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
                 ensureBackendReady()
                 scheduleBackendReadyRecheck()
                 return
+            }
+            if (draftSubmitting) {
+                // A new recording can write into the open draft while the
+                // previous Cloud Notes request is still in flight. Its
+                // completion must not disable or close this newer draft.
+                draftSubmitting = false
+                showDraftMessage(ui("新的听写已开始", "New dictation started"), isError = false)
             }
             recording = true
             processing = false
@@ -3930,13 +3939,19 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         draftSubmitting = true
         showDraftMessage(displayStatus("正在提交云笔记"), isError = false)
         val token = draftToken
-        submitCloudNoteText(text, draftCloudDestination, imeRequestId) { success, message ->
-            if (token != draftToken) return@submitCloudNoteText
+        val submissionRequestId = imeRequestId
+        submitCloudNoteText(text, draftCloudDestination, submissionRequestId) { success, message ->
+            if (token != draftToken || submissionRequestId != imeRequestId) return@submitCloudNoteText
             draftSubmitting = false
             if (success) {
-                closeDraft()
-                // The status line only exists on the voice panel.
-                if (inputMode != InputMode.VOICE) Toast.makeText(this, displayStatus(message), Toast.LENGTH_SHORT).show()
+                val unchanged = draftEdit?.text?.toString() == text
+                if (recording || processing || !unchanged) {
+                    showDraftMessage(displayStatus(message), isError = false)
+                } else {
+                    closeDraft()
+                    // The status line only exists on the voice panel.
+                    if (inputMode != InputMode.VOICE) Toast.makeText(this, displayStatus(message), Toast.LENGTH_SHORT).show()
+                }
             } else {
                 showDraftMessage(
                     if (englishUi && message.startsWith("云笔记提交失败")) "Cloud notes submit failed" else displayStatus(message),
@@ -4014,6 +4029,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         val restoreText = draftRestoreDictationText
         val restoreEpoch = draftRestoreDictationEpoch
         val restoreUndone = draftRestoreDictationUndone
+        if (recording || processing) cancelDictation()
         closeDraft()
         if (purpose == DraftPurpose.CLOUD_NOTE) {
             setState("done", ui("已丢弃云笔记草稿", "Cloud note draft discarded"))
