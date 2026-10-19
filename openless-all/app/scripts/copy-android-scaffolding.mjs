@@ -71,7 +71,9 @@ const KOTLIN_FILES = [
   'StrokeInput.kt',
   'OpenLessRime.kt',
   'RimePinyinController.kt',
-  'LegacyPinyinBackup.kt',
+  'RimeFuzzyPinyin.kt',
+  'RimeUserDictionaryFile.kt',
+  'KeyboardDataFile.kt',
   'OpenLessSettingsExport.kt',
   'StrokePhraseRepository.kt',
   'StrokeUserFrequency.kt',
@@ -96,6 +98,7 @@ const KOTLIN_TEST_FILES = [
   'StrokePhraseSuffixTest.kt',
   'EnglishAutoTextTest.kt',
   'InputLearningRulesTest.kt',
+  'RimePinyinDataTest.kt',
   'LatinInputModeTest.kt',
   'OpenLessContentReaderTest.kt',
   'OpenLessMigrationBundleContractTest.kt',
@@ -418,6 +421,7 @@ function main() {
     'LitePinyinRepository.kt',
     'LitePinyinUserFrequency.kt',
     'LitePinyinLearnedPhrases.kt',
+    'LegacyPinyinBackup.kt',
   ]) {
     const path = join(kotlinDest, name);
     if (dryRun) console.log(`[dry-run] Would remove retired source ${path}`);
