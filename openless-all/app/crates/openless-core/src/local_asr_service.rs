@@ -474,25 +474,104 @@ async fn ensure_model_installed(
     store: &Arc<crate::model_store::ModelStore>,
     target: &LocalAsrTarget,
 ) -> Result<(), BackendError> {
-    if !adapter.supports_model(target) || crate::experimental_asr::ExperimentalAsrModel::from_model_id(target.model_id()).is_some() {
-        return Err(BackendError::new(BackendErrorCode::Unsupported, "Use Experimental local speech models"));
-    }
-    let installed = if store.is_native(target)? {
-        adapter
-            .inspect_native_models(vec![target.clone()])
-            .await?
-            .iter()
-            .any(|state| &state.target == target && state.installed)
-    } else {
-        store.is_installed(target)?
-    };
-    if !installed {
+    let supported = adapter.supports_model(target)
+        && crate::experimental_asr::ExperimentalAsrModel::from_model_id(target.model_id()).is_none();
+    if !supported {
+        crate::model_store::emit_local_asr_diagnostic(
+            "P3",
+            &["H3", "H4", "H5"],
+            "model_install_check",
+            "error",
+            serde_json::json!({
+                "runtime": "sherpa_onnx",
+                "installed": false,
+                "error_code": "unsupported",
+            }),
+        );
         return Err(BackendError::new(
-            BackendErrorCode::InvalidState,
-            "local ASR model is not downloaded",
+            BackendErrorCode::Unsupported,
+            "Use Experimental local speech models",
         ));
     }
-    Ok(())
+    let native = match store.is_native(target) {
+        Ok(native) => native,
+        Err(error) => {
+            crate::model_store::emit_local_asr_diagnostic(
+                "P3",
+                &["H3", "H4", "H5"],
+                "model_install_check",
+                "error",
+                serde_json::json!({
+                    "runtime": "sherpa_onnx",
+                    "installed": false,
+                    "error_code": crate::model_store::local_asr_diagnostic_error_code(error.code),
+                    "retryable": error.retryable,
+                }),
+            );
+            return Err(error);
+        }
+    };
+    let installed = if native {
+        adapter
+            .inspect_native_models(vec![target.clone()])
+            .await
+            .map(|states| {
+                states
+                    .iter()
+                    .any(|state| &state.target == target && state.installed)
+            })
+    } else {
+        store.is_installed(target)
+    };
+    match installed {
+        Ok(true) => {
+            crate::model_store::emit_local_asr_diagnostic(
+                "P3",
+                &["H3", "H4", "H5"],
+                "model_install_check",
+                "installed",
+                serde_json::json!({
+                    "runtime": "sherpa_onnx",
+                    "installed": true,
+                    "native": native,
+                }),
+            );
+            Ok(())
+        }
+        Ok(false) => {
+            crate::model_store::emit_local_asr_diagnostic(
+                "P3",
+                &["H3", "H4", "H5"],
+                "model_install_check",
+                "missing",
+                serde_json::json!({
+                    "runtime": "sherpa_onnx",
+                    "installed": false,
+                    "native": native,
+                }),
+            );
+            Err(BackendError::new(
+                BackendErrorCode::InvalidState,
+                "local ASR model is not downloaded",
+            ))
+        }
+        Err(error) => {
+            crate::model_store::emit_local_asr_diagnostic(
+                "P3",
+                &["H3", "H4", "H5"],
+                "model_install_check",
+                "error",
+                serde_json::json!({
+                    "runtime": "sherpa_onnx",
+                    "installed": false,
+                    "native": native,
+                    "error_code": crate::model_store::local_asr_diagnostic_error_code(error.code),
+                    "retryable": error.retryable,
+                }),
+            );
+            Err(error)
+        }
+    }
 }
 
 fn activation_error(primary: BackendError, rollback: Vec<BackendError>) -> BackendError {
@@ -621,7 +700,31 @@ impl LocalAsrApi for LocalAsrService {
             let provider_type = channel
                 .map(|channel| channel.provider_type.clone())
                 .unwrap_or_else(|| request.provider_id.clone());
-            Self::validate_activation_provider(&request.target, &provider_type)?;
+            if let Err(error) = Self::validate_activation_provider(&request.target, &provider_type) {
+                crate::model_store::emit_local_asr_diagnostic(
+                    "P5",
+                    &["H5"],
+                    "activation_preflight",
+                    "error",
+                    serde_json::json!({
+                        "runtime": "sherpa_onnx",
+                        "provider_valid": false,
+                        "error_code": crate::model_store::local_asr_diagnostic_error_code(error.code),
+                        "retryable": error.retryable,
+                    }),
+                );
+                return Err(error);
+            }
+            crate::model_store::emit_local_asr_diagnostic(
+                "P5",
+                &["H5"],
+                "activation_preflight",
+                "accepted",
+                serde_json::json!({
+                    "runtime": "sherpa_onnx",
+                    "provider_valid": true,
+                }),
+            );
             let generation = generation_clock.fetch_add(1, Ordering::AcqRel) + 1;
             // Activation is a settings transaction, not a runtime operation. In
             // particular, restoring saved settings must never download or load.
@@ -681,6 +784,16 @@ impl LocalAsrApi for LocalAsrService {
                 BackendEventKind::PreferencesChanged(PreferencesChange { revision }),
             );
             adapter.invalidate_route(request.target.runtime);
+            crate::model_store::emit_local_asr_diagnostic(
+                "P5",
+                &["H5"],
+                "activation_committed",
+                "success",
+                serde_json::json!({
+                    "runtime": "sherpa_onnx",
+                    "provider_valid": true,
+                }),
+            );
             Self::publish_runtime_status(
                 preferences,
                 adapter,
@@ -1059,18 +1172,58 @@ impl LocalAsrApi for LocalAsrService {
         let source =
             FoundryRuntimeSource::from_legacy(&self.preferences.get().foundry_local_runtime_source);
         let events = self.events.clone();
+        crate::model_store::emit_local_asr_diagnostic(
+            "P1",
+            &["H1", "H2", "H3"],
+            "download_requested",
+            "accepted",
+            serde_json::json!({
+                "runtime": "sherpa_onnx",
+                "operation": "download",
+            }),
+        );
         Box::pin(async move {
-            if store.is_native(&target)? {
-                let progress: ModelPrepareProgressSink = Arc::new(move |progress| {
-                    events.publish(None, BackendEventKind::LocalAsrPrepareProgress(progress));
-                });
-                adapter
-                    .download_native_model(target, source, progress)
-                    .await
-            } else {
-                // No adapter calls here: downloading files cannot initialize inference.
-                store.download_target(target, mirror).await.map(|_| ())
+            let result = async {
+                if store.is_native(&target)? {
+                    let progress_events = events.clone();
+                    let progress: ModelPrepareProgressSink = Arc::new(move |progress| {
+                        progress_events
+                            .publish(None, BackendEventKind::LocalAsrPrepareProgress(progress));
+                    });
+                    adapter
+                        .download_native_model(target, source, progress)
+                        .await
+                } else {
+                    // No adapter calls here: downloading files cannot initialize inference.
+                    store.download_target(target, mirror).await.map(|_| ())
+                }
             }
+            .await;
+            match &result {
+                Ok(()) => crate::model_store::emit_local_asr_diagnostic(
+                    "P1",
+                    &["H1", "H2", "H3"],
+                    "download_completed",
+                    "success",
+                    serde_json::json!({
+                        "runtime": "sherpa_onnx",
+                        "operation": "download",
+                    }),
+                ),
+                Err(error) => crate::model_store::emit_local_asr_diagnostic(
+                    "P1",
+                    &["H1", "H2", "H3"],
+                    "download_completed",
+                    "error",
+                    serde_json::json!({
+                        "runtime": "sherpa_onnx",
+                        "operation": "download",
+                        "error_code": crate::model_store::local_asr_diagnostic_error_code(error.code),
+                        "retryable": error.retryable,
+                    }),
+                ),
+            }
+            result
         })
     }
 
