@@ -30,49 +30,6 @@ pub const DEFAULT_MODEL_MAX_RETRIES: u8 = 4;
 const PARTIAL_INDEX_VERSION: u8 = 1;
 const MODELSCOPE_BASE_URL: &str = "https://modelscope.cn";
 
-const LOCAL_ASR_DIAG_PREFIX: &str = "[DEBUG-LOCAL-ASR-20261019]";
-
-pub(crate) fn emit_local_asr_diagnostic(
-    probe_id: &str,
-    hypothesis_ids: &[&str],
-    event: &str,
-    outcome: &str,
-    safe: serde_json::Value,
-) {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
-    let record = serde_json::json!({
-        "schema": "diagnosing-bugs.v1",
-        "session_id": "local-asr-android-2026-10-19",
-        "run_id": format!("android-pid-{}", std::process::id()),
-        "probe_id": probe_id,
-        "hypothesis_ids": hypothesis_ids,
-        "event": event,
-        "outcome": outcome,
-        "safe": safe,
-        "ts": ts.to_string(),
-    });
-    log::warn!("{} {}", LOCAL_ASR_DIAG_PREFIX, record);
-}
-
-pub(crate) fn local_asr_diagnostic_error_code(code: BackendErrorCode) -> &'static str {
-    match code {
-        BackendErrorCode::InvalidArgument => "invalid_argument",
-        BackendErrorCode::InvalidState => "invalid_state",
-        BackendErrorCode::Busy => "busy",
-        BackendErrorCode::Cancelled => "cancelled",
-        BackendErrorCode::PermissionDenied => "permission_denied",
-        BackendErrorCode::Unsupported => "unsupported",
-        BackendErrorCode::Provider => "provider",
-        BackendErrorCode::Persistence => "persistence",
-        BackendErrorCode::Platform => "platform",
-        BackendErrorCode::OutcomeUnknown => "outcome_unknown",
-        BackendErrorCode::Internal => "internal",
-    }
-}
-
 pub fn model_mirror_base(
     mirror: crate::local_asr_catalog::LocalAsrMirror,
 ) -> Result<&'static str, BackendError> {
@@ -964,32 +921,8 @@ impl ModelStore {
             }
         };
         let manifest = match manifest {
-            Ok(manifest) => {
-                emit_local_asr_diagnostic(
-                    "P2",
-                    &["H1", "H2", "H3"],
-                    "manifest_ready",
-                    "success",
-                    serde_json::json!({
-                        "runtime": "sherpa_onnx",
-                        "file_count": manifest.files.len(),
-                        "total_bytes": manifest.total_bytes,
-                    }),
-                );
-                manifest
-            }
+            Ok(manifest) => manifest,
             Err(error) => {
-                emit_local_asr_diagnostic(
-                    "P2",
-                    &["H1", "H2", "H3"],
-                    "manifest_ready",
-                    "error",
-                    serde_json::json!({
-                        "runtime": "sherpa_onnx",
-                        "error_code": local_asr_diagnostic_error_code(error.code),
-                        "retryable": error.retryable,
-                    }),
-                );
                 self.emit_target_terminal(
                     &target,
                     if error.code == BackendErrorCode::Cancelled {
@@ -1539,18 +1472,6 @@ impl ModelStore {
         std::fs::create_dir_all(&staging).map_err(platform_error)?;
         let mut partial = restore_partial_index(&staging, &manifest)?;
         self.emit(&manifest, "", 0, ModelDownloadPhase::Started, None, None);
-        emit_local_asr_diagnostic(
-            "P2",
-            &["H1", "H2", "H3"],
-            "transfer_started",
-            "started",
-            serde_json::json!({
-                "runtime": "sherpa_onnx",
-                "file_count": manifest.files.len(),
-                "downloaded_bytes": partial.files.values().copied().sum::<u64>(),
-                "total_bytes": manifest.total_bytes,
-            }),
-        );
         let mut downloaded_before: u64 = partial.files.values().copied().sum();
         for (file_index, file) in manifest.files.iter().enumerate() {
             if cancelled.load(Ordering::Acquire) {
@@ -1657,57 +1578,18 @@ impl ModelStore {
             write_partial_index(&staging, &partial)?;
         }
         if let Some(archive) = &manifest.archive {
-            emit_local_asr_diagnostic(
-                "P2",
-                &["H2", "H3"],
-                "archive_expand",
-                "started",
-                serde_json::json!({
-                    "runtime": "sherpa_onnx",
-                    "required_path_count": archive.required_paths.len(),
-                }),
-            );
             expand_tar_bz2_archive(
                 &staging,
                 archive,
                 self.config.max_file_bytes,
                 self.config.max_total_bytes,
             )?;
-            emit_local_asr_diagnostic(
-                "P2",
-                &["H2", "H3"],
-                "archive_expand",
-                "success",
-                serde_json::json!({
-                    "runtime": "sherpa_onnx",
-                }),
-            );
         }
         let sentinel = staging.join(MODEL_READY_SENTINEL);
         std::fs::write(&sentinel, b"ready\n").map_err(platform_error)?;
         let _ = std::fs::remove_file(staging.join(MODEL_PARTIAL_INDEX));
         let destination = self.model_dir(&manifest.target)?;
-        emit_local_asr_diagnostic(
-            "P2",
-            &["H2", "H3"],
-            "commit_started",
-            "started",
-            serde_json::json!({
-                "runtime": "sherpa_onnx",
-                "ready_sentinel": true,
-            }),
-        );
         commit_staging(&staging, &destination)?;
-        emit_local_asr_diagnostic(
-            "P2",
-            &["H2", "H3"],
-            "commit_finished",
-            "success",
-            serde_json::json!({
-                "runtime": "sherpa_onnx",
-                "ready_sentinel": destination.join(MODEL_READY_SENTINEL).is_file(),
-            }),
-        );
         self.emit(
             &manifest,
             "",

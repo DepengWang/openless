@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
@@ -27,33 +27,6 @@ use crate::asr::local::sherpa::{
 
 const QWEN3_ASR_CHUNK_LIMIT_MS: u64 = 30_000;
 const QWEN3_ASR_MAX_NEW_TOKENS: i32 = 256;
-
-const LOCAL_ASR_DIAG_PREFIX: &str = "[DEBUG-LOCAL-ASR-20261019]";
-
-fn emit_sherpa_local_asr_diagnostic(
-    probe_id: &str,
-    hypothesis_ids: &[&str],
-    event: &str,
-    outcome: &str,
-    safe: serde_json::Value,
-) {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
-    let record = serde_json::json!({
-        "schema": "diagnosing-bugs.v1",
-        "session_id": "local-asr-android-2026-10-19",
-        "run_id": format!("android-pid-{}", std::process::id()),
-        "probe_id": probe_id,
-        "hypothesis_ids": hypothesis_ids,
-        "event": event,
-        "outcome": outcome,
-        "safe": safe,
-        "ts": ts.to_string(),
-    });
-    log::warn!("{} {}", LOCAL_ASR_DIAG_PREFIX, record);
-}
 
 #[cfg(local_asr_sherpa)]
 use sherpa_onnx::{
@@ -159,7 +132,6 @@ impl SherpaOnnxRuntime {
         F: Fn(SherpaPrepareProgressPayload) + Send + Sync + 'static,
     {
         let started = Instant::now();
-        let model_dir_present = model_dir.is_dir();
         let result = self
             .ensure_loaded_with_progress_inner(alias, model_dir, progress)
             .await;
@@ -184,19 +156,6 @@ impl SherpaOnnxRuntime {
                 self.record_prepare_result(elapsed_ms, Some(message));
             }
         }
-        emit_sherpa_local_asr_diagnostic(
-            "P4",
-            &["H3", "H4", "H5"],
-            "native_prepare",
-            if result.is_ok() { "success" } else { "error" },
-            serde_json::json!({
-                "runtime": "sherpa_onnx",
-                "engine_compiled": cfg!(local_asr_sherpa),
-                "model_dir_present": model_dir_present,
-                "loaded": result.is_ok(),
-                "error_class": if result.is_ok() { "none" } else { "native_prepare_failed" },
-            }),
-        );
         result
     }
 
