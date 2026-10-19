@@ -2700,6 +2700,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             setOnTouchListener { view, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
+                        // An out-of-bounds swipe may not dispatch a click to clear this flag.
+                        suppressNextClick = false
                         downX = event.x
                         downY = event.y
                         horizontalDragArmed = false
