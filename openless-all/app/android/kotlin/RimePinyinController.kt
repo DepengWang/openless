@@ -23,6 +23,7 @@ internal class RimePinyinController(context: Context) {
     @Volatile private var cloudChoices: Set<String> = emptySet()
     @Volatile private var candidateRevision = 0L
     private var session = ""
+    private var sessionGeneration = 0L
     private var pending = ""
     private var pendingLiteral = ""
     private var commit: (String) -> Boolean = { false }
@@ -58,7 +59,14 @@ internal class RimePinyinController(context: Context) {
             try {
                 if (epoch != generation) return@execute
                 OpenLessRime.initialize(context)
-                if (session.isEmpty()) session = OpenLessRime.request("create", "", if (learning) "learning" else "private").getString("session")
+                // A dictionary import/export or a fuzzy-pinyin redeploy closed every native session.
+                if (session.isNotEmpty() && sessionGeneration != OpenLessRime.sessionGeneration) {
+                    session = ""; pending = ""; pendingLiteral = ""
+                }
+                if (session.isEmpty()) {
+                    sessionGeneration = OpenLessRime.sessionGeneration
+                    session = OpenLessRime.request("create", "", if (learning) "learning" else "private").getString("session")
+                }
                 if (pending.isNotEmpty()) {
                     check(deliver(pending, epoch)) { "Editor write failed" }
                     OpenLessRime.request("ack", session); pending = ""
