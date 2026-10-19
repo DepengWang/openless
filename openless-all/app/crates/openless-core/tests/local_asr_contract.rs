@@ -668,6 +668,36 @@ async fn sherpa_channel_test_uses_the_sherpa_runtime() {
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn cloud_route_switches_to_local_when_unconfigured_or_disabled() {
+    let (data_dir, _, backend) = local_asr_backend();
+    let target =
+        LocalAsrTarget::parse(LocalAsrRuntime::SherpaOnnx, "sense-voice-small-zh").unwrap();
+    install_fixture(&data_dir, &target);
+    backend
+        .services()
+        .local_asr
+        .set_active_model(target)
+        .await
+        .unwrap();
+    let channel = backend
+        .create_channel(ChannelKind::Asr, "whisper".into(), "Cloud ASR".into())
+        .await
+        .unwrap();
+    backend
+        .set_active_provider(ProviderSlot::Asr, channel.clone())
+        .await
+        .unwrap();
+    assert_eq!(backend.asr_route().await, AsrRoute::LocalRaw);
+    backend
+        .set_channel_enabled(ChannelKind::Asr, channel, false)
+        .await
+        .unwrap();
+    assert_eq!(backend.asr_route().await, AsrRoute::LocalRaw);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
 #[tokio::test]
 async fn disabled_local_channel_does_not_switch_to_a_different_local_model() {
     let (data_dir, _runtime, backend) = local_asr_backend_with_credentials(

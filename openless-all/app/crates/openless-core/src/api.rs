@@ -5002,7 +5002,7 @@ impl OpenLessBackend {
     }
 
     /// The local model dictation switches to when the selected cloud ASR
-    /// channel is turned off: only where local ASR runs, with a sherpa-onnx
+    /// channel is turned off or unconfigured: only where local ASR runs, with a sherpa-onnx
     /// model selected and its files installed — otherwise the disabled-channel
     /// error stands. Model, language and keep-loaded time are filled in from
     /// the same preferences a manual switch would use (DictationContext::capture).
@@ -5030,6 +5030,42 @@ impl OpenLessBackend {
                 crate::LocalAsrRuntime::SherpaOnnx.provider_id(),
             )
         })
+    }
+
+    async fn resolve_dictation_asr_provider(
+        &self,
+        preferences: &crate::UserPreferences,
+    ) -> Result<crate::dictation_context::ProviderInvocation, BackendError> {
+        let provider = match self
+            .resolve_session_provider(ProviderSlot::Asr, &preferences.active_asr_provider)
+            .await
+        {
+            Ok(provider) => provider,
+            Err(error)
+                if error.code == BackendErrorCode::InvalidState
+                    && self
+                        .selected_asr_channel_is_shared_cloud(&preferences.active_asr_provider)
+                        .await =>
+            {
+                return self.local_asr_switch_target(preferences).ok_or(error);
+            }
+            Err(error) => return Err(error),
+        };
+        if crate::cloud_providers::SHARED_CLOUD_ASR_PROVIDER_TYPES
+            .contains(&provider.provider_type.as_str())
+        {
+            if let Some(local) = self.local_asr_switch_target(preferences) {
+                if !crate::cloud_providers::asr_channel_configured(
+                    self.deps.credential_store.as_ref(),
+                    &provider,
+                )
+                .await?
+                {
+                    return Ok(local);
+                }
+            }
+        }
+        Ok(provider)
     }
 
     async fn selected_local_asr_model_is_installed(
@@ -5060,14 +5096,11 @@ impl OpenLessBackend {
 
     /// Which recognizer the next dictation will use, for hosts that show it
     /// (the Android keyboard's status dot): the selected channel's own kind,
-    /// or Local when that channel is turned off and local_asr_switch_target()
-    /// steps in.
+    /// or Local when that channel is disabled or unconfigured and an installed
+    /// local model steps in.
     pub async fn asr_route(&self) -> AsrRoute {
         let preferences = self.get_preferences();
-        let local = match self
-            .resolve_session_provider(ProviderSlot::Asr, &preferences.active_asr_provider)
-            .await
-        {
+        let local = match self.resolve_dictation_asr_provider(&preferences).await {
             Ok(provider) => {
                 let Some(runtime) = Self::local_asr_runtime(&provider.provider_type) else {
                     return AsrRoute::Cloud;
@@ -5107,18 +5140,6 @@ impl OpenLessBackend {
                     return AsrRoute::Unavailable;
                 }
                 true
-            }
-            Err(error)
-                if error.code == BackendErrorCode::InvalidState
-                    && self
-                        .selected_asr_channel_is_shared_cloud(&preferences.active_asr_provider)
-                        .await
-                    && self.local_asr_switch_target(&preferences).is_some() =>
-            {
-                self.deps
-                    .services
-                    .local_asr
-                    .engine_available(crate::LocalAsrRuntime::SherpaOnnx)
             }
             Err(_) => return AsrRoute::Unavailable,
         };
@@ -7631,33 +7652,7 @@ impl OpenLessBackend {
         );
         let traditional = pipeline_mode == crate::shared_types::PipelineMode::Traditional;
         let active_asr_provider = if traditional && purpose != DictationContextPurpose::QaText {
-            match self
-                .resolve_session_provider(ProviderSlot::Asr, &preferences.active_asr_provider)
-                .await
-            {
-                Ok(provider) => provider,
-                // The selected cloud channel is turned off: dictate with the
-                // installed local model instead of refusing to start.
-                Err(error)
-                    if error.code == BackendErrorCode::InvalidState
-                        && self
-                            .selected_asr_channel_is_shared_cloud(&preferences.active_asr_provider)
-                            .await =>
-                {
-                    match self.local_asr_switch_target(&preferences) {
-                        Some(local) => {
-                            log::info!(
-                                "[dictation] ASR channel {} is disabled; using local {}",
-                                preferences.active_asr_provider,
-                                local.provider_type
-                            );
-                            local
-                        }
-                        None => return Err(error),
-                    }
-                }
-                Err(error) => return Err(error),
-            }
+            self.resolve_dictation_asr_provider(&preferences).await?
         } else {
             crate::dictation_context::ProviderInvocation::for_provider(
                 &preferences.active_asr_provider,
@@ -13794,6 +13789,71 @@ mod tests {
             .iter()
             .all(|entry| entry.error_code.is_none()));
         backend.shutdown().await.unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn unconfigured_cloud_capture_switches_only_with_an_installed_local_model() {
+        let data_dir = TestDataDir::new("unconfigured-cloud-local-switch");
+        let mut backend =
+            backend_with_dictation_engine(data_dir.path().to_path_buf(), Arc::new(FakeEngine));
+        backend.deps.services.model_store = Some(Arc::new(
+            crate::ModelStore::new(
+                crate::ModelStoreConfig::new(data_dir.path().join("models")).unwrap(),
+            )
+            .unwrap(),
+        ));
+        let channel = backend
+            .create_channel(ChannelKind::Asr, "whisper".into(), "Cloud ASR".into())
+            .await
+            .unwrap();
+        backend
+            .set_active_provider(ProviderSlot::Asr, channel.clone())
+            .await
+            .unwrap();
+        let options = DictationStartOptions::default();
+        let capture =
+            || backend.capture_dictation_context(&options, DictationContextPurpose::Dictation);
+        assert_eq!(capture().await.unwrap().asr.provider_type, "whisper");
+        let target = crate::LocalAsrTarget::parse(
+            crate::LocalAsrRuntime::SherpaOnnx,
+            "sense-voice-small-zh",
+        )
+        .unwrap();
+        let dir = backend
+            .deps
+            .services
+            .model_store
+            .as_ref()
+            .unwrap()
+            .model_dir(&target)
+            .unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        for (file, bytes) in [
+            (crate::MODEL_READY_SENTINEL, "ready"),
+            ("model.int8.onnx", "model"),
+            ("tokens.txt", "tokens"),
+        ] {
+            std::fs::write(dir.join(file), bytes).unwrap();
+        }
+        let local = capture().await.unwrap();
+        assert_eq!(local.asr.provider_type, "sherpa-onnx-local");
+        assert_eq!(local.asr.model.as_deref(), Some("sense-voice-small-zh"));
+        backend
+            .deps
+            .credential_store
+            .write(
+                crate::CredentialKey::new(
+                    crate::CredentialNamespace::Asr,
+                    Some(channel),
+                    "asr.api_key",
+                )
+                .unwrap(),
+                crate::SecretValue::new("fixture-key"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(capture().await.unwrap().asr.provider_type, "whisper");
     }
 
     #[tokio::test]

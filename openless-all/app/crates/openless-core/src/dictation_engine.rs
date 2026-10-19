@@ -232,6 +232,7 @@ impl DictationEngine for PipelineDictationEngine {
                 ));
             }
             let stable = context.recording.transcribe_after_stop;
+            let has_local_fallback = context.asr_fallback.is_some();
             let transcript_partials: Arc<dyn TextStreamSink> = if stable {
                 Arc::new(DiscardTextStream)
             } else {
@@ -353,18 +354,25 @@ impl DictationEngine for PipelineDictationEngine {
                 }));
             } else if !stable {
                 if let Err(error) = buffered.attach().await {
-                    let recording = session
-                        .resources
-                        .lock()
-                        .expect("pipeline resource lock poisoned")
-                        .recording
-                        .take();
-                    if let Some(recording) = recording {
-                        let _ = recording.stop().await;
+                    // Keep capturing for the local replay; the buffer retains the cloud error.
+                    if has_local_fallback && !session.cancelled.load(Ordering::Acquire) {
+                        log::warn!(
+                            "[dictation] cloud ASR startup failed; keeping local fallback: {error}"
+                        );
+                    } else {
+                        let recording = session
+                            .resources
+                            .lock()
+                            .expect("pipeline resource lock poisoned")
+                            .recording
+                            .take();
+                        if let Some(recording) = recording {
+                            let _ = recording.stop().await;
+                        }
+                        let _ = cancel_transcription_once(&session, Arc::clone(&buffered)).await;
+                        remove_session(&sessions, session_id, &session);
+                        return Err(error);
                     }
-                    let _ = cancel_transcription_once(&session, Arc::clone(&buffered)).await;
-                    remove_session(&sessions, session_id, &session);
-                    return Err(error);
                 }
             }
             if session.cancelled.load(Ordering::Acquire) {
@@ -857,11 +865,11 @@ impl DictationEngine for PipelineDictationEngine {
                 }),
             )?;
             // Issue #1032: short transcripts skip polish (user-configured threshold).
-            // After a local fallback the cloud was unreachable a moment ago;
-            // a polish request would only add its timeout before failing too.
+            // Optional polish may be skipped after fallback; an explicit translation is still required.
+            let translation_active = context.polish.translation_active;
             let uses_polisher = context.uses_llm_polisher()
                 && !context.skips_polish_for_short_text(&transcript.text)
-                && !local_fallback_used;
+                && (!local_fallback_used || translation_active);
             // Local recognition makes polish optional: when it fails because
             // the network never answered, the raw transcript is the result.
             let local_asr_used = local_fallback_used
@@ -907,7 +915,7 @@ impl DictationEngine for PipelineDictationEngine {
                     // expected output. A rejected key or quota is still reported.
                     Err(error) if can_fallback_to_raw(policy, &error) => (
                         crate::ports::PolishOutput::text(transcript.text.clone()),
-                        !(local_asr_used && error.retryable),
+                        !(local_asr_used && error.retryable && !translation_active),
                     ),
                     Err(error) => {
                         let polish_ms = Some(polish_started.elapsed().as_millis() as u64);
@@ -3798,6 +3806,100 @@ mod tests {
         assert!(context.uses_llm_polisher(), "fixture must exercise the polisher");
         context.polish.polish_skip_max_chars = 0;
         Arc::new(context)
+    }
+
+    #[tokio::test]
+    async fn realtime_cloud_start_failure_preserves_local_fallback_and_original_error() {
+        struct FailingCloudStart(Arc<dyn TranscriptionEngine>);
+        impl TranscriptionEngine for FailingCloudStart {
+            fn start(
+                &self,
+                id: SessionId,
+                context: Arc<DictationContext>,
+                partials: Arc<dyn TextStreamSink>,
+            ) -> BoxFuture<'static, Result<Arc<dyn TranscriptionSession>, BackendError>>
+            {
+                if context.asr.provider_type == CLOUD {
+                    Box::pin(async {
+                        Err(BackendError::new(
+                            BackendErrorCode::Provider,
+                            "cloud connection failed",
+                        ))
+                    })
+                } else {
+                    self.0.start(id, context, partials)
+                }
+            }
+        }
+        for local_succeeds in [true, false] {
+            let local = if local_succeeds {
+                transcript("local transcript")
+            } else {
+                Err(BackendError::new(
+                    BackendErrorCode::InvalidState,
+                    "model missing",
+                ))
+            };
+            let (mut engine, progress, _) = fallback_test_engine(vec![], vec![local]);
+            engine.transcription = Arc::new(FailingCloudStart(Arc::clone(&engine.transcription)));
+            let id = SessionId::new();
+            engine
+                .start(id, fallback_context(), progress.clone())
+                .await
+                .unwrap();
+            let result = engine.finish(id, progress).await;
+            if local_succeeds {
+                assert_eq!(result.unwrap().raw_text, "local transcript");
+            } else {
+                assert_eq!(result.unwrap_err().error.message, "cloud connection failed");
+            }
+            assert!(engine.sessions.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn local_recognition_preserves_translation_and_reports_translation_failure() {
+        for fallback in [false, true] {
+            for polish_succeeds in [false, true] {
+                let polish = if polish_succeeds {
+                    Ok(crate::ports::PolishOutput::text("Hello"))
+                } else {
+                    Err(BackendError::new(BackendErrorCode::Provider, "LLM offline")
+                        .retryable(true))
+                };
+                let (engine, progress, _, calls) = fallback_polish_test_engine(
+                    if fallback {
+                        vec![Err(BackendError::new(
+                            BackendErrorCode::Provider,
+                            "ASR quota exhausted",
+                        ))]
+                    } else {
+                        vec![]
+                    },
+                    vec![transcript("你好")],
+                    polish,
+                );
+                let mut context = if fallback {
+                    (*polishing_fallback_context()).clone()
+                } else {
+                    (*local_polishing_context()).clone()
+                };
+                context.polish.translation_active = true;
+                context.polish.translation_target_language = "English".into();
+                let id = SessionId::new();
+                engine
+                    .start(id, Arc::new(context), progress.clone())
+                    .await
+                    .unwrap();
+                let result = engine.finish(id, progress).await.unwrap();
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    result.polished_text,
+                    if polish_succeeds { "Hello" } else { "你好" }
+                );
+                assert_eq!(result.polish_failed, !polish_succeeds);
+            }
+        }
     }
 
     #[tokio::test]
