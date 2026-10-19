@@ -116,6 +116,7 @@ class ImeAutoTextIntegrationTest {
         val deleted = CountDownLatch(1)
         instrumentation.targetContext.getSharedPreferences("openless_ime_ui", android.content.Context.MODE_PRIVATE)
             .edit().putBoolean("public_dictionary_updates", false).commit()
+        OpenLessRime.initialize(instrumentation.targetContext)
         try {
             instrumentation.runOnMainSync {
                 val (service, field) = editor("天气预")
