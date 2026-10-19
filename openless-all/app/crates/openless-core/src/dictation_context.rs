@@ -666,7 +666,8 @@ pub fn eligible_polish_context_turns(
 pub(crate) fn is_local_asr_provider(provider: &str) -> bool {
     matches!(
         provider,
-        "local-qwen3"
+        "apple-speech"
+            | "local-qwen3"
             | "local-qwen3-mlx"
             | "local-qwen3-c"
             | "local-whisper"
@@ -676,7 +677,7 @@ pub(crate) fn is_local_asr_provider(provider: &str) -> bool {
             | "foundry-local-whisper"
             | "sherpa-onnx"
             | "sherpa-onnx-local"
-    )
+    ) || crate::experimental_asr::ExperimentalAsrModel::from_provider(provider).is_some()
 }
 
 /// The sherpa-onnx model a failed cloud ASR call falls back to: only when the
@@ -992,6 +993,19 @@ mod tests {
         assert!(!ordinary.polish.translation_active);
         assert_eq!(ordinary.polish.mode, PolishMode::Raw);
         assert!(!ordinary.uses_llm_polisher());
+    }
+
+    #[test]
+    fn native_and_experimental_asr_providers_are_local() {
+        for provider in [
+            "apple-speech",
+            "experimental-sensevoice",
+            "experimental-embedding-gemma",
+            "experimental-textstream",
+        ] {
+            assert!(is_local_asr_provider(provider), "{provider}");
+        }
+        assert!(!is_local_asr_provider("volcengine"));
     }
 
     #[test]

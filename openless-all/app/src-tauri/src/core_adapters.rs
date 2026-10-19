@@ -801,6 +801,59 @@ impl openless_core::ModelRuntimeAdapter for TauriLocalAsrRuntimeAdapter {
         )
     }
 
+    fn test_model_for_provider(
+        &self,
+        target: openless_core::LocalAsrTarget,
+        model_dir: PathBuf,
+        provider_type: String,
+    ) -> BoxFuture<'static, Result<openless_core::LocalAsrTestResult, BackendError>> {
+        #[cfg(local_asr_sherpa)]
+        {
+            match target.runtime {
+                openless_core::LocalAsrRuntime::SherpaOnnx => {
+                    let sherpa = Arc::clone(&self.native.sherpa);
+                    Box::pin(test_sherpa_model(target, model_dir, provider_type, sherpa))
+                }
+                openless_core::LocalAsrRuntime::Foundry => {
+                    #[cfg(target_os = "windows")]
+                    {
+                        let foundry = Arc::clone(&self.native.foundry);
+                        Box::pin(test_foundry_model(target, provider_type, foundry))
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        let _ = (target, model_dir, provider_type);
+                        Box::pin(async {
+                            Err(BackendError::new(
+                                BackendErrorCode::Unsupported,
+                                "Foundry Local Whisper is not available on this platform",
+                            ))
+                        })
+                    }
+                }
+                openless_core::LocalAsrRuntime::Generic => {
+                    let _ = (target, model_dir, provider_type);
+                    Box::pin(async {
+                        Err(BackendError::new(
+                            BackendErrorCode::Unsupported,
+                            "legacy generic local ASR verification is not supported",
+                        ))
+                    })
+                }
+            }
+        }
+        #[cfg(not(local_asr_sherpa))]
+        {
+            let _ = (target, model_dir, provider_type);
+            Box::pin(async {
+                Err(BackendError::new(
+                    BackendErrorCode::Unsupported,
+                    "native local ASR is not available on this platform",
+                ))
+            })
+        }
+    }
+
     fn invalidate_route(&self, runtime: openless_core::LocalAsrRuntime) {
         if runtime == openless_core::LocalAsrRuntime::Foundry {
             self.native.foundry.invalidate_route();
@@ -816,6 +869,143 @@ impl openless_core::ModelRuntimeAdapter for TauriLocalAsrRuntimeAdapter {
         }
         .fetch_add(1, Ordering::AcqRel);
     }
+}
+
+#[cfg(local_asr_sherpa)]
+const LOCAL_ASR_TEST_WAV: &[u8] = include_bytes!("../assets/local-asr-test.wav");
+
+#[cfg(all(local_asr_sherpa, target_os = "windows"))]
+async fn test_foundry_model(
+    target: openless_core::LocalAsrTarget,
+    provider_type: String,
+    foundry: Arc<crate::asr::local::FoundryLocalRuntime>,
+) -> Result<openless_core::LocalAsrTestResult, BackendError> {
+    if target.runtime != openless_core::LocalAsrRuntime::Foundry
+        || !matches!(
+            provider_type.as_str(),
+            "foundry-local" | "foundry-whisper" | "foundry-local-whisper"
+        )
+    {
+        return Err(BackendError::new(
+            BackendErrorCode::Unsupported,
+            "native Foundry channel verification requires a Foundry provider",
+        ));
+    }
+    let samples = crate::asr::local::test_run::decode_wav_16k_mono(LOCAL_ASR_TEST_WAV)
+        .map_err(|error| local_asr_backend_error(BackendErrorCode::Platform, error))?;
+    let audio_ms = samples.len() as u64 * 1_000 / 16_000;
+    let pcm = samples
+        .iter()
+        .flat_map(|sample| {
+            ((*sample * 32_768.0).clamp(-32_768.0, 32_767.0) as i16).to_le_bytes()
+        })
+        .collect::<Vec<_>>();
+    let model_id = target.model_id().to_string();
+
+    let load_started = Instant::now();
+    foundry
+        .ensure_loaded(&model_id, "auto")
+        .await
+        .map_err(map_native_asr_error)?;
+    let load_ms = load_started.elapsed().as_millis() as u64;
+
+    let provider = crate::asr::local::FoundryLocalWhisperAsr::new(
+        Arc::clone(&foundry),
+        model_id,
+        "auto".into(),
+        None,
+    );
+    LegacyAudioConsumer::consume_pcm_chunk(&provider, &pcm);
+    let transcribe_started = Instant::now();
+    let result = provider
+        .transcribe_with_fallback_notice(std::time::Duration::from_secs(30), Arc::new(|_| {}))
+        .await
+        .map_err(map_native_asr_error);
+    if let Err(error) = foundry.release_now().await {
+        log::warn!("[local-asr-test] failed to release Foundry model: {error:#}");
+    }
+    let output = result?;
+    let transcribe_ms = transcribe_started.elapsed().as_millis() as u64;
+
+    Ok(openless_core::LocalAsrTestResult {
+        target,
+        backend: provider_type,
+        expected_text: "Hello. This is a test of the Voxtrail speech-to-text system.".into(),
+        transcribed_text: output.raw.text,
+        audio_ms,
+        load_ms,
+        transcribe_ms,
+    })
+}
+
+#[cfg(local_asr_sherpa)]
+async fn test_sherpa_model(
+    target: openless_core::LocalAsrTarget,
+    model_dir: PathBuf,
+    provider_type: String,
+    sherpa: Arc<crate::asr::local::SherpaOnnxRuntime>,
+) -> Result<openless_core::LocalAsrTestResult, BackendError> {
+    if target.runtime != openless_core::LocalAsrRuntime::SherpaOnnx
+        || !matches!(provider_type.as_str(), "sherpa-onnx" | "sherpa-onnx-local")
+    {
+        return Err(BackendError::new(
+            BackendErrorCode::Unsupported,
+            "native Sherpa channel verification requires a Sherpa provider",
+        ));
+    }
+    let samples = crate::asr::local::test_run::decode_wav_16k_mono(LOCAL_ASR_TEST_WAV)
+        .map_err(|error| local_asr_backend_error(BackendErrorCode::Platform, error))?;
+    let audio_ms = samples.len() as u64 * 1_000 / 16_000;
+    let pcm = samples
+        .iter()
+        .flat_map(|sample| {
+            ((*sample * 32_768.0).clamp(-32_768.0, 32_767.0) as i16).to_le_bytes()
+        })
+        .collect::<Vec<_>>();
+    let model_id = target.model_id().to_string();
+
+    let load_started = Instant::now();
+    if let Err(error) = sherpa.ensure_loaded(&model_id, &model_dir).await {
+        if let Err(release_error) = sherpa.release_now().await {
+            log::warn!("[local-asr-test] failed to release Sherpa model: {release_error:#}");
+        }
+        return Err(map_native_asr_error(error));
+    }
+    let load_ms = load_started.elapsed().as_millis() as u64;
+
+    let transcribe_started = Instant::now();
+    let result = async {
+        let provider = crate::asr::local::SherpaOnnxAsr::new_for_model(
+            Arc::clone(&sherpa),
+            model_id,
+            model_dir,
+            None,
+            None,
+        )
+        .await
+        .map_err(map_native_asr_error)?;
+        LegacyAudioConsumer::consume_pcm_chunk(&provider, &pcm);
+        provider
+            .transcribe(std::time::Duration::from_secs(30))
+            .await
+            .map_err(map_native_asr_error)
+    }
+    .await;
+    if let Err(error) = sherpa.release_now().await {
+        log::warn!("[local-asr-test] failed to release Sherpa model: {error:#}");
+    }
+    let output = result?;
+    let transcribe_ms = transcribe_started.elapsed().as_millis() as u64;
+
+    Ok(openless_core::LocalAsrTestResult {
+        target,
+        backend: provider_type,
+        expected_text: "Hello. This is a test of the Voxtrail speech-to-text system.".into(),
+        transcribed_text: output.text,
+        audio_ms,
+        load_ms,
+        transcribe_ms,
+    })
 }
 
 impl TauriLocalAsrRuntimeAdapter {
@@ -1540,6 +1730,67 @@ struct TauriNativeTranscriptionSession {
 }
 
 #[cfg(local_asr_sherpa)]
+enum NativeStartReleaseRuntime {
+    Foundry(Arc<crate::asr::local::FoundryLocalRuntime>),
+    Sherpa(Arc<crate::asr::local::SherpaOnnxRuntime>),
+}
+
+#[cfg(local_asr_sherpa)]
+struct NativeStartReleaseGuard {
+    runtime: NativeStartReleaseRuntime,
+    keep_loaded_secs: u32,
+    generation: u64,
+    current_generation: Arc<AtomicU64>,
+    armed: bool,
+}
+
+#[cfg(local_asr_sherpa)]
+impl NativeStartReleaseGuard {
+    fn new(
+        runtime: NativeStartReleaseRuntime,
+        keep_loaded_secs: u32,
+        generation: u64,
+        current_generation: Arc<AtomicU64>,
+    ) -> Self {
+        Self {
+            runtime,
+            keep_loaded_secs,
+            generation,
+            current_generation,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(local_asr_sherpa)]
+impl Drop for NativeStartReleaseGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        match &self.runtime {
+            NativeStartReleaseRuntime::Foundry(runtime) => schedule_foundry_release(
+                Arc::clone(runtime),
+                None,
+                self.keep_loaded_secs,
+                self.generation,
+                Arc::clone(&self.current_generation),
+            ),
+            NativeStartReleaseRuntime::Sherpa(runtime) => schedule_sherpa_release(
+                Arc::clone(runtime),
+                self.keep_loaded_secs,
+                self.generation,
+                Arc::clone(&self.current_generation),
+            ),
+        }
+    }
+}
+
+#[cfg(local_asr_sherpa)]
 impl TranscriptionEngine for TauriNativeTranscriptionEngine {
     fn start(
         &self,
@@ -1558,8 +1809,6 @@ impl TranscriptionEngine for TauriNativeTranscriptionEngine {
                 &self.dependencies.sherpa_generation
             },
         );
-        #[cfg(local_asr_sherpa)]
-        let generation = current_generation.fetch_add(1, Ordering::AcqRel) + 1;
         let keep_loaded_secs = context.asr.keep_loaded_secs.unwrap_or(0);
 
         #[cfg(local_asr_sherpa)]
@@ -1572,6 +1821,20 @@ impl TranscriptionEngine for TauriNativeTranscriptionEngine {
 
         Box::pin(async move {
             let provider_type = context.asr.provider_type.as_str();
+            let generation = current_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            let release_runtime = if provider_type
+                == openless_core::LocalAsrRuntime::Foundry.provider_id()
+            {
+                NativeStartReleaseRuntime::Foundry(Arc::clone(&foundry))
+            } else {
+                NativeStartReleaseRuntime::Sherpa(Arc::clone(&sherpa))
+            };
+            let mut start_release_guard = NativeStartReleaseGuard::new(
+                release_runtime,
+                keep_loaded_secs,
+                generation,
+                Arc::clone(&current_generation),
+            );
             #[cfg(local_asr_sherpa)]
             let (kind, label_model) = if provider_type
                 == openless_core::LocalAsrRuntime::Foundry.provider_id()
@@ -1616,7 +1879,7 @@ impl TranscriptionEngine for TauriNativeTranscriptionEngine {
                     },
                     Some(model),
                 )
-            } else if provider_type == openless_core::LocalAsrRuntime::SherpaOnnx.provider_id() {
+            } else if matches!(provider_type, "sherpa-onnx-local" | "sherpa-onnx") {
                 let model = context
                     .asr
                     .model
@@ -1692,7 +1955,7 @@ impl TranscriptionEngine for TauriNativeTranscriptionEngine {
             let asr_call_label =
                 openless_core::AsrCallLabel::new(context.asr.provider_type.clone(), label_model);
 
-            Ok(Arc::new(TauriNativeTranscriptionSession {
+            let session = Arc::new(TauriNativeTranscriptionSession {
                 kind,
                 asr_call_label,
                 #[cfg(local_asr_sherpa)]
@@ -1705,7 +1968,11 @@ impl TranscriptionEngine for TauriNativeTranscriptionEngine {
                 current_generation,
                 keep_loaded_secs,
                 released: Arc::new(AtomicBool::new(false)),
-            }) as Arc<dyn TranscriptionSession>)
+            });
+            // A dropped native start future is cleaned by NativeStartReleaseGuard. Once the
+            // session exists, its finish/cancel path owns the same generation and release.
+            start_release_guard.disarm();
+            Ok(session as Arc<dyn TranscriptionSession>)
         })
     }
 }

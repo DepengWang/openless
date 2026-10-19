@@ -8,7 +8,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseAndroidAbis, ANDROID_ABI_MATRIX, entryForAbi } from './android-abi-matrix.mjs';
@@ -25,7 +25,7 @@ const appRoot = fileURLToPath(new URL('..', import.meta.url));
  * point the crate at the verified libraries and put them in jniLibs so the
  * arm64 APK ships what libopenless_lib.so needs at load time.
  */
-async function prepareLocalAsrLibs(targets, env) {
+export async function prepareLocalAsrLibs(targets, env) {
   if (!targets.includes('aarch64')) return;
   const libDir = await ensureSherpaOnnxAndroidLibs();
   env.SHERPA_ONNX_LIB_DIR = libDir;
@@ -50,7 +50,7 @@ async function prepareLocalAsrLibs(targets, env) {
   console.log(`[android-build] local ASR libraries: ${libDir}`);
 }
 
-function resolveTargets() {
+export function resolveTargets() {
   const raw = process.env.OPENLESS_ANDROID_TARGETS ?? '';
   if (!raw.trim()) {
     return ANDROID_ABI_MATRIX.map((e) => e.abi);
@@ -69,16 +69,7 @@ async function main() {
   const targets = resolveTargets();
   const env = { ...process.env };
   await prepareLocalAsrLibs(targets, env);
-  const rimeBuilder = fileURLToPath(new URL('./build-mobile-rime.py', import.meta.url));
-  for (const target of targets) {
-    const rime = spawnSync(
-      env.PYTHON ?? 'python3',
-      [rimeBuilder, 'android', '--stage', '--abi', entryForAbi(target).gradleAbi],
-      { stdio: 'inherit', env },
-    );
-    if (rime.error) throw rime.error;
-    if (rime.status !== 0) process.exit(rime.status ?? 1);
-  }
+  stageMobileRime(targets, env);
   const args = ['tauri', 'android', 'build', '--apk', '--split-per-abi', '--target', ...targets];
   if (mode === '--debug') {
     args.push('--debug');
@@ -105,7 +96,45 @@ async function main() {
   process.exit(result.status ?? 1);
 }
 
-main().catch((error) => {
-  console.error(`[android-build] ${error.message ?? error}`);
-  process.exit(1);
-});
+function resolvePython(env) {
+  if (env.PYTHON?.trim()) {
+    return { command: env.PYTHON, prefix: [] };
+  }
+  if (process.platform !== 'win32') {
+    return { command: 'python3', prefix: [] };
+  }
+  for (const command of ['python', 'py']) {
+    const probe = spawnSync(command, ['--version'], {
+      stdio: 'ignore',
+      env,
+      shell: true,
+    });
+    if (!probe.error && probe.status === 0) {
+      return { command, prefix: command === 'py' ? ['-3'] : [] };
+    }
+  }
+  return { command: 'python', prefix: [] };
+}
+
+export function stageMobileRime(targets, env) {
+  const rimeBuilder = fileURLToPath(new URL('./build-mobile-rime.py', import.meta.url));
+  const python = resolvePython(env);
+  for (const target of targets) {
+    const rime = spawnSync(
+      python.command,
+      [...python.prefix, rimeBuilder, 'android', '--stage', '--abi', entryForAbi(target).gradleAbi],
+      { stdio: 'inherit', env, shell: process.platform === 'win32' },
+    );
+    if (rime.error) throw rime.error;
+    if (rime.status !== 0) {
+      throw new Error(`staging Rime for ${target} failed (exit ${rime.status})`);
+    }
+  }
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolvePath(process.argv[1])) {
+  main().catch((error) => {
+    console.error(`[android-build] ${error.message ?? error}`);
+    process.exit(1);
+  });
+}

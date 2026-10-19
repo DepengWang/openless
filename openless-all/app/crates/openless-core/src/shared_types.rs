@@ -2548,8 +2548,9 @@ impl PlatformCapabilities {
                 supports_overlay: true,
                 supports_desktop_hotkey: true,
                 supports_tray: true,
-                // Legacy manager is retired on macOS; experiments use their own entry.
-                supports_local_asr: cfg!(any(target_os = "linux", target_os = "windows")),
+                // The Tauri native local engine is available on Windows; Linux keeps the
+                // retired generic provider metadata but has no inference runtime.
+                supports_local_asr: cfg!(target_os = "windows"),
                 supports_local_qwen3_mlx: false,
                 supports_in_app_dictation: false,
                 supports_auto_update: true,

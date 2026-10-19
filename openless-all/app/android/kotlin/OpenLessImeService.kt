@@ -3651,6 +3651,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             !backendLinkHealthy -> LINK_COLOR_ISSUE
             asrRoute == "localRaw" || (asrRoute == "local" && !networkAvailable) -> LINK_COLOR_READY_LOCAL_RAW
             asrRoute == "local" -> LINK_COLOR_READY_LOCAL
+            asrRoute == "unavailable" -> LINK_COLOR_ISSUE
             else -> LINK_COLOR_READY
         }
         (backendLinkIndicator?.background as? GradientDrawable)?.apply {

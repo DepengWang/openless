@@ -674,13 +674,30 @@ impl DictationEngine for PipelineDictationEngine {
                     result: Ok(transcript),
                     standby,
                 } => {
-                    if let Some(standby) = standby {
-                        standby.abandon().await;
-                    }
                     session
                         .transcription_finished
                         .store(true, Ordering::Release);
-                    transcript
+                    if transcript.text.trim().is_empty() {
+                        if let Some(standby) = standby {
+                            if let Some((local, label)) = standby.result().await {
+                                log::warn!(
+                                    "[dictation] cloud ASR returned an empty transcript; using the local fallback"
+                                );
+                                asr_call_label = label;
+                                local_fallback_used = true;
+                                local
+                            } else {
+                                transcript
+                            }
+                        } else {
+                            transcript
+                        }
+                    } else {
+                        if let Some(standby) = standby {
+                            standby.abandon().await;
+                        }
+                        transcript
+                    }
                 }
                 AsrRace::Cloud {
                     result: Err(first_error),
@@ -1288,6 +1305,10 @@ impl LocalStandby {
                 let result = transcription.finish().await;
                 slot.lock().expect("local standby lock poisoned").take();
                 match result {
+                    Ok(output) if output.text.trim().is_empty() => {
+                        log::warn!("[dictation] local ASR standby returned an empty transcript");
+                        None
+                    }
                     Ok(output) => Some((output, label)),
                     Err(error) => {
                         log::warn!("[dictation] local ASR standby failed: {}", error.message);
@@ -3989,6 +4010,47 @@ mod tests {
         let result = engine.finish(session_id, progress).await.unwrap();
 
         assert_eq!(result.raw_text, "云端识别");
+    }
+
+    #[tokio::test]
+    async fn an_empty_cloud_result_uses_a_valid_local_standby() {
+        let (engine, progress, started, polish_calls) = racing_test_engine(
+            &[(CLOUD, 20), (LOCAL, 200)],
+            vec![transcript(" \n\t")],
+            vec![transcript("本地识别")],
+            Ok(crate::ports::PolishOutput::text("unused")),
+        );
+        let session_id = SessionId::new();
+        engine
+            .start(session_id, polishing_fallback_context(), progress.clone())
+            .await
+            .unwrap();
+
+        let result = engine.finish(session_id, progress).await.unwrap();
+
+        assert_eq!(result.raw_text, "本地识别");
+        assert_eq!(polish_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(started.lock().unwrap().as_slice(), &[CLOUD, LOCAL]);
+    }
+
+    #[tokio::test]
+    async fn an_empty_local_standby_leaves_a_slow_cloud_to_finish() {
+        let (engine, progress, started, _) = racing_test_engine(
+            &[(CLOUD, 200), (LOCAL, 20)],
+            vec![transcript("云端识别")],
+            vec![transcript(" \n\t")],
+            Ok(crate::ports::PolishOutput::text("unused")),
+        );
+        let session_id = SessionId::new();
+        engine
+            .start(session_id, fallback_context(), progress.clone())
+            .await
+            .unwrap();
+
+        let result = engine.finish(session_id, progress).await.unwrap();
+
+        assert_eq!(result.raw_text, "云端识别");
+        assert_eq!(started.lock().unwrap().as_slice(), &[CLOUD, LOCAL]);
     }
 
     #[tokio::test]

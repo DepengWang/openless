@@ -4972,6 +4972,35 @@ impl OpenLessBackend {
         self.release_local_asr_provider(&previous.1).await
     }
 
+    /// Whether the selected channel is one of the shared cloud ASR providers.
+    /// Disabled channel errors also occur for local channels, which must not
+    /// silently switch to another local model.
+    async fn selected_asr_channel_is_shared_cloud(&self, preference_fallback: &str) -> bool {
+        let selected_id = match self
+            .deps
+            .credential_store
+            .active_provider(ProviderSlot::Asr)
+            .await
+        {
+            Ok(provider) if !provider.trim().is_empty() => provider,
+            _ => preference_fallback.to_string(),
+        };
+        let provider_type = match self
+            .deps
+            .credential_store
+            .list_channels(ChannelKind::Asr)
+            .await
+        {
+            Ok(channels) => channels
+                .into_iter()
+                .find(|channel| channel.id == selected_id)
+                .map(|channel| channel.provider_type)
+                .unwrap_or(selected_id),
+            Err(_) => selected_id,
+        };
+        crate::cloud_providers::SHARED_CLOUD_ASR_PROVIDER_TYPES.contains(&provider_type.as_str())
+    }
+
     /// The local model dictation switches to when the selected cloud ASR
     /// channel is turned off: only where local ASR runs, with a sherpa-onnx
     /// model selected and its files installed — otherwise the disabled-channel
@@ -5003,6 +5032,32 @@ impl OpenLessBackend {
         })
     }
 
+    async fn selected_local_asr_model_is_installed(
+        &self,
+        runtime: crate::LocalAsrRuntime,
+        preferences: &crate::UserPreferences,
+    ) -> bool {
+        let model = match runtime {
+            crate::LocalAsrRuntime::Foundry => &preferences.foundry_local_asr_model,
+            crate::LocalAsrRuntime::SherpaOnnx => &preferences.sherpa_onnx_model,
+            crate::LocalAsrRuntime::Generic => return false,
+        };
+        let Ok(target) = crate::LocalAsrTarget::parse(runtime, model.trim()) else {
+            return false;
+        };
+        self.deps
+            .services
+            .local_asr
+            .list_models(runtime)
+            .await
+            .ok()
+            .is_some_and(|models| {
+                models
+                    .into_iter()
+                    .any(|entry| entry.target == target && entry.installed)
+            })
+    }
+
     /// Which recognizer the next dictation will use, for hosts that show it
     /// (the Android keyboard's status dot): the selected channel's own kind,
     /// or Local when that channel is turned off and local_asr_switch_target()
@@ -5017,6 +5072,32 @@ impl OpenLessBackend {
                 let Some(runtime) = Self::local_asr_runtime(&provider.provider_type) else {
                     return AsrRoute::Cloud;
                 };
+                if !self.deps.services.local_asr.engine_available(runtime) {
+                    return AsrRoute::Unavailable;
+                }
+                if runtime == crate::LocalAsrRuntime::Foundry {
+                    // Foundry's engine is compiled in even when the selected
+                    // native model receipt is missing or a download/storage
+                    // operation requires a process restart. Do not advertise a
+                    // route that the next prepare call will reject.
+                    let status = match self
+                        .deps
+                        .services
+                        .local_asr
+                        .runtime_status(runtime)
+                        .await
+                    {
+                        Ok(status) => status,
+                        Err(_) => return AsrRoute::Unavailable,
+                    };
+                    if status.restart_required
+                        || !self
+                            .selected_local_asr_model_is_installed(runtime, &preferences)
+                            .await
+                    {
+                        return AsrRoute::Unavailable;
+                    }
+                }
                 // Sherpa is a real local route only when the selected model is
                 // installed on this ABI. The native engine otherwise rejects
                 // the dictation after the route has already been displayed.
@@ -5029,9 +5110,15 @@ impl OpenLessBackend {
             }
             Err(error)
                 if error.code == BackendErrorCode::InvalidState
+                    && self
+                        .selected_asr_channel_is_shared_cloud(&preferences.active_asr_provider)
+                        .await
                     && self.local_asr_switch_target(&preferences).is_some() =>
             {
-                true
+                self.deps
+                    .services
+                    .local_asr
+                    .engine_available(crate::LocalAsrRuntime::SherpaOnnx)
             }
             Err(_) => return AsrRoute::Unavailable,
         };
@@ -5069,6 +5156,20 @@ impl OpenLessBackend {
         let mut usage = AsrUsage::default();
         let mut latest: Option<(String, bool)> = None;
         for entry in self.history.list()? {
+            // Recording drafts and terminal ASR failures retain the provider
+            // selected at start-up, but they never produced a recognition.
+            if matches!(
+                entry.error_code.as_deref(),
+                Some(
+                    "recording"
+                        | "cancelled"
+                        | "recordingFailed"
+                        | "transcribeFailed"
+                        | "emptyTranscript"
+                )
+            ) {
+                continue;
+            }
             let Some(provider) = entry.asr_provider.as_deref() else {
                 continue;
             };
@@ -7537,7 +7638,12 @@ impl OpenLessBackend {
                 Ok(provider) => provider,
                 // The selected cloud channel is turned off: dictate with the
                 // installed local model instead of refusing to start.
-                Err(error) if error.code == BackendErrorCode::InvalidState => {
+                Err(error)
+                    if error.code == BackendErrorCode::InvalidState
+                        && self
+                            .selected_asr_channel_is_shared_cloud(&preferences.active_asr_provider)
+                            .await =>
+                {
                     match self.local_asr_switch_target(&preferences) {
                         Some(local) => {
                             log::info!(
@@ -10092,6 +10198,79 @@ mod tests {
         assert_eq!(
             backend.asr_usage().unwrap(),
             AsrUsage { local: 2, cloud: 2, last_local: Some(true) }
+        );
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn asr_usage_ignores_entries_without_a_successful_recognition() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "openless-core-backend-asr-usage-failures-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let backend = backend_with_dictation_engine(data_dir.clone(), Arc::new(FakeEngine));
+
+        let entries = [
+            (
+                "completed-local",
+                "2026-10-18T10:00:00+00:00",
+                "sherpa-onnx-local",
+                None,
+            ),
+            (
+                "recording-draft",
+                "2026-10-18T10:01:00+00:00",
+                "volcengine",
+                Some("recording"),
+            ),
+            (
+                "cancelled",
+                "2026-10-18T10:02:00+00:00",
+                "sherpa-onnx-local",
+                Some("cancelled"),
+            ),
+            (
+                "recording-failed",
+                "2026-10-18T10:03:00+00:00",
+                "volcengine",
+                Some("recordingFailed"),
+            ),
+            (
+                "transcribe-failed",
+                "2026-10-18T10:04:00+00:00",
+                "sherpa-onnx-local",
+                Some("transcribeFailed"),
+            ),
+            (
+                "empty-transcript",
+                "2026-10-18T10:05:00+00:00",
+                "volcengine",
+                Some("emptyTranscript"),
+            ),
+            (
+                "insert-failed-after-asr",
+                "2026-10-18T10:06:00+00:00",
+                "volcengine",
+                Some("insertFailed"),
+            ),
+            (
+                "polish-failed-after-asr",
+                "2026-10-18T10:07:00+00:00",
+                "sherpa-onnx-local",
+                Some("polishFailed"),
+            ),
+        ];
+        for (id, created_at, provider, error_code) in entries {
+            let mut entry = history_session(id);
+            entry.created_at = created_at.into();
+            entry.asr_provider = Some(provider.into());
+            entry.error_code = error_code.map(Into::into);
+            backend.append_history(entry, 30, None).unwrap();
+        }
+
+        assert_eq!(
+            backend.asr_usage().unwrap(),
+            AsrUsage { local: 2, cloud: 1, last_local: Some(true) }
         );
         let _ = std::fs::remove_dir_all(data_dir);
     }

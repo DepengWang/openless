@@ -1203,12 +1203,13 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
     }
   };
 
-  const handleRevealSherpaDir = async () => {
+  const handleRevealSherpaDir = async (aliasOverride?: SherpaOnnxModelAlias) => {
+    const alias = aliasOverride ?? selectedSherpaAlias;
     setSherpaBusy('reveal');
     try {
       setError(null);
-      await revealSherpaOnnxAsrModelDir(selectedSherpaAlias);
-      await refreshSherpaModelDir(selectedSherpaAlias);
+      await revealSherpaOnnxAsrModelDir(alias);
+      await refreshSherpaModelDir(alias);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1751,7 +1752,7 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
         isActive:
           sherpaStatus?.activeModel === c.alias && prefs?.activeAsrProvider === 'sherpa-onnx-local',
         engine: 'sherpa',
-        runtimeLabel: 'Windows · sherpa-onnx',
+        runtimeLabel: OS === 'android' ? 'Android · sherpa-onnx' : 'Windows · sherpa-onnx',
         downloadError:
           sherpaDownloadProgress[c.alias]?.phase === 'failed'
             ? sherpaDownloadProgress[c.alias]?.error || t('localAsr.failed')
@@ -1862,6 +1863,8 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
       } else if (action === 'delete') {
         setSelectedSherpaAlias(alias);
         window.setTimeout(() => void handleDeleteSherpa(alias), 0);
+      } else if (action === 'reveal') {
+        void handleRevealSherpaDir(alias);
       }
     } else if (entry.engine === 'foundry') {
       const alias = entry.id as FoundryLocalAsrModelAlias;
@@ -2018,6 +2021,7 @@ export function LocalAsr({ embedded = false }: LocalAsrProps = {}) {
                     }}
                     onDelete={() => selectedEntry && dispatchEntryAction(selectedEntry, 'delete')}
                     onReveal={() => selectedEntry && dispatchEntryAction(selectedEntry, 'reveal')}
+                    showReveal={!(OS === 'android' && selectedEntry?.engine === 'sherpa')}
                     onCleanup={
                       selectedEntry &&
                       (selectedEntry.engine === 'qwen3' || selectedEntry.engine === 'whisper') &&

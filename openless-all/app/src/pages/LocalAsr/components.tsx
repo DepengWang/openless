@@ -668,6 +668,7 @@ export function ModelDetailPanel({
   onCancel,
   onDelete,
   onReveal,
+  showReveal = true,
   onTest,
   onCleanup,
   showTest,
@@ -683,6 +684,7 @@ export function ModelDetailPanel({
   onCancel: () => void;
   onDelete: () => void;
   onReveal: () => void;
+  showReveal?: boolean;
   onTest: () => void;
   /** Clean up the staging directory of an interrupted download (shown only when leftovers exist and no download is running). */
   onCleanup?: () => void;
@@ -733,13 +735,15 @@ export function ModelDetailPanel({
         )}
         {entry.isDownloaded && (
           <>
-            <Btn
-              variant="ghost"
-              disabled={busy || testing || entry.isDownloading}
-              onClick={onReveal}
-            >
-              {t('localAsr.revealDir')}
-            </Btn>
+            {showReveal && (
+              <Btn
+                variant="ghost"
+                disabled={busy || testing || entry.isDownloading}
+                onClick={onReveal}
+              >
+                {t('localAsr.revealDir')}
+              </Btn>
+            )}
             <Btn
               variant="ghost"
               disabled={busy || testing || entry.isDownloading}
