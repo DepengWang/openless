@@ -6,6 +6,7 @@ import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.ExtractedText
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputConnectionWrapper
 import android.widget.EditText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -15,6 +16,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class ImeAutoTextIntegrationTest {
@@ -104,6 +107,51 @@ class ImeAutoTextIntegrationTest {
         setField(service, "draftConnection", connection(edit, true))
         call(service, "commitEnglishChar", ",")
         assertEquals("word ,", edit.text.toString())
+    }
+
+    @Test fun pinyinEditorBackspaceDropsDeletedAssociationContext() {
+        lateinit var controller: RimePinyinController
+        var controllerCreated = false
+        lateinit var edit: EditText
+        val deleted = CountDownLatch(1)
+        instrumentation.targetContext.getSharedPreferences("openless_ime_ui", android.content.Context.MODE_PRIVATE)
+            .edit().putBoolean("public_dictionary_updates", false).commit()
+        try {
+            instrumentation.runOnMainSync {
+                val (service, field) = editor("天气预")
+                edit = field
+                setField(service, "latinInputMode", OpenLessImeService.LatinInputMode.PINYIN)
+                controller = OpenLessImeService::class.java.getDeclaredMethod("getRimePinyinController")
+                    .apply { isAccessible = true }.invoke(service) as RimePinyinController
+                controllerCreated = true
+                controller.setLearningAllowed(true)
+                controller.recordCommittedText("天气")
+                controller.associationLearning.advance("天气", "预")
+                controller.recordCommittedText("预")
+                setField(service, "draftConnection", object : InputConnectionWrapper(connection(edit, true), false) {
+                    override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+                        val result = super.deleteSurroundingText(beforeLength, afterLength)
+                        deleted.countDown()
+                        return result
+                    }
+                })
+                call(service, "englishDeleteBackward")
+            }
+            assertTrue("Empty-encoding Backspace must reach the editor", deleted.await(20, TimeUnit.SECONDS))
+            instrumentation.runOnMainSync {
+                assertEquals("天气", edit.text.toString())
+                assertEquals("", controller.associationContext())
+                val lookup: (String) -> List<StrokePhraseRepository.Candidate> = { prefix ->
+                    listOf("天气预报").filter { it.startsWith(prefix) }
+                        .map { StrokePhraseRepository.Candidate(it, 1, prefix) }
+                }
+                val learned = controller.associationLearning.advance(controller.associationContext(), "报")
+                    .mapNotNull { typedContinuation(it.contextBefore, it.word, lookup) }
+                assertEquals(emptyList<StrokePhraseRepository.Candidate>(), learned)
+            }
+        } finally {
+            instrumentation.runOnMainSync { if (controllerCreated) controller.shutdown() }
+        }
     }
 
     private fun editor(text: String, reportsPosition: Boolean = true): Pair<OpenLessImeService, EditText> {

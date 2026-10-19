@@ -1734,7 +1734,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private fun englishDeleteBackward() {
         if (latinInputMode == LatinInputMode.PINYIN) {
             rimePinyinController.backspace({ renderPinyinCandidates(it) }, {
-                rimePinyinController.associationLearning.reset()
+                rimePinyinController.resetAssociationContext()
                 deleteBackward()
             })
             return
