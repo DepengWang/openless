@@ -3212,6 +3212,7 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         cancelImeSession()
+        closeDraft()
         super.onStartInput(attribute, restarting)
         restoreInputMode()
         restoreScriptPreference()
@@ -3796,7 +3797,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
     private var draftReplacesWholeResult = false
     private var draftOriginalHostStart: Int? = null
     private var draftRestoreDictationText: String? = null
-    private var draftRestoreDictationEpoch = -1L
     private var draftRestoreDictationUndone = false
     private var draftSubmitting = false
     private var draftMessage: String? = null
@@ -4019,7 +4019,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         if (draftEdit == null || draftSubmitting) return
         val purpose = draftPurpose
         val restoreText = draftRestoreDictationText
-        val restoreEpoch = draftRestoreDictationEpoch
         val restoreUndone = draftRestoreDictationUndone
         if (recording || processing) cancelDictation()
         closeDraft()
@@ -4028,7 +4027,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             return
         }
         lastDictationText = restoreText
-        lastDictationEpoch = restoreEpoch
+        // Cancelling draft dictation advances the epoch, not the host text target.
+        lastDictationEpoch = sessionEpoch
         dictationTextUndone = restoreUndone
         setState("idle", "点击开始说话")
         updateDictationResultControls()
@@ -4046,7 +4046,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         draftReplacesWholeResult = false
         draftOriginalHostStart = null
         draftRestoreDictationText = null
-        draftRestoreDictationEpoch = -1L
         draftRestoreDictationUndone = false
         draftSubmitting = false
         draftMessage = null
@@ -4304,9 +4303,8 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
             else -> lastDictationText?.takeIf { resultIntact } ?: return
         }
         // Cancel puts the undo/redo/edit controls back exactly as they were.
-        val restoreText = lastDictationText
-        val restoreEpoch = lastDictationEpoch
-        val restoreUndone = dictationTextUndone
+        val restoreText = lastDictationText?.takeIf { sessionEpoch == lastDictationEpoch }
+        val restoreUndone = restoreText != null && dictationTextUndone
         val caret = hostCaretOffset(connection)
         val originalStart = when {
             caret == null -> null
@@ -4319,7 +4317,6 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         draftReplacesWholeResult = selected == null
         draftOriginalHostStart = originalStart
         draftRestoreDictationText = restoreText
-        draftRestoreDictationEpoch = restoreEpoch
         draftRestoreDictationUndone = restoreUndone
     }
 
