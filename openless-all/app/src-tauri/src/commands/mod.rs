@@ -113,6 +113,7 @@ pub use selection_polish_preview::*;
 #[cfg(all(not(mobile), target_os = "windows"))]
 pub use selection_voice::*;
 pub use settings::*;
+pub(crate) use settings::sync_low_latency_capture_preferences;
 #[cfg(any(not(mobile), local_asr_sherpa))]
 // Sherpa commands are registered on Windows and arm64 Android; other desktop
 // targets keep an empty re-export.

@@ -7,6 +7,7 @@ import { CapsuleStylePreview } from '../../components/TypelessCapsule';
 import { ShortcutRecorder } from '../../components/ShortcutRecorder';
 import { playRecordStartCue } from '../../lib/audioCue';
 import { defaultDictationHotkey } from '../../lib/hotkey';
+import { getSherpaOnnxAsrCatalog } from '../../lib/localAsr';
 import { emitSaved } from '../../lib/savedEvent';
 import { isHotkeyModeMigrationNoticeActive } from '../../lib/hotkeyMigration';
 import {
@@ -18,6 +19,11 @@ import {
   pasteShortcutForPlainTextToggle,
 } from '../../lib/plainTextInsertion';
 import { isTauri, listMicrophoneDevices, setDictationHotkey } from '../../lib/ipc';
+import {
+  isVoiceActivationModelMissing,
+  VOICE_ACTIVATION_MODEL_ALIAS,
+  type VoiceActivationStateSnapshot,
+} from '../../lib/voiceActivation';
 import { getNativeCapsuleStatus } from '../../lib/ipc/settings';
 import { getPlatformCapabilities, getCachedPlatformCapabilities } from '../../lib/platform';
 import type {
@@ -59,7 +65,13 @@ async function autostartDisable(): Promise<void> {
   await invoke('plugin:autostart|disable');
 }
 
-export function RecordingInputSection({ forcedOs }: { forcedOs?: OS } = {}) {
+export function RecordingInputSection({
+  forcedOs,
+  onOpenLocalModels,
+}: {
+  forcedOs?: OS;
+  onOpenLocalModels?: () => void;
+} = {}) {
   const { t } = useTranslation();
   const os = forcedOs ?? detectOS();
   const { prefs, capability, updatePrefs: savePrefs, refresh } = useHotkeySettings();
@@ -69,6 +81,8 @@ export function RecordingInputSection({ forcedOs }: { forcedOs?: OS } = {}) {
   const [microphoneDevices, setMicrophoneDevices] = useState<MicrophoneDevice[]>([]);
   const [microphoneDevicesLoaded, setMicrophoneDevicesLoaded] = useState(false);
   const [microphoneDevicesError, setMicrophoneDevicesError] = useState<string | null>(null);
+  const [voiceActivationModelMissing, setVoiceActivationModelMissing] = useState(false);
+  const voiceActivationStateObservedRef = useRef(false);
   const [displayModeRestartPending, setDisplayModeRestartPending] = useState(false);
   const [displayModeRestarting, setDisplayModeRestarting] = useState(false);
   const displayModeRestartTitleId = useId();
@@ -130,6 +144,62 @@ export function RecordingInputSection({ forcedOs }: { forcedOs?: OS } = {}) {
       unlisten?.();
     };
   }, [loadMicrophoneDevices]);
+
+  useEffect(() => {
+    if (!isTauri || os !== 'win') {
+      setVoiceActivationModelMissing(false);
+      return;
+    }
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    async function listenForVoiceActivationChanges() {
+      const { listen } = await import('@tauri-apps/api/event');
+      if (cancelled) return;
+      const stopListening = await listen<VoiceActivationStateSnapshot>(
+        'voice-activation:state-changed',
+        (event) => {
+          voiceActivationStateObservedRef.current = true;
+          setVoiceActivationModelMissing(isVoiceActivationModelMissing(event.payload));
+        },
+      );
+      if (cancelled) {
+        stopListening();
+        return;
+      }
+      unlisten = stopListening;
+    }
+    void listenForVoiceActivationChanges();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [os]);
+
+  useEffect(() => {
+    if (os !== 'win' || !prefs?.voiceActivationEnabled) {
+      voiceActivationStateObservedRef.current = false;
+      setVoiceActivationModelMissing(false);
+      return;
+    }
+    voiceActivationStateObservedRef.current = false;
+    let cancelled = false;
+    void getSherpaOnnxAsrCatalog()
+      .then((catalog) => {
+        if (cancelled || voiceActivationStateObservedRef.current) return;
+        const model = catalog.find(({ alias }) => alias === VOICE_ACTIVATION_MODEL_ALIAS);
+        setVoiceActivationModelMissing(model?.cached === false);
+      })
+      .catch(() => {
+        // The runtime event remains authoritative when the catalog cannot be read.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [os, prefs?.voiceActivationEnabled]);
+
+  useEffect(() => {
+    if (!prefs?.voiceActivationEnabled) setVoiceActivationModelMissing(false);
+  }, [prefs?.voiceActivationEnabled]);
 
   const saveKeyboardListAffectingPrefs = useCallback(
     async (nextPrefs: UserPreferences) => {
@@ -580,15 +650,133 @@ export function RecordingInputSection({ forcedOs }: { forcedOs?: OS } = {}) {
           />
         </SettingRow>
         {showDesktopHotkey && os === 'win' && (
-          <SettingRow
-            label={t('settings.recording.lowLatencyDictationLabel')}
-            desc={t('settings.recording.lowLatencyDictationDesc')}
-          >
-            <Toggle
-              on={prefs.lowLatencyDictationEnabled ?? false}
-              onToggle={onLowLatencyDictationChange}
-            />
-          </SettingRow>
+          <>
+            <SettingRow
+              label={t('settings.recording.lowLatencyDictationLabel')}
+              desc={t('settings.recording.lowLatencyDictationDesc')}
+            >
+              <Toggle
+                on={prefs.lowLatencyDictationEnabled ?? false}
+                onToggle={onLowLatencyDictationChange}
+              />
+            </SettingRow>
+            <SettingRow
+              label={t('settings.recording.voiceActivationLabel')}
+              desc={t('settings.recording.voiceActivationDesc')}
+            >
+              <Toggle
+                on={prefs.voiceActivationEnabled ?? false}
+                onToggle={(next) => savePrefs({ ...prefs, voiceActivationEnabled: next })}
+              />
+            </SettingRow>
+            {prefs.voiceActivationEnabled && (
+              <div
+                style={{
+                  margin: '4px 0 10px',
+                  padding: '10px 12px',
+                  borderRadius: 10,
+                  background: 'var(--ol-surface-2)',
+                  border: '0.5px solid var(--ol-line)',
+                }}
+              >
+                <div style={{ fontSize: 11.5, color: 'var(--ol-ink-4)', marginBottom: 8 }}>
+                  {t('settings.recording.voiceActivationLocalOnly')}
+                </div>
+                {voiceActivationModelMissing && (
+                  <div
+                    role="alert"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 10,
+                      marginBottom: 10,
+                      padding: '9px 10px',
+                      borderRadius: 8,
+                      background: 'rgba(220, 38, 38, 0.08)',
+                      border: '0.5px solid var(--ol-err)',
+                    }}
+                  >
+                    <span style={{ fontSize: 11.5, color: 'var(--ol-err)', lineHeight: 1.5 }}>
+                      {t('settings.recording.voiceActivationModelMissing')}
+                    </span>
+                    {onOpenLocalModels && (
+                      <Btn
+                        variant="blue"
+                        size="sm"
+                        onClick={onOpenLocalModels}
+                        style={{ flexShrink: 0 }}
+                      >
+                        {t('settings.recording.voiceActivationDownloadZipformer')}
+                      </Btn>
+                    )}
+                  </div>
+                )}
+                <SettingRow label={t('settings.recording.voiceActivationWakeEnabled')}>
+                  <Toggle
+                    on={prefs.voiceActivationWakeEnabled ?? true}
+                    onToggle={(next) => savePrefs({ ...prefs, voiceActivationWakeEnabled: next })}
+                  />
+                </SettingRow>
+                {prefs.voiceActivationWakeEnabled && (
+                  <input
+                    aria-label={t('settings.recording.voiceActivationWakePhrase')}
+                    defaultValue={prefs.voiceActivationWakePhrase ?? '开始语音录入'}
+                    onBlur={(event) =>
+                      savePrefs({ ...prefs, voiceActivationWakePhrase: event.currentTarget.value })
+                    }
+                    style={{ ...inputStyle, width: '100%', margin: '2px 0 8px' }}
+                  />
+                )}
+                <SettingRow label={t('settings.recording.voiceActivationFinishEnabled')}>
+                  <Toggle
+                    on={prefs.voiceActivationFinishEnabled ?? true}
+                    onToggle={(next) => savePrefs({ ...prefs, voiceActivationFinishEnabled: next })}
+                  />
+                </SettingRow>
+                {prefs.voiceActivationFinishEnabled && (
+                  <input
+                    aria-label={t('settings.recording.voiceActivationFinishPhrase')}
+                    defaultValue={prefs.voiceActivationFinishPhrase ?? '完成语音录入'}
+                    onBlur={(event) =>
+                      savePrefs({
+                        ...prefs,
+                        voiceActivationFinishPhrase: event.currentTarget.value,
+                      })
+                    }
+                    style={{ ...inputStyle, width: '100%', margin: '2px 0 8px' }}
+                  />
+                )}
+                <SettingRow label={t('settings.recording.voiceActivationTimeoutEnabled')}>
+                  <Toggle
+                    on={prefs.voiceActivationTimeoutEnabled ?? true}
+                    onToggle={(next) =>
+                      savePrefs({ ...prefs, voiceActivationTimeoutEnabled: next })
+                    }
+                  />
+                </SettingRow>
+                {prefs.voiceActivationTimeoutEnabled && (
+                  <input
+                    type="number"
+                    min={5}
+                    max={300}
+                    aria-label={t('settings.recording.voiceActivationTimeoutSeconds')}
+                    defaultValue={prefs.voiceActivationTimeoutSeconds ?? 30}
+                    onBlur={(event) =>
+                      savePrefs({
+                        ...prefs,
+                        voiceActivationTimeoutSeconds: Math.max(
+                          5,
+                          Math.min(300, Number(event.currentTarget.value) || 30),
+                        ),
+                      })
+                    }
+                    style={{ ...inputStyle, width: 90, marginTop: 2 }}
+                  />
+                )}
+              </div>
+            )}
+          </>
         )}
         <SettingRow
           label={t('settings.recording.muteDuringRecordingLabel')}

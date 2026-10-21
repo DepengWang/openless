@@ -1578,6 +1578,20 @@ export const ko: typeof zhCN = {
       recordAudioForDebugDesc: '원시 마이크 오디오를 wav 로 저장하여 인식 문제 진단.',
       audioRecordingMaxEntriesLabel: '원본 녹음 보관 개수',
       audioRecordingMaxEntriesDesc: '로컬 보관 wav 파일 상한. 빈칸 = 200.',
+      voiceActivationLabel: '음성 활성화',
+      voiceActivationDesc: '받아쓰기 시작 구문을 로컬에서 감지합니다.',
+      voiceActivationLocalOnly:
+        '인식은 이 기기에서만 수행되며 대기 오디오는 업로드하거나 보관하지 않습니다.',
+      voiceActivationMultimodalModels:
+        '여기에서 음성 활성화 모델을 준비합니다. 받아쓰기는 현재 멀티모달 서비스를 계속 사용합니다.',
+      voiceActivationModelMissing: '로컬 Zipformer 모델이 설치되지 않았습니다.',
+      voiceActivationDownloadZipformer: 'Zipformer 다운로드',
+      voiceActivationWakeEnabled: '시작 구문',
+      voiceActivationWakePhrase: '시작 구문',
+      voiceActivationFinishEnabled: '종료 구문',
+      voiceActivationFinishPhrase: '종료 구문',
+      voiceActivationTimeoutEnabled: '시간 초과 후 중지',
+      voiceActivationTimeoutSeconds: '시간 초과(초)',
       startupGroupTitle: '시작',
       lowMemoryBackgroundLabel: '저메모리 백그라운드 모드',
       lowMemoryBackgroundDesc:

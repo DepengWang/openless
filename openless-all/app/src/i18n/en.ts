@@ -1603,6 +1603,20 @@ export const en: typeof zhCN = {
         'Save raw microphone audio as wav for diagnosing recognition issues.',
       audioRecordingMaxEntriesLabel: 'Max raw recordings',
       audioRecordingMaxEntriesDesc: 'Max wav files retained locally. Blank = 200.',
+      voiceActivationLabel: 'Voice activation',
+      voiceActivationDesc: 'Listen locally for a wake phrase to start dictation.',
+      voiceActivationLocalOnly:
+        'Recognition stays on this device; standby audio is not uploaded or archived.',
+      voiceActivationMultimodalModels:
+        'Prepare the voice activation model here. Dictation still uses your current multimodal service.',
+      voiceActivationModelMissing: 'The local Zipformer model is not installed.',
+      voiceActivationDownloadZipformer: 'Download Zipformer',
+      voiceActivationWakeEnabled: 'Wake phrase',
+      voiceActivationWakePhrase: 'Wake phrase',
+      voiceActivationFinishEnabled: 'Finish phrase',
+      voiceActivationFinishPhrase: 'Finish phrase',
+      voiceActivationTimeoutEnabled: 'Stop after timeout',
+      voiceActivationTimeoutSeconds: 'Timeout (seconds)',
       startupGroupTitle: 'Startup',
       lowMemoryBackgroundLabel: 'Low-memory background mode',
       lowMemoryBackgroundDesc:

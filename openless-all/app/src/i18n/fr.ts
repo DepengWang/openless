@@ -1648,6 +1648,20 @@ export const fr: typeof zhCN = {
       audioRecordingMaxEntriesLabel: 'Nombre maximal d’enregistrements bruts',
       audioRecordingMaxEntriesDesc:
         'Nombre maximal de fichiers WAV conservés localement. Vide = 200.',
+      voiceActivationLabel: 'Activation vocale',
+      voiceActivationDesc: 'Écouter localement une phrase d’activation pour démarrer la dictée.',
+      voiceActivationLocalOnly:
+        'La reconnaissance reste sur cet appareil ; l’audio en veille n’est ni envoyé ni archivé.',
+      voiceActivationMultimodalModels:
+        'Préparez ici le modèle d’activation vocale. La dictée utilise toujours votre service multimodal actuel.',
+      voiceActivationModelMissing: 'Le modèle local Zipformer n’est pas installé.',
+      voiceActivationDownloadZipformer: 'Télécharger Zipformer',
+      voiceActivationWakeEnabled: 'Phrase d’activation',
+      voiceActivationWakePhrase: 'Phrase d’activation',
+      voiceActivationFinishEnabled: 'Phrase de fin',
+      voiceActivationFinishPhrase: 'Phrase de fin',
+      voiceActivationTimeoutEnabled: 'Arrêter après expiration',
+      voiceActivationTimeoutSeconds: 'Délai (secondes)',
       startupGroupTitle: 'Démarrage',
       lowMemoryBackgroundLabel: 'Mode arrière-plan économe en mémoire',
       lowMemoryBackgroundDesc:
@@ -2300,7 +2314,7 @@ export const fr: typeof zhCN = {
         'L’inférence locale est plus lente ; un appareil insuffisamment puissant peut omettre des mots.',
       localAsrFallbackLabel: 'Utiliser le modèle local si le cloud échoue',
       localAsrFallbackDesc:
-        'En cas de connexion faible ou absente, transcrit l\'enregistrement avec le modèle local téléchargé au lieu d\'attendre les nouvelles tentatives du cloud. Nécessite un modèle local téléchargé.',
+        "En cas de connexion faible ou absente, transcrit l'enregistrement avec le modèle local téléchargé au lieu d'attendre les nouvelles tentatives du cloud. Nécessite un modèle local téléchargé.",
       qwen3Desc: 'Une fois activé, il remplace le fournisseur ASR.',
       sherpaDesc: 'Une fois activé, il remplace le fournisseur ASR.',
       foundryDesc: 'Une fois activé, il remplace le fournisseur ASR.',
