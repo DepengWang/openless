@@ -41,3 +41,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 unicode-normalization = "0.1"
 zeroize = { version = "1", features = ["derive"] }
 zip = "2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_system_properties = "0.1.6"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.52"

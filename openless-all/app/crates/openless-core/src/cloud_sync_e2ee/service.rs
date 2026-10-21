@@ -29,6 +29,44 @@ use crate::events::{BackendEventKind, BackendEventPublisher};
 use crate::marketplace::MarketplaceService;
 use crate::{BackendError, CredentialStore, SecretValue};
 
+fn sync_device_display_name(os: &str) -> String {
+    let (platform, model) = match os {
+        "android" => ("Android", android_device_model().unwrap_or_else(|| "Android device".into())),
+        "windows" => ("Windows", windows_device_model().unwrap_or_else(|| "Windows PC".into())),
+        "macos" => ("macOS", "Mac".into()),
+        "ios" => ("iOS", "iPhone or iPad".into()),
+        other => (other, other.to_string()),
+    };
+    format!("{model} ({platform})")
+}
+
+#[cfg(target_os = "android")]
+fn android_device_model() -> Option<String> {
+    let properties = android_system_properties::AndroidSystemProperties::new();
+    let model = properties.get("ro.product.model")?;
+    let model = model.trim();
+    (!model.is_empty()).then(|| model.chars().take(64).collect())
+}
+
+#[cfg(not(target_os = "android"))]
+fn android_device_model() -> Option<String> { None }
+
+#[cfg(target_os = "windows")]
+fn windows_device_model() -> Option<String> {
+    use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+    let bios = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey("HARDWARE\\DESCRIPTION\\System\\BIOS")
+        .ok()?;
+    let manufacturer: String = bios.get_value("SystemManufacturer").ok()?;
+    let product: String = bios.get_value("SystemProductName").ok()?;
+    let name = format!("{} {}", manufacturer.trim(), product.trim());
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.chars().take(64).collect())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_device_model() -> Option<String> { None }
+
 use super::{
     document_error,
     dto::*,
@@ -775,9 +813,19 @@ impl EncryptedSyncService {
         if valid {
             return Ok(());
         }
+        let device = self.0.data.device();
+        let device_name = sync_device_display_name(&device.os);
         #[cfg(not(test))]
         let transport =
-            match Transport::new(&origin, &self.0.config.github_client_id, proxy_policy).await {
+            match Transport::new(
+                &origin,
+                &self.0.config.github_client_id,
+                proxy_policy,
+                &device.id,
+                &device_name,
+            )
+            .await
+            {
                 Ok(transport) => transport,
                 Err(e) => {
                     log::warn!("[e2ee-token] Transport::new failed: {e:?}");
@@ -790,11 +838,19 @@ impl EncryptedSyncService {
                 &origin,
                 &self.0.config.github_client_id,
                 proxy_policy,
+                &device.id,
+                &device_name,
             )
             .await
             .map_err(protocol_error)?
         } else {
-            Transport::new(&origin, &self.0.config.github_client_id, proxy_policy)
+            Transport::new(
+                &origin,
+                &self.0.config.github_client_id,
+                proxy_policy,
+                &device.id,
+                &device_name,
+            )
                 .await
                 .map_err(protocol_error)?
         };

@@ -69,6 +69,8 @@ pub(crate) struct Transport {
     client: Client,
     capabilities: Arc<Capabilities>,
     proxy_policy: ProxyPolicy,
+    device_id: HeaderValue,
+    device_name: HeaderValue,
 }
 
 impl fmt::Debug for Transport {
@@ -357,6 +359,8 @@ impl Transport {
         origin: &str,
         expected_github_client_id: &str,
         proxy_policy: ProxyPolicy,
+        device_id: &str,
+        device_name: &str,
     ) -> Result<Self> {
         let origin = parse_origin(origin, false)?;
         let proxy_policy = ProxyPolicy::for_origin(origin.as_str(), proxy_policy.use_system_proxy);
@@ -364,7 +368,19 @@ impl Transport {
             .https_only(true)
             .build()
             .map_err(|_| Error::Transport)?;
-        Self::check_capabilities(origin, client, expected_github_client_id, proxy_policy).await
+        let device_id = HeaderValue::from_str(device_id)
+            .map_err(|_| Error::InvalidWire("device id header"))?;
+        let device_name = HeaderValue::from_str(&percent_encode_header_value(device_name))
+            .map_err(|_| Error::InvalidWire("device name header"))?;
+        Self::check_capabilities(
+            origin,
+            client,
+            expected_github_client_id,
+            proxy_policy,
+            device_id,
+            device_name,
+        )
+        .await
     }
 
     async fn check_capabilities(
@@ -372,6 +388,8 @@ impl Transport {
         client: Client,
         expected_github_client_id: &str,
         proxy_policy: ProxyPolicy,
+        device_id: HeaderValue,
+        device_name: HeaderValue,
     ) -> Result<Self> {
         if expected_github_client_id.is_empty()
             || expected_github_client_id.len() > 128
@@ -393,6 +411,8 @@ impl Transport {
             client,
             capabilities: Arc::new(capabilities),
             proxy_policy,
+            device_id,
+            device_name,
         })
     }
 
@@ -726,10 +746,11 @@ impl Transport {
         path: &str,
     ) -> Result<RequestBuilder> {
         self.check_session(session)?;
-        Ok(self.request(method, path).header(
-            AUTHORIZATION,
-            bearer_header(session.session.access_token.expose())?,
-        ))
+        Ok(self
+            .request(method, path)
+            .header(AUTHORIZATION, bearer_header(session.session.access_token.expose())?)
+            .header("X-Device-ID", self.device_id.clone())
+            .header("X-Device-Name", self.device_name.clone()))
     }
 
     fn check_session(&self, session: &SyncSession) -> Result<()> {
@@ -783,8 +804,29 @@ impl Transport {
         let client = client_builder(proxy_policy)
             .build()
             .map_err(|_| Error::Transport)?;
-        Self::check_capabilities(origin, client, expected_client_id, proxy_policy).await
+        Self::check_capabilities(
+            origin,
+            client,
+            expected_client_id,
+            proxy_policy,
+            HeaderValue::from_static("00000000-0000-4000-8000-000000000001"),
+            HeaderValue::from_static("test"),
+        )
+        .await
     }
+}
+
+fn percent_encode_header_value(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
 }
 
 fn client_builder(proxy_policy: ProxyPolicy) -> reqwest::ClientBuilder {
@@ -1348,7 +1390,14 @@ mod tests {
             "https://sync.\nexample",
         ] {
             assert!(matches!(
-                Transport::new(origin, CLIENT_ID, ProxyPolicy::for_origin(origin, false)).await,
+                Transport::new(
+                    origin,
+                    CLIENT_ID,
+                    ProxyPolicy::for_origin(origin, false),
+                    "00000000-0000-4000-8000-000000000001",
+                    "test",
+                )
+                .await,
                 Err(Error::InvalidEndpoint)
             ));
         }
