@@ -221,7 +221,7 @@ pub(crate) fn persist_strict_settings(
 #[cfg(target_os = "windows")]
 fn sync_low_latency_capture_preferences(prefs: &UserPreferences) {
     crate::recorder::warm_capture_hub().configure(
-        prefs.low_latency_dictation_enabled,
+        prefs.low_latency_dictation_enabled && !crate::desktop_resources::active(),
         (!prefs.microphone_device_name.trim().is_empty())
             .then(|| prefs.microphone_device_name.clone()),
         openless_core::AudioProcessingConfig {
