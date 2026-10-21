@@ -216,21 +216,45 @@ pub fn export_snapshot(mut snapshot: ExportSnapshot) -> DocumentResult<ExportedD
             // Explicit native V2 settings supersede an extension retained by an older client.
             continue;
         }
+        // A preference retained while this build did not know it (sent by a newer client
+        // before this device upgraded) is now a registered field. The native value wins;
+        // without one, a portable value is kept so it is not exported as a deletion.
+        if retained.kind == DocumentKind::Preferences && !capsule_v2 {
+            if let Some(field) = preference_field(&retained.id) {
+                let native = documents
+                    .iter()
+                    .any(|doc| doc.kind == DocumentKind::Preferences && doc.id == retained.id);
+                if !native && field.class == PreferenceClass::Portable {
+                    documents.push(retained);
+                }
+                continue;
+            }
+        }
         let permitted = retained.kind == DocumentKind::DeviceProfile
             || capsule_v2
             || retained.kind == DocumentKind::Preferences
                 && preference_field(&retained.id).is_none()
             || retained.kind == DocumentKind::UiPreferences
                 && !matches!(retained.id.as_str(), "locale" | "fontScale");
+        // Retained documents are a best-effort pass-through written under an older build's
+        // rules. One that the current rules reject, or that a live field now supersedes, is
+        // dropped instead of failing the whole export: failing would block every later sync.
         if !permitted {
-            return Err(DocumentError::InvalidDocument);
+            log::warn!(
+                "[e2ee-export] dropped a retained {:?} document the current rules do not permit",
+                retained.kind
+            );
+            continue;
         }
         if let Some(existing) = documents
             .iter()
             .find(|doc| doc.kind == retained.kind && doc.id == retained.id)
         {
             if existing != &retained {
-                return Err(DocumentError::SourceChanged);
+                log::warn!(
+                    "[e2ee-export] dropped a retained {:?} document superseded by a live value",
+                    retained.kind
+                );
             }
         } else {
             documents.push(retained);

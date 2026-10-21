@@ -394,6 +394,71 @@ fn capsule_display_v2_survives_retention_upgrade_and_explicit_replacement() {
 }
 
 #[test]
+fn a_retained_preference_that_became_a_registered_field_no_longer_blocks_export() {
+    // Retained by an older build that did not know the field yet.
+    let retained = LogicalDocument {
+        id: "polishSkipMaxChars".into(),
+        kind: DocumentKind::Preferences,
+        schema_version: 1,
+        value: json!(0),
+    };
+    let exported_value = |data: ExportSnapshot| {
+        let exported = export_snapshot(data).unwrap();
+        let values: Vec<_> = exported
+            .documents
+            .documents()
+            .documents
+            .iter()
+            .filter(|doc| doc.kind == DocumentKind::Preferences && doc.id == "polishSkipMaxChars")
+            .map(|doc| doc.value.clone())
+            .collect();
+        assert!(values.len() <= 1);
+        values.into_iter().next()
+    };
+    // The native value wins over the stale retained copy, equal or not.
+    for native in [0, 12] {
+        let mut data = snapshot();
+        data.preferences.expose_mut()["polishSkipMaxChars"] = json!(native);
+        data.retained_documents.push(retained.clone());
+        assert_eq!(exported_value(data), Some(json!(native)));
+    }
+    // Without a native value the retained one is kept rather than exported as a deletion.
+    let mut data = snapshot();
+    data.retained_documents.push(retained.clone());
+    assert_eq!(exported_value(data), Some(json!(0)));
+}
+
+#[test]
+fn stale_retained_documents_are_dropped_instead_of_failing_the_export() {
+    let ui = |id: &str, value: Value| LogicalDocument {
+        id: id.into(),
+        kind: DocumentKind::UiPreferences,
+        schema_version: 1,
+        value,
+    };
+    let mut data = snapshot();
+    // Not permitted under the current rules, and superseded by a live value.
+    data.retained_documents.push(ui("locale", json!("zh-CN")));
+    // Permitted, but the live UI preference now carries a different value.
+    data.retained_documents.push(ui("fontScale", json!("large")));
+    // An unrelated retained extension still passes through.
+    data.retained_documents.push(ui("futureToggle", json!(true)));
+    let exported = export_snapshot(data).unwrap();
+    let value = |id: &str| {
+        exported
+            .documents
+            .documents()
+            .documents
+            .iter()
+            .find(|doc| doc.kind == DocumentKind::UiPreferences && doc.id == id)
+            .map(|doc| doc.value.clone())
+    };
+    assert_eq!(value("locale"), Some(json!("en")));
+    assert_eq!(value("fontScale"), Some(json!("medium")));
+    assert_eq!(value("futureToggle"), Some(json!(true)));
+}
+
+#[test]
 fn capsule_display_legacy_edits_are_not_v2_conflicts() {
     for mode in [
         "cursorScreen",
