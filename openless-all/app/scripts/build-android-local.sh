@@ -26,5 +26,6 @@ node scripts/merge-android-v1-manifest.mjs
 node scripts/merge-android-overlay-manifest.mjs
 node scripts/merge-android-shizuku-manifest.mjs
 node scripts/patch-android-shizuku-deps.mjs
+node scripts/patch-android-rustls-verifier.mjs
 node scripts/merge-android-updater-manifest.mjs
 npm run tauri:android:build:debug

@@ -39,6 +39,7 @@ Manifest 合并脚本：
 - [`scripts/merge-android-overlay-manifest.mjs`](../scripts/merge-android-overlay-manifest.mjs) — 悬浮窗 / 无障碍
 - [`scripts/merge-android-shizuku-manifest.mjs`](../scripts/merge-android-shizuku-manifest.mjs) — Shizuku Provider / 授权 Activity
 - [`scripts/patch-android-shizuku-deps.mjs`](../scripts/patch-android-shizuku-deps.mjs) — Shizuku Gradle 依赖
+- [`scripts/patch-android-rustls-verifier.mjs`](../scripts/patch-android-rustls-verifier.mjs) — rustls-platform-verifier（Core 的 HTTPS 证书校验）Gradle 依赖与 Manifest 调整
 
 ### Rime 拼音输入（Pinyin，可选模式）
 
@@ -88,6 +89,7 @@ node scripts/merge-android-v1-manifest.mjs
 node scripts/merge-android-overlay-manifest.mjs
 node scripts/merge-android-shizuku-manifest.mjs
 node scripts/patch-android-shizuku-deps.mjs
+node scripts/patch-android-rustls-verifier.mjs
 CI=true npm run tauri:android:build
 ```
 
@@ -103,6 +105,7 @@ node scripts/merge-android-v1-manifest.mjs
 node scripts/merge-android-overlay-manifest.mjs
 node scripts/merge-android-shizuku-manifest.mjs
 node scripts/patch-android-shizuku-deps.mjs
+node scripts/patch-android-rustls-verifier.mjs
 npm run tauri:android:build
 ```
 

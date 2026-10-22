@@ -122,6 +122,12 @@ libc = "0.2"
 jni = "0.21"
 ndk-context = "0.1"
 tao = "0.35"
+# reqwest 0.13 in openless-core verifies TLS through rustls-platform-verifier,
+# which on Android must be handed the JVM and app Context before the first
+# HTTPS request (src/android/tls_verifier.rs). It is built on jni-rs 0.22,
+# hence the renamed second jni major.
+rustls-platform-verifier = "0.7.1"
+jni022 = { package = "jni", version = "0.22.4" }
 
 # Local ASR on arm64 Android: the crate has no Android prebuilt download, so
 # scripts/run-android-tauri-build.mjs points SHERPA_ONNX_LIB_DIR at the

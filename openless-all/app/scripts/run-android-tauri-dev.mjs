@@ -63,6 +63,7 @@ async function main() {
     'merge-android-overlay-manifest.mjs',
     'merge-android-shizuku-manifest.mjs',
     'patch-android-shizuku-deps.mjs',
+    'patch-android-rustls-verifier.mjs',
     'merge-android-updater-manifest.mjs',
   ]) {
     runNode(join(appRoot, 'scripts', script), [], env);
