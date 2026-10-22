@@ -88,7 +88,7 @@ struct PipelineSession {
     transcription_cancelled: AtomicBool,
     polishing: AtomicBool,
     polisher_cancelled: AtomicBool,
-    recording_fault: Mutex<Option<BackendError>>,
+    retain_failed_recording: AtomicBool,
     resources: Mutex<PipelineResources>,
 }
 
@@ -150,7 +150,7 @@ impl PipelineSession {
             transcription_cancelled: AtomicBool::new(false),
             polishing: AtomicBool::new(false),
             polisher_cancelled: AtomicBool::new(false),
-            recording_fault: Mutex::new(None),
+            retain_failed_recording: AtomicBool::new(false),
             resources: Mutex::new(PipelineResources::default()),
         }
     }
@@ -313,7 +313,6 @@ impl DictationEngine for PipelineDictationEngine {
             let recording_progress: Arc<dyn RecordingProgressSink> =
                 Arc::new(RecordingProgressForwarder {
                     session_id,
-                    session: Arc::downgrade(&session),
                     progress: Arc::clone(&progress),
                 });
             let buffered = Arc::new(BufferedTranscriptionSession::new(
@@ -1208,6 +1207,29 @@ impl DictationEngine for PipelineDictationEngine {
         self.recorder.feed_pcm(session_id, pcm)
     }
 
+    fn retain_failed_recording(&self, session_id: SessionId) -> Option<Arc<dyn RecordingArchive>> {
+        let session = self
+            .sessions
+            .lock()
+            .expect("pipeline session lock poisoned")
+            .get(&session_id)
+            .cloned()?;
+        if session.context().output_target == DictationOutputTarget::CloudNote {
+            return None;
+        }
+        session
+            .retain_failed_recording
+            .store(true, Ordering::Release);
+        let resources = session
+            .resources
+            .lock()
+            .expect("pipeline resource lock poisoned");
+        resources
+            .recording
+            .as_ref()
+            .and_then(PipelineRecording::archive)
+    }
+
     fn cancel(&self, session_id: SessionId) -> BoxFuture<'static, Result<(), BackendError>> {
         let sessions = Arc::clone(&self.sessions);
         let polisher = Arc::clone(&self.polisher);
@@ -1249,7 +1271,15 @@ impl DictationEngine for PipelineDictationEngine {
             if let Some(recording) = recording {
                 let archive = recording.archive();
                 retain_first_error(&mut first_error, recording.stop().await);
-                if !preserve_quick_note_archive {
+                if session.retain_failed_recording.load(Ordering::Acquire) {
+                    let mut available = None;
+                    demote_failed_archive(
+                        archive.as_ref(),
+                        session.context().output_target,
+                        &mut available,
+                    )
+                    .await;
+                } else if !preserve_quick_note_archive {
                     if let Some(archive) = archive {
                         retain_first_error(&mut first_error, archive.discard().await);
                     }
@@ -2123,7 +2153,6 @@ impl TextStreamSink for DiscardTextStream {
 
 struct RecordingProgressForwarder {
     session_id: SessionId,
-    session: std::sync::Weak<PipelineSession>,
     progress: Arc<dyn EngineProgressSink>,
 }
 
@@ -2146,16 +2175,9 @@ impl RecordingProgressSink for RecordingProgressForwarder {
             crate::ports::RecordingEvent::LimitReached => self
                 .progress
                 .publish(self.session_id, EngineProgress::RecordingLimitReached),
-            crate::ports::RecordingEvent::Fatal(error) => {
-                if let Some(session) = self.session.upgrade() {
-                    *session
-                        .recording_fault
-                        .lock()
-                        .expect("recording fault lock poisoned") = Some(error.clone());
-                }
-                self.progress
-                    .publish(self.session_id, EngineProgress::RecordingFault(error))
-            }
+            crate::ports::RecordingEvent::Fatal(error) => self
+                .progress
+                .publish(self.session_id, EngineProgress::RecordingFault(error)),
         }
     }
 }
@@ -2299,20 +2321,6 @@ mod tests {
             }
             Ok(())
         }
-    }
-
-    #[test]
-    fn recording_progress_forwarder_does_not_keep_pipeline_session_alive() {
-        let session = Arc::new(PipelineSession::new(raw_dictation_context()));
-        let weak = Arc::downgrade(&session);
-        let _forwarder = RecordingProgressForwarder {
-            session: Arc::downgrade(&session),
-            session_id: SessionId::new(),
-            progress: Arc::new(RecordingProgress::default()),
-        };
-
-        drop(session);
-        assert!(weak.upgrade().is_none());
     }
 
     struct FixtureRecording {
