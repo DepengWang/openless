@@ -1,9 +1,11 @@
+import { siwcFr as siwc } from './siwc';
 import type { zhCN } from './zh-CN';
 
 import { uiRefinementEn as uiRefinement } from './uiRefinement';
 import { experimentalAsrEn as experimentalAsr } from './experimentalAsr';
 
 export const fr: typeof zhCN = {
+  siwc,
   experimentalAsr,
   uiRefinement,
   voiceEdit: {
@@ -1648,7 +1650,31 @@ export const fr: typeof zhCN = {
       audioRecordingMaxEntriesLabel: 'Nombre maximal d’enregistrements bruts',
       audioRecordingMaxEntriesDesc:
         'Nombre maximal de fichiers WAV conservés localement. Vide = 200.',
+      voiceActivationLabel: 'Activation vocale',
+      voiceActivationDesc: 'Écouter localement une phrase d’activation pour démarrer la dictée.',
+      voiceActivationLocalOnly:
+        'La reconnaissance reste sur cet appareil ; l’audio en veille n’est ni envoyé ni archivé.',
+      voiceActivationMultimodalModels:
+        'Préparez ici le modèle d’activation vocale. La dictée utilise toujours votre service multimodal actuel.',
+      voiceActivationModelMissing: 'Le modèle local Zipformer n’est pas installé.',
+      voiceActivationDownloadZipformer: 'Télécharger Zipformer',
+      voiceActivationWakeEnabled: 'Phrase d’activation',
+      voiceActivationWakePhrase: 'Phrase d’activation',
+      voiceActivationFinishEnabled: 'Phrase de fin',
+      voiceActivationFinishPhrase: 'Phrase de fin',
+      voiceActivationTimeoutEnabled: 'Arrêter après expiration',
+      voiceActivationTimeoutSeconds: 'Délai (secondes)',
       startupGroupTitle: 'Démarrage',
+      lowMemoryBackgroundLabel: 'Mode arrière-plan économe en mémoire',
+      lowMemoryBackgroundDesc:
+        'Après redémarrage : libère la fenêtre principale à sa fermeture et affiche la capsule native à la demande. Désactive le préchauffage du microphone au repos. Conserve les réglages de libération des modèles locaux.',
+      lowMemoryRestartLabel: 'Appliqué après redémarrage',
+      lowMemoryRestartDesc:
+        "Le commutateur du mode arrière à faible mémoire est enregistré ; le mode actif ne change qu'après le redémarrage de l'application.",
+      lowMemoryRestartNow: 'Redémarrer maintenant',
+      lowMemoryCapsuleErrorLabel: 'Capsule native indisponible',
+      lowMemoryCapsuleErrorDesc:
+        "La dictée fonctionne toujours, mais la capsule flottante ne s'affichera pas. Le programme auxiliaire est peut-être manquant ou bloqué ; réinstallez l'application.",
       startMinimizedLabel: 'Démarrer réduit (sans fenêtre principale)',
       startMinimizedDesc:
         'Au lancement, seule la barre des menus ou la zone de notification est affichée, jamais la fenêtre principale.',
@@ -1777,6 +1803,7 @@ export const fr: typeof zhCN = {
         openai: 'OpenAI',
         gemini: 'Google Gemini',
         codexOAuth: 'Codex OAuth',
+        chatgptSiwc: 'ChatGPT Plan',
         mimo: 'Xiaomi MiMo',
         cometapi: 'CometAPI',
         openrouterFree: 'OpenRouter (modèles gratuits)',
@@ -1821,9 +1848,9 @@ export const fr: typeof zhCN = {
         omniDashscope: 'Alibaba DashScope Omni',
       },
       geminiTranscribeNotice:
-        'gemini-3.5-transcribe effectue ici une transcription mot à mot, suivie du LLM configuré. Pour la transcription intelligente, sélectionnez ce modèle en mode multimodal. L’audio est envoyé à la fin de l’enregistrement ; le direct n’est pas pris en charge. URL de base : https://generativelanguage.googleapis.com/v1beta (ou /v1beta/interactions).',
+        'Les deux modèles transcrivent ici mot à mot, avec traitement facultatif par le LLM configuré. gemini-3.5-transcribe envoie l’audio à la fin de l’enregistrement. gemini-3.5-transcribe-live affiche les résultats pendant que vous parlez, jusqu’à 10 minutes par enregistrement. Pour la transcription intelligente, utilisez le mode multimodal. URL de base : https://generativelanguage.googleapis.com/v1beta.',
       geminiTranscribeOmniNotice:
-        'gemini-3.5-transcribe permet la transcription intelligente : suppression des hésitations, application des corrections orales et mise en forme après l’enregistrement. Les langues de travail et le dictionnaire sont pris en charge. Ce modèle n’utilise pas les consignes de style et ne permet pas la traduction, la révision de texte ou les questions-réponses ; utilisez le mode traditionnel avec un LLM pour ces tâches.',
+        'gemini-3.5-transcribe et gemini-3.5-transcribe-live permettent la transcription intelligente. Live affiche un brouillon pendant que vous parlez, jusqu’à 10 minutes par enregistrement. À la fin, la transcription intelligente supprime les hésitations, applique les corrections orales et met en forme le texte final. Les deux modèles prennent en charge les langues de travail et le dictionnaire, mais pas les consignes de style, la traduction, la révision de texte ni les questions-réponses ; utilisez le mode traditionnel avec un LLM pour ces tâches.',
       validateSuccessAudio:
         'Connexion audio vérifiée avec un court échantillon de silence. Confirmez la qualité de transcription avec un court enregistrement.',
       elevenLabsUploadNotice:
@@ -2290,7 +2317,7 @@ export const fr: typeof zhCN = {
         'L’inférence locale est plus lente ; un appareil insuffisamment puissant peut omettre des mots.',
       localAsrFallbackLabel: 'Utiliser le modèle local si le cloud échoue',
       localAsrFallbackDesc:
-        'En cas de connexion faible ou absente, transcrit l\'enregistrement avec le modèle local téléchargé au lieu d\'attendre les nouvelles tentatives du cloud. Nécessite un modèle local téléchargé.',
+        "En cas de connexion faible ou absente, transcrit l'enregistrement avec le modèle local téléchargé au lieu d'attendre les nouvelles tentatives du cloud. Nécessite un modèle local téléchargé.",
       qwen3Desc: 'Une fois activé, il remplace le fournisseur ASR.',
       sherpaDesc: 'Une fois activé, il remplace le fournisseur ASR.',
       foundryDesc: 'Une fois activé, il remplace le fournisseur ASR.',

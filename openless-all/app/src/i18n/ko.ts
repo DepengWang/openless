@@ -1,14 +1,16 @@
+import { siwcKo as siwc } from './siwc';
 import type { zhCN } from './zh-CN';
 import { en } from './en';
 
 // 한국어 (Beta) — AI 기계 번역 기반. 원어민 검토를 권장합니다.
 // 구조는 zh-CN.ts 를 따릅니다. 새 key 를 추가할 때 ja.ts / ko.ts 도 동시에
 // 갱신해 주세요(갱신되지 않은 key 는 ...en 으로 영어로 fallback 됩니다).
-import { uiRefinementEn as uiRefinement } from './uiRefinement';
+import { uiRefinementKo as uiRefinement } from './uiRefinement';
 import { experimentalAsrEn as experimentalAsr } from './experimentalAsr';
 
 export const ko: typeof zhCN = {
   ...en,
+  siwc,
   experimentalAsr,
   uiRefinement,
   voiceEdit: {
@@ -159,7 +161,7 @@ export const ko: typeof zhCN = {
       '동기화 범위의 로컬 데이터를 교체합니다. 로컬 변경을 유지하려면 병합을 선택하세요.',
     restoreCheck: '복원 방식과 충돌 선택을 확인했습니다.',
     applyRestore: '복원 확인',
-    conflictProgress: '충돌 {{total}}개 중 {{selected}}개 해결',
+    conflictProgress: '충돌 {{selected}} / {{total}}개 해결',
     conflictItem: '충돌 {{index}} · {{category}}',
     conflictLocal: '로컬 유지',
     conflictCloud: '클라우드 사용',
@@ -1578,7 +1580,31 @@ export const ko: typeof zhCN = {
       recordAudioForDebugDesc: '원시 마이크 오디오를 wav 로 저장하여 인식 문제 진단.',
       audioRecordingMaxEntriesLabel: '원본 녹음 보관 개수',
       audioRecordingMaxEntriesDesc: '로컬 보관 wav 파일 상한. 빈칸 = 200.',
+      voiceActivationLabel: '음성 활성화',
+      voiceActivationDesc: '받아쓰기 시작 구문을 로컬에서 감지합니다.',
+      voiceActivationLocalOnly:
+        '인식은 이 기기에서만 수행되며 대기 오디오는 업로드하거나 보관하지 않습니다.',
+      voiceActivationMultimodalModels:
+        '여기에서 음성 활성화 모델을 준비합니다. 받아쓰기는 현재 멀티모달 서비스를 계속 사용합니다.',
+      voiceActivationModelMissing: '로컬 Zipformer 모델이 설치되지 않았습니다.',
+      voiceActivationDownloadZipformer: 'Zipformer 다운로드',
+      voiceActivationWakeEnabled: '시작 구문',
+      voiceActivationWakePhrase: '시작 구문',
+      voiceActivationFinishEnabled: '종료 구문',
+      voiceActivationFinishPhrase: '종료 구문',
+      voiceActivationTimeoutEnabled: '시간 초과 후 중지',
+      voiceActivationTimeoutSeconds: '시간 초과(초)',
       startupGroupTitle: '시작',
+      lowMemoryBackgroundLabel: '저메모리 백그라운드 모드',
+      lowMemoryBackgroundDesc:
+        '재시작 후 적용됩니다. 메인 창을 닫으면 해제하고 녹음 시에만 네이티브 캡슐을 표시합니다. 대기 중 마이크 사전 실행을 끕니다. 로컬 모델 해제 설정은 유지됩니다.',
+      lowMemoryRestartLabel: '재시작 후 적용',
+      lowMemoryRestartDesc:
+        '저메모리 백그라운드 모드 설정이 저장되었습니다. 실행 모드는 앱을 재시작해야 전환됩니다.',
+      lowMemoryRestartNow: '지금 재시작',
+      lowMemoryCapsuleErrorLabel: '네이티브 캡슐을 사용할 수 없음',
+      lowMemoryCapsuleErrorDesc:
+        '받아쓰기는 계속 사용할 수 있지만 플로팅 캡슐이 표시되지 않습니다. 헬퍼가 없거나 차단되었을 수 있습니다. 앱을 다시 설치해 주세요.',
       startMinimizedLabel: '시작 시 메인 창 숨기기',
       startMinimizedDesc:
         '모든 시작 경로에서 메인 창을 열지 않고 메뉴 막대 / 트레이에서만 실행합니다.',
@@ -1695,6 +1721,7 @@ export const ko: typeof zhCN = {
         openai: 'OpenAI',
         gemini: 'Google Gemini',
         codexOAuth: 'Codex OAuth',
+        chatgptSiwc: 'ChatGPT Plan',
         mimo: 'Xiaomi MiMo',
         cometapi: 'CometAPI',
         openrouterFree: 'OpenRouter(무료 모델)',
@@ -1744,9 +1771,9 @@ export const ko: typeof zhCN = {
         omniDashscope: 'Alibaba DashScope Omni',
       },
       geminiTranscribeNotice:
-        '여기서는 gemini-3.5-transcribe로 그대로 전사한 뒤 설정된 LLM으로 처리합니다. 스마트 전사를 사용하려면 멀티모달 모드에서 이 모델을 선택하세요. 녹음이 끝나면 오디오를 업로드하며 실시간 전사는 지원하지 않습니다. 기본 URL: https://generativelanguage.googleapis.com/v1beta (/v1beta/interactions도 사용 가능).',
+        '두 모델 모두 여기서는 말한 그대로 전사하며, 필요하면 설정된 LLM으로 추가 처리할 수 있습니다. gemini-3.5-transcribe는 녹음이 끝나면 오디오를 업로드합니다. gemini-3.5-transcribe-live는 말하는 동안 결과를 표시하며, 녹음은 한 번에 최대 10분까지 가능합니다. 스마트 전사에는 멀티모달 모드를 사용하세요. 기본 URL: https://generativelanguage.googleapis.com/v1beta.',
       geminiTranscribeOmniNotice:
-        'gemini-3.5-transcribe는 스마트 전사를 제공합니다. 녹음 후 군더더기 표현을 제거하고 말로 한 정정을 반영하며 문장을 정리합니다. 작업 언어와 사전 용어를 지원합니다. 스타일 프롬프트, 번역, 텍스트 다듬기, 질의응답은 지원하지 않습니다. 해당 작업에는 기존 모드와 LLM을 사용하세요.',
+        'gemini-3.5-transcribe와 gemini-3.5-transcribe-live는 스마트 전사를 지원합니다. Live는 말하는 동안 초안을 표시하며, 녹음은 한 번에 최대 10분까지 가능합니다. 녹음이 끝나면 군더더기 표현을 제거하고 말로 한 정정을 반영하며 최종 텍스트를 정리합니다. 두 모델 모두 작업 언어와 사전 용어를 지원하지만 스타일 프롬프트, 번역, 텍스트 다듬기, 질의응답은 지원하지 않습니다. 해당 작업에는 기존 모드와 LLM을 사용하세요.',
       validateSuccessAudio:
         '짧은 무음 샘플로 오디오 연결을 확인했습니다. 짧은 녹음으로 전사 품질도 확인하세요.',
       elevenLabsUploadNotice:

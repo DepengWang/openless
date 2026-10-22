@@ -1,9 +1,11 @@
+import { siwcDe as siwc } from './siwc';
 import type { zhCN } from './zh-CN';
 
 import { uiRefinementEn as uiRefinement } from './uiRefinement';
 import { experimentalAsrEn as experimentalAsr } from './experimentalAsr';
 
 export const de: typeof zhCN = {
+  siwc,
   experimentalAsr,
   uiRefinement,
   voiceEdit: {
@@ -1635,7 +1637,31 @@ export const de: typeof zhCN = {
         'Speichert das rohe Mikrofonaudio als WAV, um Erkennungsprobleme zu untersuchen.',
       audioRecordingMaxEntriesLabel: 'Maximale Rohaufnahmen',
       audioRecordingMaxEntriesDesc: 'Maximale Anzahl lokal gespeicherter WAV-Dateien. Leer = 200.',
+      voiceActivationLabel: 'Sprachaktivierung',
+      voiceActivationDesc: 'Lokal auf eine Aktivierungsphrase warten, um das Diktat zu starten.',
+      voiceActivationLocalOnly:
+        'Die Erkennung bleibt auf diesem Gerät; Bereitschaftsaudio wird weder hochgeladen noch archiviert.',
+      voiceActivationMultimodalModels:
+        'Hier das Sprachaktivierungsmodell vorbereiten. Das Diktat nutzt weiterhin den aktuellen multimodalen Dienst.',
+      voiceActivationModelMissing: 'Das lokale Zipformer-Modell ist nicht installiert.',
+      voiceActivationDownloadZipformer: 'Zipformer herunterladen',
+      voiceActivationWakeEnabled: 'Aktivierungsphrase',
+      voiceActivationWakePhrase: 'Aktivierungsphrase',
+      voiceActivationFinishEnabled: 'Abschlussphrase',
+      voiceActivationFinishPhrase: 'Abschlussphrase',
+      voiceActivationTimeoutEnabled: 'Nach Zeitüberschreitung stoppen',
+      voiceActivationTimeoutSeconds: 'Zeitüberschreitung (Sekunden)',
       startupGroupTitle: 'Startverhalten',
+      lowMemoryBackgroundLabel: 'Speichersparender Hintergrundmodus',
+      lowMemoryBackgroundDesc:
+        'Nach einem Neustart: Hauptfenster beim Schließen freigeben, native Kapsel bei Bedarf anzeigen und Mikrofonvorwärmung im Leerlauf deaktivieren. Die Freigabeeinstellungen lokaler Modelle bleiben erhalten.',
+      lowMemoryRestartLabel: 'Wird nach Neustart wirksam',
+      lowMemoryRestartDesc:
+        'Der Schalter für den speichersparenden Hintergrundmodus ist gespeichert; der aktive Modus wechselt erst nach einem Neustart der App.',
+      lowMemoryRestartNow: 'Jetzt neu starten',
+      lowMemoryCapsuleErrorLabel: 'Native Kapsel nicht verfügbar',
+      lowMemoryCapsuleErrorDesc:
+        'Diktieren funktioniert weiterhin, aber die schwebende Kapsel wird nicht angezeigt. Das Hilfsprogramm fehlt möglicherweise oder wird blockiert; installiere die App neu.',
       startMinimizedLabel: 'Minimiert starten (ohne Hauptfenster)',
       startMinimizedDesc:
         'Zeigt bei keinem Startweg das Hauptfenster an. Nur Menüleiste / Infobereich.',
@@ -1764,6 +1790,7 @@ export const de: typeof zhCN = {
         openai: 'OpenAI',
         gemini: 'Google Gemini',
         codexOAuth: 'Codex OAuth',
+        chatgptSiwc: 'ChatGPT Plan',
         mimo: 'Xiaomi MiMo',
         cometapi: 'CometAPI',
         openrouterFree: 'OpenRouter (kostenlose Modelle)',
@@ -1808,9 +1835,9 @@ export const de: typeof zhCN = {
         omniDashscope: 'Alibaba DashScope Omni',
       },
       geminiTranscribeNotice:
-        'gemini-3.5-transcribe transkribiert hier wortgetreu; danach verarbeitet das konfigurierte LLM den Text. Für Smart-Transkription wähle dieses Modell im multimodalen Modus. Audio wird nach Aufnahmeende hochgeladen; Live-Transkription wird nicht unterstützt. Basis-URL: https://generativelanguage.googleapis.com/v1beta (auch /v1beta/interactions möglich).',
+        'Beide Modelle transkribieren hier wortgetreu, auf Wunsch mit anschließender Verarbeitung durch das konfigurierte LLM. gemini-3.5-transcribe lädt Audio nach Aufnahmeende hoch. gemini-3.5-transcribe-live zeigt Ergebnisse während des Sprechens; jede Aufnahme darf bis zu 10 Minuten dauern. Für Smart-Transkription verwende den multimodalen Modus. Basis-URL: https://generativelanguage.googleapis.com/v1beta.',
       geminiTranscribeOmniNotice:
-        'gemini-3.5-transcribe bietet Smart-Transkription: Füllwörter entfernen, gesprochene Korrekturen übernehmen und den Text nach Aufnahmeende formatieren. Arbeitssprachen und Wörterbucheinträge werden unterstützt. Stil-Prompts, Übersetzung, reine Textüberarbeitung und Fragen werden nicht unterstützt; verwende dafür den traditionellen Modus mit einem LLM.',
+        'gemini-3.5-transcribe und gemini-3.5-transcribe-live unterstützen Smart-Transkription. Live zeigt während des Sprechens einen Entwurf; jede Aufnahme darf bis zu 10 Minuten dauern. Nach Aufnahmeende entfernt Smart Füllwörter, übernimmt gesprochene Korrekturen und formatiert den endgültigen Text. Beide Modelle unterstützen Arbeitssprachen und Wörterbucheinträge, aber keine Stil-Prompts, Übersetzung, Textüberarbeitung oder Fragen und Antworten. Verwende dafür den traditionellen Modus mit einem LLM.',
       validateSuccessAudio:
         'Audio-Verbindung mit einer kurzen Stilleprobe geprüft. Bestätige die Transkriptionsqualität mit einer kurzen Aufnahme.',
       elevenLabsUploadNotice:

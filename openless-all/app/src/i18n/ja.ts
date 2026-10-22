@@ -1,14 +1,16 @@
+import { siwcJa as siwc } from './siwc';
 import type { zhCN } from './zh-CN';
 import { en } from './en';
 
 // Japanese (Beta) — AI machine translation based; native-speaker review recommended.
 // Structure mirrors zh-CN.ts. When adding new keys, update ja.ts / ko.ts as well
 // (keys not updated fall back to English via ...en).
-import { uiRefinementEn as uiRefinement } from './uiRefinement';
+import { uiRefinementJa as uiRefinement } from './uiRefinement';
 import { experimentalAsrEn as experimentalAsr } from './experimentalAsr';
 
 export const ja: typeof zhCN = {
   ...en,
+  siwc,
   experimentalAsr,
   uiRefinement,
   voiceEdit: {
@@ -162,7 +164,7 @@ export const ja: typeof zhCN = {
       '同期範囲のローカルデータを置き換えます。ローカルの変更を残すにはマージを選んでください。',
     restoreCheck: '復元方法と競合の選択を確認しました。',
     applyRestore: '復元を確認',
-    conflictProgress: '{{total}} 件中 {{selected}} 件を選択済み',
+    conflictProgress: '競合を {{selected}} / {{total}} 件解決済み',
     conflictItem: '競合 {{index}} · {{category}}',
     conflictLocal: 'ローカルを使用',
     conflictCloud: 'クラウドを使用',
@@ -1590,7 +1592,31 @@ export const ja: typeof zhCN = {
       recordAudioForDebugDesc: '生のマイク音声を wav で保存し、認識問題の診断に利用。',
       audioRecordingMaxEntriesLabel: '元音声の保持件数',
       audioRecordingMaxEntriesDesc: 'ローカル保持 wav ファイル上限。空欄 = 200。',
+      voiceActivationLabel: '音声アクティベーション',
+      voiceActivationDesc: '起動フレーズをローカルで待ち受けて音声入力を開始します。',
+      voiceActivationLocalOnly:
+        '認識はこの端末内で行われます。待機中の音声は送信・保存されません。',
+      voiceActivationMultimodalModels:
+        'ここで音声起動用モデルを準備します。音声入力には引き続き現在のマルチモーダルサービスを使用します。',
+      voiceActivationModelMissing: 'ローカル Zipformer モデルがインストールされていません。',
+      voiceActivationDownloadZipformer: 'Zipformer をダウンロード',
+      voiceActivationWakeEnabled: '起動フレーズ',
+      voiceActivationWakePhrase: '起動フレーズ',
+      voiceActivationFinishEnabled: '終了フレーズ',
+      voiceActivationFinishPhrase: '終了フレーズ',
+      voiceActivationTimeoutEnabled: 'タイムアウトで停止',
+      voiceActivationTimeoutSeconds: 'タイムアウト（秒）',
       startupGroupTitle: '起動',
+      lowMemoryBackgroundLabel: '省メモリバックグラウンドモード',
+      lowMemoryBackgroundDesc:
+        '再起動後に適用。メイン画面を閉じると解放し、録音時のみネイティブカプセルを表示します。待機中のマイク事前起動を無効にします。ローカルモデルの解放設定は維持されます。',
+      lowMemoryRestartLabel: '再起動後に適用',
+      lowMemoryRestartDesc:
+        '低メモリバックグラウンドモードの設定を保存しました。実行モードの切り替えにはアプリの再起動が必要です。',
+      lowMemoryRestartNow: '今すぐ再起動',
+      lowMemoryCapsuleErrorLabel: 'ネイティブカプセル利用不可',
+      lowMemoryCapsuleErrorDesc:
+        'ディクテーションは引き続き利用できますが、フローティングカプセルは表示されません。ヘルパーが見つからないかブロックされている可能性があります。アプリを再インストールしてください。',
       startMinimizedLabel: '起動時にメインウィンドウを表示しない',
       startMinimizedDesc:
         'どの起動経路でもメインウィンドウを開かず、メニューバー / トレイのみで動作。',
@@ -1707,6 +1733,7 @@ export const ja: typeof zhCN = {
         openai: 'OpenAI',
         gemini: 'Google Gemini',
         codexOAuth: 'Codex OAuth',
+        chatgptSiwc: 'ChatGPT Plan',
         mimo: 'Xiaomi MiMo',
         cometapi: 'CometAPI',
         openrouterFree: 'OpenRouter（無料モデル）',
@@ -1756,9 +1783,9 @@ export const ja: typeof zhCN = {
         omniDashscope: 'Alibaba DashScope Omni',
       },
       geminiTranscribeNotice:
-        'ここでは gemini-3.5-transcribe で逐語的に文字起こしし、設定済みの LLM で処理します。スマート文字起こしには、マルチモーダルモードでこのモデルを選択してください。録音終了後にアップロードします。リアルタイムには未対応です。ベース URL：https://generativelanguage.googleapis.com/v1beta（/v1beta/interactions も使用可能）。',
+        'どちらのモデルもここでは逐語的に文字起こしし、必要に応じて設定済みの LLM で処理できます。gemini-3.5-transcribe は録音終了後に音声をアップロードします。gemini-3.5-transcribe-live は話している間に結果を表示し、1 回の録音は最大 10 分です。スマート文字起こしにはマルチモーダルモードを使用してください。ベース URL：https://generativelanguage.googleapis.com/v1beta。',
       geminiTranscribeOmniNotice:
-        'gemini-3.5-transcribe はスマート文字起こしに対応し、録音終了後にフィラーの除去、言い直しの反映、文章の整形を行います。作業言語と辞書を利用できます。スタイルプロンプト、翻訳、テキスト校正、質問応答には対応しません。これらには従来モードと LLM を使用してください。',
+        'gemini-3.5-transcribe と gemini-3.5-transcribe-live はスマート文字起こしに対応します。Live は話している間に下書きを表示し、1 回の録音は最大 10 分です。録音終了後にフィラーの除去、言い直しの反映、最終テキストの整形を行います。両モデルとも作業言語と辞書を利用できますが、スタイルプロンプト、翻訳、テキスト校正、質問応答には対応しません。これらには従来モードと LLM を使用してください。',
       validateSuccessAudio:
         '短い無音データで音声接続を確認しました。短い録音で文字起こしの品質も確認してください。',
       elevenLabsUploadNotice:

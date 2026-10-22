@@ -1,10 +1,12 @@
+import { siwcZhTW as siwc } from './siwc';
 import type { zhCN } from './zh-CN';
 
 // Traditional Chinese resources, sharing the same copy keys as the other seven locales.
-import { uiRefinementZhCN as uiRefinement } from './uiRefinement';
+import { uiRefinementZhTW as uiRefinement } from './uiRefinement';
 import { experimentalAsrZhTW as experimentalAsr } from './experimentalAsr';
 
 export const zhTW: typeof zhCN = {
+  siwc,
   experimentalAsr,
   uiRefinement,
   voiceEdit: {
@@ -1523,7 +1525,28 @@ export const zhTW: typeof zhCN = {
       recordAudioForDebugDesc: '儲存原始麥克風音訊為 wav，便於排查識別問題。',
       audioRecordingMaxEntriesLabel: '原始錄音保留條數',
       audioRecordingMaxEntriesDesc: '本地保留 wav 檔案數上限，留空 = 200。',
+      voiceActivationLabel: '語音啟用',
+      voiceActivationDesc: '在本機等待喚醒詞以開始聽寫。',
+      voiceActivationLocalOnly: '辨識只在此裝置上進行；待機音訊不會上傳或封存。',
+      voiceActivationMultimodalModels: '在此準備語音喚醒模型，聽寫仍使用目前的多模態服務。',
+      voiceActivationModelMissing: '請先在「AI 服務與模型」的本機模型頁準備 Zipformer。',
+      voiceActivationDownloadZipformer: '前往 AI 服務與模型下載 Zipformer',
+      voiceActivationWakeEnabled: '喚醒詞',
+      voiceActivationWakePhrase: '喚醒詞',
+      voiceActivationFinishEnabled: '完成詞',
+      voiceActivationFinishPhrase: '完成詞',
+      voiceActivationTimeoutEnabled: '逾時後停止',
+      voiceActivationTimeoutSeconds: '逾時（秒）',
       startupGroupTitle: '啟動',
+      lowMemoryBackgroundLabel: '低記憶體背景模式',
+      lowMemoryBackgroundDesc:
+        '重新啟動後生效。關閉主介面時釋放視窗，錄音時按需顯示原生膠囊；閒置時關閉麥克風預熱。本機模型仍依原有設定釋放。',
+      lowMemoryRestartLabel: '重啟後生效',
+      lowMemoryRestartDesc: '低記憶體背景模式開關已儲存，重新啟動應用後才會切換執行模式。',
+      lowMemoryRestartNow: '立即重啟',
+      lowMemoryCapsuleErrorLabel: '原生膠囊不可用',
+      lowMemoryCapsuleErrorDesc:
+        '聽寫仍可進行，但不會顯示懸浮膠囊。輔助程式可能缺失或被系統攔截，請重新安裝應用。',
       startMinimizedLabel: '啟動時靜默執行',
       startMinimizedDesc: '所有啟動路徑都不彈主視窗，僅選單欄 / 託盤執行。',
       autoUpdateCheckLabel: '自動檢查更新',
@@ -1632,6 +1655,7 @@ export const zhTW: typeof zhCN = {
         openai: 'OpenAI',
         gemini: 'Google Gemini',
         codexOAuth: 'Codex OAuth',
+        chatgptSiwc: 'ChatGPT Plan',
         mimo: '小米 MiMo',
         cometapi: 'CometAPI',
         openrouterFree: 'OpenRouter（免費模型）',
@@ -1682,9 +1706,9 @@ export const zhTW: typeof zhCN = {
         omniDashscope: '阿里雲百煉 Omni',
       },
       geminiTranscribeNotice:
-        'gemini-3.5-transcribe 在此使用逐字轉寫，再交給已設定的 LLM 處理。如需內建智慧轉寫，請在多模態模式中選擇此模型。錄音結束後上傳音訊，暫不支援即時轉寫。接口地址：https://generativelanguage.googleapis.com/v1beta，也相容 /v1beta/interactions。',
+        '兩個模型在此均使用逐字轉寫，可選用已設定的 LLM 繼續處理。gemini-3.5-transcribe 在錄音結束後上傳音訊；gemini-3.5-transcribe-live 邊說邊顯示結果，每次錄音最長 10 分鐘。如需智慧轉寫，請使用多模態模式。接口地址：https://generativelanguage.googleapis.com/v1beta。',
       geminiTranscribeOmniNotice:
-        '使用 gemini-3.5-transcribe 可啟用智慧轉寫：錄音結束後去除口頭語、處理口述修正並整理排版。支援工作語言和詞典詞彙。此模型不使用風格提示詞，也不支援翻譯、純文字潤色或問答；這些任務請使用傳統模式搭配 LLM。',
+        'gemini-3.5-transcribe 和 gemini-3.5-transcribe-live 均支援智慧轉寫。Live 邊說邊顯示草稿，每次錄音最長 10 分鐘；錄音結束後，智慧轉寫會去除口頭語、處理口述修正並整理最終文字。兩個模型均支援工作語言和詞典詞彙，但不使用風格提示詞，也不支援翻譯、純文字潤色或問答；這些任務請使用傳統模式搭配 LLM。',
       validateSuccessAudio: '已通過短靜音音訊的連線驗證，請再用短錄音確認轉寫效果。',
       elevenLabsUploadNotice: 'ElevenLabs 會將錄音上傳至已設定的端點進行批次轉寫。',
       zenmuxVocabularyNote:

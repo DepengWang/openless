@@ -8,8 +8,11 @@ import yaml from 'js-yaml';
 const workflow = yaml.load(
   readFileSync(new URL('../../../.github/workflows/release-tauri.yml', import.meta.url), 'utf8'),
 );
-assert.deepEqual(workflow.on.push.branches, ['**']);
+// Releases are tag-only plus a weekly smoke build: a per-branch push wrote a
+// 2 GB+ cache entry every time and evicted the beta scope.
+assert.equal(workflow.on.push.branches, undefined);
 assert.deepEqual(workflow.on.push.tags, ['v*-tauri']);
+assert.equal(workflow.on.schedule.length, 1);
 assert.ok(workflow.on.workflow_dispatch.inputs.platform.options.includes('windows'));
 assert.equal(workflow.on.workflow_dispatch.inputs.release_tag.default, '');
 const job = workflow.jobs.build;
@@ -82,10 +85,22 @@ const publisher = steps.find((s) => s.uses?.startsWith('softprops/action-gh-rele
 assert.equal(publisher.with.tag_name, '${{ env.OPENLESS_RELEASE_TAG }}');
 assert.equal(publisher.with.draft, true);
 assert.ok(steps.find((s) => s.name === 'Confirm repair target remains draft'));
-const smokeTooling = steps.find((s) => s.name === 'Checkout installer smoke tooling');
-assert.equal(smokeTooling.with.ref, '${{ github.workflow_sha }}');
-assert.equal(smokeTooling.with['sparse-checkout'], 'openless-all/app/scripts/windows-ime-install-smoke.ps1');
-assert.equal(smokeTooling.with['persist-credentials'], false);
+const smokeTooling = steps.find((s) => s.name === 'Fetch installer smoke tooling');
+assert.ok(smokeTooling, 'Windows smoke tooling must be fetched without checking out unrelated gitlinks');
+assert.equal(smokeTooling.if, "matrix.platform == 'windows-latest'");
+assert.equal(smokeTooling.shell, 'pwsh');
+assert.equal(smokeTooling.env.TOOLING_SHA, '${{ github.workflow_sha }}');
+assert.equal(smokeTooling.env.GH_TOKEN, '${{ github.token }}');
+assert.equal(smokeTooling.uses, undefined);
+assert.match(smokeTooling.run, /\$scriptPath = 'openless-all\/app\/scripts\/windows-ime-install-smoke\.ps1'/);
+assert.match(smokeTooling.run, /gh api "repos\/\$env:GITHUB_REPOSITORY\/contents\/\$scriptPath"/);
+assert.match(smokeTooling.run, /--method GET -f "ref=\$env:TOOLING_SHA" --jq '\.content'/);
+assert.match(smokeTooling.run, /if \(\$LASTEXITCODE -ne 0\) \{ throw/);
+assert.match(smokeTooling.run, /FromBase64String\(\(\$encoded -join ''\)\)/);
+assert.match(smokeTooling.run, /if \(\$bytes\.Length -eq 0\) \{ throw/);
+assert.match(smokeTooling.run, /Join-Path \$env:GITHUB_WORKSPACE "release-tooling\/\$scriptPath"/);
+assert.match(smokeTooling.run, /WriteAllBytes\(\$destination, \$bytes\)/);
+assert.doesNotMatch(smokeTooling.run, /git checkout|git submodule|continue-on-error/);
 const smoke = steps.find((s) => s.name === 'Verify Windows installers register TSF IME');
 assert.match(smoke.run, /-File \$smokeScript/);
 assert.match(

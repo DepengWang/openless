@@ -1,9 +1,11 @@
+import { siwcEs as siwc } from './siwc';
 import type { zhCN } from './zh-CN';
 
 import { uiRefinementEn as uiRefinement } from './uiRefinement';
 import { experimentalAsrEn as experimentalAsr } from './experimentalAsr';
 
 export const es: typeof zhCN = {
+  siwc,
   experimentalAsr,
   uiRefinement,
   voiceEdit: {
@@ -1627,7 +1629,31 @@ export const es: typeof zhCN = {
       audioRecordingMaxEntriesLabel: 'Máximo de grabaciones originales',
       audioRecordingMaxEntriesDesc:
         'Máximo de archivos WAV guardados en el dispositivo. Vacío = 200.',
+      voiceActivationLabel: 'Activación por voz',
+      voiceActivationDesc: 'Escucha localmente una frase de activación para iniciar el dictado.',
+      voiceActivationLocalOnly:
+        'El reconocimiento permanece en este dispositivo; el audio de espera no se sube ni se archiva.',
+      voiceActivationMultimodalModels:
+        'Prepara aquí el modelo de activación por voz. El dictado sigue usando el servicio multimodal actual.',
+      voiceActivationModelMissing: 'El modelo local Zipformer no está instalado.',
+      voiceActivationDownloadZipformer: 'Descargar Zipformer',
+      voiceActivationWakeEnabled: 'Frase de activación',
+      voiceActivationWakePhrase: 'Frase de activación',
+      voiceActivationFinishEnabled: 'Frase de finalización',
+      voiceActivationFinishPhrase: 'Frase de finalización',
+      voiceActivationTimeoutEnabled: 'Detener al agotarse el tiempo',
+      voiceActivationTimeoutSeconds: 'Tiempo de espera (segundos)',
       startupGroupTitle: 'Inicio',
+      lowMemoryBackgroundLabel: 'Modo de fondo con poca memoria',
+      lowMemoryBackgroundDesc:
+        'Se aplica al reiniciar. Libera la ventana principal al cerrarla y muestra la cápsula nativa cuando se necesita. Desactiva el precalentamiento del micrófono en reposo. Conserva la configuración de descarga de los modelos locales.',
+      lowMemoryRestartLabel: 'Se aplica tras reiniciar',
+      lowMemoryRestartDesc:
+        'El cambio del modo de fondo de baja memoria está guardado; el modo en ejecución cambia al reiniciar la aplicación.',
+      lowMemoryRestartNow: 'Reiniciar ahora',
+      lowMemoryCapsuleErrorLabel: 'Cápsula nativa no disponible',
+      lowMemoryCapsuleErrorDesc:
+        'El dictado sigue funcionando, pero no se mostrará la cápsula flotante. Puede que falte el programa auxiliar o esté bloqueado; reinstala la app.',
       startMinimizedLabel: 'Iniciar minimizado (sin ventana principal)',
       startMinimizedDesc:
         'Al iniciar, solo se muestra la barra de menús o la bandeja del sistema, nunca la ventana principal.',
@@ -1752,6 +1778,7 @@ export const es: typeof zhCN = {
         openai: 'OpenAI',
         gemini: 'Google Gemini',
         codexOAuth: 'Codex OAuth',
+        chatgptSiwc: 'ChatGPT Plan',
         mimo: 'Xiaomi MiMo',
         cometapi: 'CometAPI',
         openrouterFree: 'OpenRouter (modelos gratuitos)',
@@ -1796,9 +1823,9 @@ export const es: typeof zhCN = {
         omniDashscope: 'Alibaba DashScope Omni',
       },
       geminiTranscribeNotice:
-        'gemini-3.5-transcribe transcribe literalmente aquí; después actúa el LLM configurado. Para la transcripción inteligente, elige este modelo en modo multimodal. El audio se sube al terminar la grabación; no se admite transcripción en directo. URL base: https://generativelanguage.googleapis.com/v1beta (también /v1beta/interactions).',
+        'Ambos modelos transcriben literalmente aquí, con procesamiento opcional mediante el LLM configurado. gemini-3.5-transcribe sube el audio al terminar la grabación. gemini-3.5-transcribe-live muestra resultados mientras hablas, con un máximo de 10 minutos por grabación. Para la transcripción inteligente, usa el modo multimodal. URL base: https://generativelanguage.googleapis.com/v1beta.',
       geminiTranscribeOmniNotice:
-        'gemini-3.5-transcribe permite transcripción inteligente: elimina muletillas, aplica correcciones habladas y da formato al texto al terminar la grabación. Admite idiomas de trabajo y términos del diccionario. No aplica instrucciones de estilo ni admite traducción, edición de texto o preguntas; usa el modo tradicional con un LLM para esas tareas.',
+        'gemini-3.5-transcribe y gemini-3.5-transcribe-live permiten transcripción inteligente. Live muestra un borrador mientras hablas, con un máximo de 10 minutos por grabación. Al terminar, elimina muletillas, aplica correcciones habladas y da formato al texto final. Ambos modelos admiten idiomas de trabajo y términos del diccionario, pero no instrucciones de estilo, traducción, edición de texto ni preguntas y respuestas; usa el modo tradicional con un LLM para esas tareas.',
       validateSuccessAudio:
         'Conexión de audio verificada con una breve muestra de silencio. Confirma la calidad de transcripción con una grabación corta.',
       elevenLabsUploadNotice:
