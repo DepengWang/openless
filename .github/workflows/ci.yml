@@ -265,6 +265,9 @@ jobs:
       - name: Patch Shizuku Gradle dependencies
         run: node scripts/patch-android-shizuku-deps.mjs
 
+      - name: Patch rustls-platform-verifier (Core TLS on Android)
+        run: node scripts/patch-android-rustls-verifier.mjs
+
       - name: Run JVM credential tests and compile instrumentation tests
         # These tests are Kotlin-only. The Rust target is checked above; direct Gradle
         # rustBuild requires the live Tauri CLI RPC server used by `tauri android build`.

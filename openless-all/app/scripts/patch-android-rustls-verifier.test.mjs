@@ -36,11 +36,27 @@ const bridge = readFileSync(
   'utf8',
 );
 assert.match(bridge, /nativeRegisterActivityContext[\s\S]{0,400}tls_verifier::init\(env, context\.as_raw\(\)\)/);
-// tokio-tungstenite's wss:// clients need a process-default CryptoProvider.
-const tlsVerifier = readFileSync(
-  fileURLToPath(new URL('../src-tauri/src/android/tls_verifier.rs', import.meta.url)),
-  'utf8',
+// tokio-tungstenite's wss:// clients need a process-default CryptoProvider,
+// installed on both entries: run() and the Android Context registration.
+const readSource = (path) =>
+  readFileSync(fileURLToPath(new URL(`../src-tauri/src/${path}`, import.meta.url)), 'utf8');
+const lib = readSource('lib.rs');
+assert.match(
+  lib,
+  /fn install_default_crypto_provider\(\) \{\s*let _ = rustls::crypto::ring::default_provider\(\)\.install_default\(\);/,
 );
-assert.match(tlsVerifier, /rustls::crypto::ring::default_provider\(\)\.install_default\(\)/);
+assert.match(lib, /pub fn run\(\) \{\s*install_default_crypto_provider\(\);/);
+assert.match(readSource('android/tls_verifier.rs'), /crate::install_default_crypto_provider\(\);/);
+
+// Every Android build path wires the Kotlin half in.
+for (const path of [
+  '../../../.github/workflows/android-apk.yml',
+  '../../../.github/workflows/ci.yml',
+  './build-android-local.sh',
+  './run-android-tauri-dev.mjs',
+]) {
+  const content = readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8');
+  assert.match(content, /patch-android-rustls-verifier\.mjs/, path);
+}
 
 console.log('patch-android-rustls-verifier contract checks passed');

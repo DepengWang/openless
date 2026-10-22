@@ -200,8 +200,22 @@ pub(crate) fn set_backend_preferences_for_test(
         .expect("test preferences must satisfy the public settings contract");
 }
 
+/// Installs ring as rustls' process-default CryptoProvider.
+///
+/// The dependency graph enables both the `ring` and `aws-lc-rs` rustls
+/// features, so rustls cannot pick a default and panics the first time a
+/// client is built from it — tokio-tungstenite's `wss://` ASR connections do
+/// exactly that. reqwest builds its own provider and is unaffected. Desktop
+/// used to get ring only as a side effect of the updater plugin's check, so
+/// with auto-update off cloud streaming ASR failed; Android never had one.
+/// Idempotent: a provider that is already installed is kept.
+pub(crate) fn install_default_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_default_crypto_provider();
     // Explicit acceptance in a debug bundle bypasses UI, microphone and the
     // system credential vault, but exercises the actual shared/native engines.
     // This entry point does not exist in production release builds.

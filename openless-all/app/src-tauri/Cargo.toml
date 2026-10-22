@@ -23,6 +23,10 @@ zeroize = "1"
 # Framework-independent business core.  Tauri remains an adapter and owns the
 # window/plugin/IPC concerns; Linux must depend on the same crate directly.
 openless-core = { path = "../crates/openless-core" }
+# The dependency graph enables both rustls providers (ring via this crate,
+# aws-lc-rs via reqwest 0.13), so the process default must be installed
+# explicitly: see install_default_crypto_provider in src/lib.rs.
+rustls = { version = "^0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 # Pin the whole 2.12.x train. tauri 2.11.2 allows `tauri-runtime ^2.11`, so an
 # unlocked resolve picks 2.12.0 and fails to compile (Monitor / UnexpectedMenuKind).
 # Direct pins keep fresh lockfile resolution on the compatible train.
@@ -97,7 +101,6 @@ x509-parser = { version = "0.16", features = ["verify"] }
 time = "0.3"
 tempfile = "3"
 local-ip-address = "^0.6"
-rustls = { version = "^0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "^0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 axum = { version = "^0.7", default-features = false, features = ["ws", "http1", "tokio", "query"] }
 hyper = { version = "^1", features = ["server", "http1"] }
@@ -127,9 +130,6 @@ tao = "0.35"
 # HTTPS request (src/android/tls_verifier.rs). It is built on jni-rs 0.22,
 # hence the renamed second jni major.
 rustls-platform-verifier = "0.7.1"
-# Process-default CryptoProvider for tokio-tungstenite's wss:// clients
-# (installed in src/android/tls_verifier.rs).
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 jni022 = { package = "jni", version = "0.22.4" }
 
 # Local ASR on arm64 Android: the crate has no Android prebuilt download, so

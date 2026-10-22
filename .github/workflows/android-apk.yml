@@ -299,6 +299,10 @@ jobs:
         working-directory: openless-all/app
         run: node scripts/patch-android-shizuku-deps.mjs
 
+      - name: Patch rustls-platform-verifier (Core TLS on Android)
+        working-directory: openless-all/app
+        run: node scripts/patch-android-rustls-verifier.mjs
+
       - name: Merge updater / install manifest
         working-directory: openless-all/app
         run: node scripts/merge-android-updater-manifest.mjs
