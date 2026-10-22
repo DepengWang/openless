@@ -139,4 +139,31 @@ CapsWriter
 
 # Local Linux toolchains, build logs and packaging workspaces.
 openless-all/app/.cache/
-openless-all/scripts/linux-desktop/kde/build/
+__pycache__/
+
+# Generated builds, dependency caches and test evidence are never source inputs.
+.cache/
+.vite/
+.artifacts/
+Artifacts/
+artifacts/
+.build-*/
+DerivedData*/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+*.xcresult/
+*.xcarchive/
+*.dSYM/
+*.ipa
+*.dmg
+*.hap
+*.hsp
+*.app/
+*.spec.ts-snapshots/
+*.spec.tsx-snapshots/
+
+# Test screenshots and exported evidence stay out of Beta; keep README and active plans.
+/docs/test-captures/
+/docs/test-results/
+/openless-all/ios/docs/screenshots/

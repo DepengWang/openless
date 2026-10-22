@@ -1,6 +1,6 @@
 # OpenLess 文档入口
 
-状态：canonical；更新：2026-09-29。实现说明与当前源码保持一致；范围、接口合同和验收要求由各自文档维护。各专项文档的更新时间与状态单独标注。
+状态：canonical；更新：2026-10-19。实现说明与当前源码保持一致；范围、接口合同和验收要求由各自文档维护。各专项文档的更新时间与状态单独标注。
 
 ## 范围与架构
 
@@ -14,6 +14,8 @@
 
 - [交接总览](linux-egui-handoff/README.md)：阅读顺序、责任与复用起点。
 - [01 Core 合同](linux-egui-handoff/01-core-contract.md)、[02 缺口登记](linux-egui-handoff/02-gap-register.md)（L01–L12）、[03 热键与窗口](linux-egui-handoff/03-hotkeys-and-windows.md)、[04 页面与领域](linux-egui-handoff/04-ui-domains.md)、[05 原生宿主与数据](linux-egui-handoff/05-native-host-and-data.md)、[06 事件与会话](linux-egui-handoff/06-events-and-sessions.md)、[07 验收](linux-egui-handoff/07-acceptance.md)。
+
+- [Linux 已知缺口](linux-egui-known-gaps.md)：当前仍未闭环的行为与复现路径（如 G01 纠错卡）。
 
 ## 接口契约
 
@@ -33,8 +35,20 @@
 - [讯飞（iflytek）ASR 配置](xfyun-asr.md)
 - [百炼（DashScope）ASR 模型](bailian-asr-models.md)
 - [Tauri CSP 边界](tauri-csp.md)
+- [Gemini 专用转写](gemini-transcribe.md)：模型、请求形态与失败边界。
+- [腾讯混元实时 ASR 长语音](tencent-long-audio.md)：分段策略与结束判定。
+- [手机输入法后端整理与引擎选型](mobile-ime-engine.md)：Android / 鸿蒙共用后端与引擎边界。
+- [远程输入：手机一次性证书配置](remote-input-certificates.md)
+- [远程输入：息屏与录音恢复](remote-input-recording-recovery.md)
+- [Homebrew 同步与本机提醒](homebrew-openless-updates.md)
 - [macOS 实验性本地语音模型](experimental-local-asr.md)：三模型、旧版下架、升级清理和隔离验收。
 - [本地 ASR 生命周期](local-asr-lifecycle.md)：下载、选择和推理状态的边界。
+
+## 依赖与发布记录
+
+- [依赖审计（全部工程）](dependency-audit.md)：四个 workspace、npm、Gradle 的版本面与升级约束。
+- [2.0.2-Beta.1 发布说明](releases/2.0.2-Beta.1-release-notes.md)
+- [2.0.1 发布说明](releases/2.0.1-release-notes.md)
 
 ## 验证入口（在 `openless-all/app` 执行）
 
