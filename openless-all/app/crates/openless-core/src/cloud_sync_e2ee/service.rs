@@ -838,8 +838,6 @@ impl EncryptedSyncService {
                 &origin,
                 &self.0.config.github_client_id,
                 proxy_policy,
-                &device.id,
-                &device_name,
             )
             .await
             .map_err(protocol_error)?
