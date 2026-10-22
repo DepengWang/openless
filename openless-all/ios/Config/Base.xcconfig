@@ -1,0 +1,4 @@
+// Local signing is deliberately not committed.
+OL_BUNDLE_ID = app.openless.ios
+OL_APP_GROUP = group.app.openless.ios
+#include? "Local.xcconfig"

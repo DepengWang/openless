@@ -120,6 +120,7 @@ export function QaPanel({ embedded = false, onRequestClose }: QaPanelProps = {})
   const modeRequestRef = useRef<symbol | null>(null);
   const dismissRef = useRef<symbol | null>(null);
   const resizeQueue = useRef<Promise<void>>(Promise.resolve());
+  const layoutEpoch = useRef(0);
   const requestedLayout = useRef<{ expanded: boolean; promise: Promise<void> } | null>(null);
   const { enterEpoch, closing: nativeClosing } = useChatPanelLifecycle();
   const [dismissEpoch, setDismissEpoch] = useState<number | null>(null);
@@ -403,24 +404,24 @@ export function QaPanel({ embedded = false, onRequestClose }: QaPanelProps = {})
     return promise;
   };
   useEffect(() => {
+    const epoch = ++layoutEpoch.current;
     if (closing || embedded || !isTauri) return;
-    let cancelled = false;
     setLayoutError(false);
     setNativeReady(null);
     void requestSize(expanded)
       .then(() => {
         // Store the acknowledged layout in state. A fast reply can batch with
         // the reset; a boolean false/true pair may otherwise skip the render.
-        if (!cancelled) setNativeReady({ expanded, enterEpoch });
+        if (layoutEpoch.current === epoch) setNativeReady({ expanded, enterEpoch });
       })
       .catch(() => {
-        if (!cancelled) {
+        if (layoutEpoch.current === epoch) {
           setLayoutError(true);
           setNativeReady({ expanded, enterEpoch });
         }
       });
     return () => {
-      cancelled = true;
+      layoutEpoch.current += 1;
     };
   }, [expanded, embedded, enterEpoch, closing]);
 
