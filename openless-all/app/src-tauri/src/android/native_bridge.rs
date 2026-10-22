@@ -1595,6 +1595,9 @@ mod jni_exports {
         _class: JClass,
         context: JObject,
     ) {
+        // OpenLessApplication.onCreate registers the application Context here,
+        // before Core sends its first HTTPS request.
+        crate::android::tls_verifier::init(env, context.as_raw());
         let result = with_jni_context(env, context, |env, context| {
             crate::android::jni::android::register_active_activity(env, context)
         });

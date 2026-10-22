@@ -3894,16 +3894,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "num-complex"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
-dependencies = [
- "num-traits",
- "serde",
-]
-
-[[package]]
 name = "num-bigint-dig"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3917,6 +3907,16 @@ dependencies = [
  "rand 0.8.8",
  "smallvec",
  "zeroize",
+]
+
+[[package]]
+name = "num-complex"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
+dependencies = [
+ "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -4438,6 +4438,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "jni 0.21.1",
+ "jni 0.22.4",
  "keyring",
  "libc",
  "local-ip-address",
@@ -4457,6 +4458,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "rustls",
+ "rustls-platform-verifier",
  "security-framework 3.7.0",
  "semver",
  "serde",

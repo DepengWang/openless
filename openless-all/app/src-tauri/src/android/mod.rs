@@ -13,6 +13,8 @@ pub mod native_bridge;
 pub mod overlay;
 pub mod shizuku;
 #[cfg(target_os = "android")]
+pub(crate) mod tls_verifier;
+#[cfg(target_os = "android")]
 pub mod updater;
 pub mod updater_logic;
 pub use crate::types::android_types as types;
