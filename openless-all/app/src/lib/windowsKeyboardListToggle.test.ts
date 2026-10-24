@@ -37,8 +37,8 @@ assert(
   'explicit tsf must win over legacy true for keyboard list toggle',
 );
 assert(
-  !showWindowsSendInputNewlineMode('tsf', true),
-  'explicit tsf must win over legacy true for newline mode',
+  showWindowsSendInputNewlineMode('tsf', true),
+  'explicit tsf should show newline mode even with legacy true',
 );
 
 assert(
@@ -52,7 +52,11 @@ assert(
 
 assert(showWindowsSendInputNewlineMode('sendInput'), 'sendInput should show newline mode');
 assert(!showWindowsSendInputNewlineMode('paste'), 'paste should hide newline mode');
-assert(!showWindowsSendInputNewlineMode('tsf'), 'tsf should hide newline mode');
+assert(showWindowsSendInputNewlineMode('tsf'), 'tsf should show newline mode');
+assert(
+  showWindowsSendInputNewlineMode(undefined, false),
+  'legacy tsf should show newline mode',
+);
 assert(
   showWindowsSendInputNewlineMode(undefined, true),
   'legacy sendInput-only should show newline mode',

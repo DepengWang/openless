@@ -4695,12 +4695,45 @@ impl TauriTextInsertionSession {
         {
             let status = match self.context.insertion.windows_insertion_mode {
                 openless_core::shared_types::WindowsInsertionMode::Tsf => {
+                    // TSF writes a raw `\n`, which chat boxes (WeChat, WeCom, Codex) treat as
+                    // Enter and send. With Shift+Enter selected, commit each line through TSF
+                    // and type Shift+Enter between them instead.
+                    let newline_mode = self.context.insertion.windows_sendinput_newline_mode;
+                    let lines: Vec<&str> = if newline_mode
+                        == crate::types::WindowsSendInputNewlineMode::ShiftEnter
+                        && text.contains('\n')
+                    {
+                        text.split('\n')
+                            .map(|line| line.strip_suffix('\r').unwrap_or(line))
+                            .collect()
+                    } else {
+                        vec![text.as_str()]
+                    };
                     let mut target = crate::windows_ime_target::capture_ime_submit_target();
                     let mut recovered = false;
-                    let status = loop {
+                    let mut status = crate::types::InsertStatus::Inserted;
+                    // The undelivered tail when a step fails, for the fallback below.
+                    let mut rest = None;
+                    for (index, line) in lines.iter().enumerate() {
+                        if index > 0 {
+                            if let Err(error) = crate::unicode_keystroke::press_newline(newline_mode) {
+                                log::warn!("[core-adapter] TSF line break keystroke failed: {error}");
+                                status = crate::types::InsertStatus::Failed;
+                                rest = Some(format!("\n{}", lines[index..].join("\n")));
+                                break;
+                            }
+                            // The DLL commits from a posted message, which the target's
+                            // message loop handles before queued keyboard input; give the
+                            // keystroke time to land before the next line is committed.
+                            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                        }
+                        if line.is_empty() {
+                            continue;
+                        }
+                    status = loop {
                         let request = crate::windows_ime_ipc::ImeSubmitRequest {
                             session_id: self.session_id.to_string(),
-                            text: text.clone(),
+                            text: line.to_string(),
                             created_at: chrono::Utc::now().to_rfc3339(),
                             target,
                             op: crate::windows_ime_protocol::ImeSubmitOp::Commit,
@@ -4742,7 +4775,7 @@ impl TauriTextInsertionSession {
                                 self.clear_composition(true).await?;
                                 if let Err(error) = self.restore_insertion_target() {
                                     if self.context.insertion.allow_non_tsf_fallback {
-                                        return self.copy_fallback(text).await;
+                                        return self.copy_fallback(text.clone()).await;
                                     }
                                     return Err(error);
                                 }
@@ -4755,10 +4788,16 @@ impl TauriTextInsertionSession {
                             }
                         }
                     };
+                        if status != crate::types::InsertStatus::Inserted {
+                            rest = Some(lines[index..].join("\n"));
+                            break;
+                        }
+                    }
                     if status == crate::types::InsertStatus::Failed
                         && self.context.insertion.allow_non_tsf_fallback
                     {
-                        windows_unicode_fallback(&self.context, &text)
+                        // Lines already committed stay; only the rest is typed.
+                        windows_unicode_fallback(&self.context, rest.as_deref().unwrap_or(&text))
                     } else {
                         status
                     }

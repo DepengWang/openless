@@ -1538,9 +1538,9 @@ export const zhCN = {
       macosNewlineModeShiftReturn: 'Shift+Return（聊天框换行）',
       macosNewlineModeLineFeed: 'Line Feed（终端 CLI / Ctrl+J）',
       macosNewlineModeReturn: 'Return（拆成多条消息）',
-      windowsSendInputNewlineModeLabel: 'SendInput 换行模拟',
+      windowsSendInputNewlineModeLabel: '换行模拟',
       windowsSendInputNewlineModeDesc:
-        'SendInput 模式下如何把换行符模拟成按键。聊天框通常选 Shift+Enter；记事本 / VS Code 等选 Enter。',
+        'SendInput 模式下如何把换行符模拟成按键；TSF 模式下选 Shift+Enter 会逐行上屏、行间按 Shift+Enter，其他选项原样写入换行。聊天框（微信、企业微信、Codex）通常选 Shift+Enter；记事本 / VS Code 等选 Enter。',
       windowsSendInputNewlineModeEnter: 'Enter（多数编辑器）',
       windowsSendInputNewlineModeShiftEnter: 'Shift+Enter（聊天输入框）',
       windowsSendInputNewlineModeCrLf: 'CR+LF Unicode',

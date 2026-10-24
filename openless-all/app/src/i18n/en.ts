@@ -1605,9 +1605,9 @@ export const en: typeof zhCN = {
       macosNewlineModeShiftReturn: 'Shift+Return (newline in chat)',
       macosNewlineModeLineFeed: 'Line Feed (terminal CLI / Ctrl+J)',
       macosNewlineModeReturn: 'Return (split into messages)',
-      windowsSendInputNewlineModeLabel: 'SendInput newline simulation',
+      windowsSendInputNewlineModeLabel: 'Newline simulation',
       windowsSendInputNewlineModeDesc:
-        'How SendInput turns line breaks into keys. Use Shift+Enter for chat boxes; Enter for Notepad / VS Code and most editors.',
+        'How SendInput turns line breaks into keys. Under TSF, Shift+Enter commits line by line with Shift+Enter between lines; other options write the line break as is. Use Shift+Enter for chat boxes; Enter for Notepad / VS Code and most editors.',
       windowsSendInputNewlineModeEnter: 'Enter (most editors)',
       windowsSendInputNewlineModeShiftEnter: 'Shift+Enter (chat input boxes)',
       windowsSendInputNewlineModeCrLf: 'CR+LF Unicode',

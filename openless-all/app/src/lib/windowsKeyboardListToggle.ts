@@ -19,10 +19,13 @@ export function showWindowsOpenlessKeyboardListToggle(
   return effectiveWindowsInsertionMode(mode, sendInputOnly) !== 'tsf';
 }
 
-/** Shows the newline-mode option for SendInput only; hidden under Paste. */
+/**
+ * Shows the newline-mode option for SendInput and TSF (TSF honours Shift+Enter between
+ * committed lines); hidden under Paste.
+ */
 export function showWindowsSendInputNewlineMode(
   mode: WindowsInsertionMode | undefined,
   sendInputOnly?: boolean,
 ): boolean {
-  return effectiveWindowsInsertionMode(mode, sendInputOnly) === 'sendInput';
+  return effectiveWindowsInsertionMode(mode, sendInputOnly) !== 'paste';
 }

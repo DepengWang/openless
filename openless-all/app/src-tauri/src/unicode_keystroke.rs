@@ -635,6 +635,11 @@ mod windows_impl {
         }
     }
 
+    /// Sends one newline keystroke in `mode`; used between TSF-committed lines.
+    pub fn press_newline(mode: WindowsSendInputNewlineMode) -> Result<(), TypeError> {
+        send_newline(mode)
+    }
+
     fn send_newline(mode: WindowsSendInputNewlineMode) -> Result<(), TypeError> {
         match mode {
             WindowsSendInputNewlineMode::Enter => press_vk(VK_RETURN),
@@ -948,6 +953,6 @@ pub use macos_impl::{
 #[cfg(target_os = "windows")]
 #[allow(unused_imports)]
 pub use windows_impl::{
-    restore_input_source, switch_to_ascii, type_unicode_chunk, type_unicode_chunk_with_options,
-    PreviousInputSource, WindowsSendInputOptions,
+    press_newline, restore_input_source, switch_to_ascii, type_unicode_chunk,
+    type_unicode_chunk_with_options, PreviousInputSource, WindowsSendInputOptions,
 };
