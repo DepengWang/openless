@@ -77,7 +77,8 @@ bytes = "1"
 url = "2"
 raw-window-handle = "0.6"
 # Audio capture — shared across desktop and mobile.
-cpal = "0.15"
+# Keep Windows COM objects on their owning audio thread; see vendor/cpal/OPENLESS_PATCH.md.
+cpal = { version = "=0.15.3", path = "vendor/cpal" }
 
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
 tauri-plugin-fs = "2.7.1"
