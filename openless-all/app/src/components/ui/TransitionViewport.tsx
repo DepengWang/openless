@@ -60,8 +60,12 @@ export function TransitionViewport({
   const revealing = switching && readyKey === contentKey;
 
   useLayoutEffect(() => {
-    if (!switching) retained.current = { key: contentKey, children };
-  }, [switching, contentKey, children]);
+    if (!switching || reduced) retained.current = { key: contentKey, children };
+    if (reduced && switching) setCommitted({ key: contentKey, children });
+  }, [switching, contentKey, children, reduced]);
+  useEffect(() => {
+    if (reduced) entered.current?.();
+  }, [contentKey, reduced]);
   const commit = (key: string) => {
     if (latest.current.key !== key) return;
     retained.current = latest.current;
@@ -71,15 +75,16 @@ export function TransitionViewport({
       if (latest.current.key === key) entered.current?.();
     });
   };
-  const surfaces = switching
-    ? [retained.current, { key: contentKey, children }]
-    : [{ key: contentKey, children }];
+  const surfaces =
+    switching && !reduced
+      ? [retained.current, { key: contentKey, children }]
+      : [{ key: contentKey, children }];
 
   return (
-    <div className="ol-transition-viewport" aria-busy={switching || undefined}>
+    <div className="ol-transition-viewport" aria-busy={(!reduced && switching) || undefined}>
       {surfaces.map((surface) => {
-        const incoming = switching && surface.key === contentKey;
-        const leaving = revealing && !incoming;
+        const incoming = !reduced && switching && surface.key === contentKey;
+        const leaving = !reduced && revealing && !incoming;
         const phase = incoming ? (revealing ? 'enter' : 'waiting') : leaving ? 'exit' : 'settled';
         return (
           <TransitionSurface
@@ -139,7 +144,7 @@ function TransitionSurface({
   useSmoothWheelScroll(ref, surfaceKey);
   useLayoutEffect(() => {
     const node = ref.current;
-    if (node) node.inert = phase === 'waiting' || phase === 'exit';
+    if (node) node.inert = phase !== 'settled';
     if (scrollRef) (scrollRef as { current: HTMLDivElement | null }).current = node;
   }, [phase, scrollRef]);
   useEffect(() => {
@@ -151,7 +156,7 @@ function TransitionSurface({
       className={className}
       data-ol-page={page}
       data-transition-phase={phase}
-      aria-hidden={phase === 'waiting' || phase === 'exit' || undefined}
+      aria-hidden={phase !== 'settled' || undefined}
       initial={phase === 'waiting' && !reduced ? waiting : false}
       animate={phase === 'waiting' ? waiting : phase === 'exit' ? departing : settled}
       transition={
@@ -174,7 +179,7 @@ function TransitionSurface({
         height: '100%',
         boxSizing: 'border-box',
         transformOrigin: '50% 30%',
-        pointerEvents: phase === 'waiting' || phase === 'exit' ? 'none' : undefined,
+        pointerEvents: phase !== 'settled' ? 'none' : undefined,
         willChange: phase === 'enter' || phase === 'exit' ? 'transform, opacity, filter' : '',
       }}
     >

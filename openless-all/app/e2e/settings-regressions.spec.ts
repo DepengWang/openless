@@ -1,3 +1,4 @@
+import { settleNavigation } from './support/navigation';
 import { expect, test, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
@@ -46,7 +47,11 @@ test('returning to recording at 100% has stable control geometry and one shortcu
   for (let attempt = 0; attempt < 3; attempt++) {
     await dialog.getByRole('button', { name: '外观与语言', exact: true }).click();
     await expect(page.locator('.ol-typography')).toBeVisible();
-    await dialog.getByRole('button', { name: '录音与输入', exact: true }).click();
+    await dialog
+      .getByRole('navigation', { name: '设置分类' })
+      .getByRole('button', { name: '录音与输入', exact: true })
+      .click();
+    await settleNavigation(dialog);
     const key = dialog.locator('.ol-shortcut-binding').first();
     await expect(key).toBeVisible();
     const positions = await key.evaluate(async (element) => {
@@ -236,7 +241,9 @@ test('voice activation opens model setup without leaving the multimodal pipeline
 }, testInfo) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
-    Object.defineProperty(navigator, 'userAgent', { get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' });
+    Object.defineProperty(navigator, 'userAgent', {
+      get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    });
   });
   await page.goto('http://127.0.0.1:5326/?os=win');
   await page.getByRole('button', { name: '设置', exact: true }).click();
@@ -244,9 +251,7 @@ test('voice activation opens model setup without leaving the multimodal pipeline
   const categories = dialog.getByRole('navigation', { name: '设置分类' });
   await categories.getByRole('button', { name: 'AI 服务与模型', exact: true }).click();
   await dialog.getByRole('button', { name: '多模态模式', exact: true }).click();
-  const models = dialog
-    .locator('.ol-service-views')
-    .getByRole('button', { name: /^本地模型/ });
+  const models = dialog.locator('.ol-service-views').getByRole('button', { name: /^本地模型/ });
   await expect(models).toBeDisabled();
   await categories.getByRole('button', { name: '录音与输入', exact: true }).click();
   await dialog.getByRole('switch', { name: '语音唤醒听写', exact: true }).click();
