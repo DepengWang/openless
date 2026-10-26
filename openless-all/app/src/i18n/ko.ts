@@ -1,3 +1,4 @@
+import { desktopGuideKo as desktopGuide } from './desktopGuide';
 import { siwcKo as siwc } from './siwc';
 import type { zhCN } from './zh-CN';
 import { en } from './en';
@@ -10,6 +11,7 @@ import { experimentalAsrEn as experimentalAsr } from './experimentalAsr';
 
 export const ko: typeof zhCN = {
   ...en,
+  desktopGuide,
   siwc,
   experimentalAsr,
   uiRefinement,

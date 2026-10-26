@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, startTransition, Suspense, useEffect, useState } from 'react';
 import { Capsule } from './components/Capsule';
 import { CapsuleTranscriptOverlay } from './components/LiveTranscriptPill';
 import { CoreStartupScreen } from './components/CoreStartupScreen';
@@ -10,6 +10,7 @@ import {
   getHotkeyStatus,
   getStartupSnapshot,
   getVoiceEditState,
+  getCredentials,
   getSettings,
   getPlatformCapabilities,
   handleWindowHotkeyEvent,
@@ -21,6 +22,14 @@ import type { PlatformCapabilities } from './lib/types';
 import { isWindowHotkeyKeyboardCandidate, windowMouseHotkeyCode } from './lib/windowHotkeyFallback';
 import { markStartup } from './lib/startupMetrics';
 import { HotkeySettingsProvider } from './state/HotkeySettingsContext';
+import {
+  needsDesktopGuide,
+  newGuideProgress,
+  readGuideProgress,
+  REOPEN_ONBOARDING_EVENT,
+  saveGuideProgress,
+} from './lib/desktopOnboarding';
+import { useReducedMotion } from './lib/motion';
 
 // Lazy-load pages per WebView by window purpose to cut resident memory. The capsule
 // gives instant recording feedback — small and first-frame-latency sensitive — so it
@@ -160,18 +169,44 @@ function ReadyApp({
 
   const os = forcedOs ?? detectOS();
   // Windows startup must not block the first screen on permission probes.
-  const [gate, setGate] = useState<Gate>(isTauri ? 'checking' : 'ready');
+  const [gate, setGate] = useState<Gate>(
+    isTauri
+      ? 'checking'
+      : new URLSearchParams(location.search).get('onboarding') === '1'
+        ? 'onboarding'
+        : 'ready',
+  );
+  const [onboardingHandoff, setOnboardingHandoff] = useState(false);
+  const reducedMotion = useReducedMotion();
   const [startupError, setStartupError] = useState<string | null>(null);
   const [platformCaps, setPlatformCaps] = useState<PlatformCapabilities | null>(null);
   const [mobileQaOpen, setMobileQaOpen] = useState(false);
   const [mobileVoiceEditOpen, setMobileVoiceEditOpen] = useState(false);
   const [mobileVoiceEditCloseError, setMobileVoiceEditCloseError] = useState('');
-  const completeOnboarding = () => {
+  const completeOnboarding = async () => {
     if (platformCaps?.platform === 'android') {
       localStorage.setItem(ANDROID_SETUP_WIZARD_COMPLETE_KEY, '1');
+    } else {
+      await import('./components/FloatingShell');
     }
-    setGate('ready');
+    startTransition(() => {
+      setOnboardingHandoff(platformCaps?.platform !== 'android' && !reducedMotion);
+      setGate('ready');
+    });
   };
+  useEffect(() => {
+    if (!onboardingHandoff) return;
+    const timer = window.setTimeout(() => setOnboardingHandoff(false), reducedMotion ? 0 : 280);
+    return () => window.clearTimeout(timer);
+  }, [onboardingHandoff, reducedMotion]);
+  useEffect(() => {
+    const reopen = () => {
+      saveGuideProgress(newGuideProgress());
+      setGate('onboarding');
+    };
+    window.addEventListener(REOPEN_ONBOARDING_EVENT, reopen);
+    return () => window.removeEventListener(REOPEN_ONBOARDING_EVENT, reopen);
+  }, []);
   useEffect(() => {
     if (!isTauri) return;
     void getStartupSnapshot()
@@ -344,6 +379,18 @@ function ReadyApp({
         return;
       }
 
+      const progress = readGuideProgress();
+      if (progress?.finished) {
+        setGate('ready');
+        return;
+      }
+      const credentials = await getCredentials();
+      if (cancelled) return;
+      if (needsDesktopGuide(progress, credentials)) {
+        setGate('onboarding');
+        return;
+      }
+
       if (os === 'win') {
         // Timeout guard: 50 × 200ms = 10s. If the hotkey hook stays "starting" forever
         // (blocked by anti-cheat / EDR / UAC), don't deadlock the UI on a gray screen;
@@ -468,13 +515,27 @@ function ReadyApp({
             />
           </div>
         )}
-        {!mobileQaOpen &&
-          !mobileVoiceEditOpen &&
-          (gate === 'onboarding' ? (
-            <Onboarding onComplete={completeOnboarding} />
-          ) : (
-            <FloatingShell os={os} />
-          ))}
+        {!mobileQaOpen && !mobileVoiceEditOpen && (
+          <div style={{ width: '100%', height: '100%', minWidth: 0, position: 'relative' }}>
+            {gate === 'ready' && (
+              <div className="ol-main-arrival">
+                <FloatingShell os={os} />
+              </div>
+            )}
+            {(gate === 'onboarding' || onboardingHandoff) && (
+              <div
+                className="ol-onboarding-layer"
+                data-leaving={onboardingHandoff || undefined}
+                aria-hidden={onboardingHandoff || undefined}
+                ref={(element) => {
+                  if (element) element.inert = onboardingHandoff;
+                }}
+              >
+                <Onboarding onComplete={completeOnboarding} />
+              </div>
+            )}
+          </div>
+        )}
         {gate === 'ready' && platformCaps?.supportsAutoUpdate === true && <AutoUpdateGate />}
       </HotkeySettingsProvider>
     </Suspense>
