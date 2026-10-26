@@ -13,44 +13,60 @@ async function reachMode(page: Page) {
   await expect(active(page)).toHaveAttribute('data-guide-step', 'mode');
 }
 
-test('the complete standard guide retains answers, saves a shortcut, and hands off to the app', async ({
-  page,
-}) => {
-  const errors: string[] = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto('/?onboarding=1&os=mac');
-  await page.getByRole('textbox', { name: '怎么称呼你？（选填）' }).fill('Ada');
-  await page.getByRole('button', { name: '开始吧', exact: true }).click();
-  await expect(page.locator('.ol-guide-history-answer')).toHaveText('Ada');
-  await page.getByRole('button', { name: '体验授权' }).click();
-  await expect(active(page)).toHaveAttribute('data-guide-step', 'microphone');
-  await page.getByRole('button', { name: '继续', exact: true }).click();
-  await page.getByRole('button', { name: '稍后配置', exact: true }).click();
-  await page.getByRole('button', { name: '继续', exact: true }).click();
-  await page.getByRole('button', { name: '配置服务', exact: true }).click();
-  await expect(page.locator('.ol-model-setup-dialog')).toBeVisible();
-  await page
-    .locator('.ol-model-setup-footer')
-    .getByRole('button', { name: '完成', exact: true })
-    .click();
-  await expect(page.locator('.ol-model-setup-dialog')).toHaveCount(0);
-  await page.getByRole('button', { name: '保存并继续', exact: true }).click();
-  await expect(active(page)).toHaveAttribute('data-guide-step', 'polish');
-  await page.getByRole('button', { name: '稍后配置', exact: true }).click();
-  await expect(active(page)).toHaveAttribute('data-guide-step', 'shortcut');
-  const recorder = active(page).locator('.ol-shortcut-recorder');
-  await recorder.getByRole('button').first().click();
-  await page.keyboard.press('F8');
-  await expect(recorder).toContainText('F8');
-  await page.getByRole('button', { name: '就用这个快捷键', exact: true }).click();
-  await expect(active(page).getByRole('heading')).toHaveAccessibleName('准备好慢慢探索了，Ada');
-  await expect(active(page)).toContainText('还有一些内容留待配置');
-  await page.getByRole('button', { name: '进入 OpenLess', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '今日概览', exact: true })).toBeVisible();
-  await expect(page.locator('.ol-onboarding-layer')).toHaveCount(0);
-  await expect(page.getByRole('dialog')).toHaveCount(0);
-  expect(errors).toEqual([]);
-});
+for (const os of ['mac', 'win']) {
+  test(`${os}: the complete standard guide retains answers, saves a shortcut, and hands off to the app`, async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto(`/?onboarding=1&os=${os}`);
+    await expect(page.locator('.ol-guide-interaction')).toContainText(
+      `共 ${os === 'mac' ? 8 : 7} 步`,
+    );
+    await page.getByRole('textbox', { name: '怎么称呼你？（选填）' }).fill('Ada');
+    await page.getByRole('button', { name: '开始吧', exact: true }).click();
+    await expect(page.locator('.ol-guide-history-answer')).toHaveText('Ada');
+    await page.getByRole('button', { name: '体验授权' }).click();
+    await expect(active(page)).toHaveAttribute('data-guide-step', 'microphone');
+    await page.getByRole('button', { name: '继续', exact: true }).click();
+    if (os === 'mac') {
+      await page.getByRole('button', { name: '稍后配置', exact: true }).click();
+    } else {
+      await expect(active(page)).toHaveAttribute('data-guide-step', 'mode');
+      await expect(page.locator('[data-guide-step="accessibility"]')).toHaveCount(0);
+    }
+    await page.getByRole('button', { name: '继续', exact: true }).click();
+    await page.getByRole('button', { name: '配置服务', exact: true }).click();
+    await expect(page.locator('.ol-model-setup-dialog')).toBeVisible();
+    await page
+      .locator('.ol-model-setup-footer')
+      .getByRole('button', { name: '完成', exact: true })
+      .click();
+    await expect(page.locator('.ol-model-setup-dialog')).toHaveCount(0);
+    await page.getByRole('button', { name: '保存并继续', exact: true }).click();
+    await expect(active(page)).toHaveAttribute('data-guide-step', 'polish');
+    await page.getByRole('button', { name: '稍后配置', exact: true }).click();
+    await expect(active(page)).toHaveAttribute('data-guide-step', 'shortcut');
+    if (os === 'win') await expect(active(page)).toContainText('鼠标侧键（Mouse4 / Mouse5）');
+    const recorder = active(page).locator('.ol-shortcut-recorder');
+    await recorder.getByRole('button').first().click();
+    if (os === 'win') {
+      await page.locator('.ol-shortcut-recording').dispatchEvent('mousedown', { button: 3 });
+      await expect(recorder).toContainText('Mouse4');
+      await recorder.getByRole('button').first().click();
+    }
+    await page.keyboard.press('F8');
+    await expect(recorder).toContainText('F8');
+    await page.getByRole('button', { name: '就用这个快捷键', exact: true }).click();
+    await expect(active(page).getByRole('heading')).toHaveAccessibleName('准备好慢慢探索了，Ada');
+    await expect(active(page)).toContainText('还有一些内容留待配置');
+    await page.getByRole('button', { name: '进入 OpenLess', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '今日概览', exact: true })).toBeVisible();
+    await expect(page.locator('.ol-onboarding-layer')).toHaveCount(0);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+}
 
 test('any step can defer the whole guide without a provider nag', async ({ page }) => {
   await start(page);
@@ -94,6 +110,40 @@ test('a narrow reduced-motion guide preserves controls, answers, and keyboard fo
 });
 
 const fixtureUrl = 'http://127.0.0.1:5326/e2e/fixtures/desktop-onboarding.html?os=mac';
+test('Windows opens microphone settings, refreshes on return, and permits deferral without a device', async ({
+  page,
+}) => {
+  await page.goto(fixtureUrl.replace('os=mac', 'os=win'));
+  await page.getByRole('button', { name: '开始吧', exact: true }).click();
+  await expect(active(page)).toContainText('桌面应用访问权限');
+  await page.getByRole('button', { name: '打开系统设置', exact: true }).click();
+  expect(await page.evaluate(() => (window as any).guideFixture.openedPanes)).toEqual([
+    'microphone',
+  ]);
+  await expect(active(page)).toHaveAttribute('data-guide-step', 'microphone');
+  await page.evaluate(() => {
+    (window as any).guideFixture.microphone = 'noDevice';
+    window.dispatchEvent(new Event('focus'));
+  });
+  await expect(active(page)).toContainText('还没有检测到麦克风');
+  await expect(page.locator('.ol-guide-primary')).toBeDisabled();
+  await page.getByRole('button', { name: '稍后配置', exact: true }).click();
+  await expect(active(page)).toHaveAttribute('data-guide-step', 'mode');
+  await page.getByRole('button', { name: '上一步', exact: true }).click();
+  await page.evaluate(() => {
+    (window as any).guideFixture.microphone = 'granted';
+    window.dispatchEvent(new Event('focus'));
+  });
+  await expect(active(page)).toContainText('已允许');
+  await expect(active(page)).toHaveAttribute('data-guide-step', 'microphone');
+  await page.getByRole('button', { name: '继续', exact: true }).click();
+  await expect(active(page)).toHaveAttribute('data-guide-step', 'mode');
+  const calls = await page.evaluate(() => (window as any).guideFixture.calls as string[]);
+  expect(calls).not.toContain('check_accessibility_permission');
+  expect(calls).not.toContain('request_accessibility_permission');
+  expect(calls).not.toContain('request_microphone_permission');
+});
+
 test('native permission changes stay on the current step and progress resumes after reload', async ({
   page,
 }) => {

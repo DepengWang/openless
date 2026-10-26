@@ -15,6 +15,7 @@ const fixture = {
   serviceReady: false,
   failSave: false,
   failPermission: false,
+  openedPanes: [] as string[],
   calls,
 };
 Object.assign(window, {
@@ -35,6 +36,10 @@ Object.assign(window, {
         return fixture.microphone;
       }
       if (command === 'check_accessibility_permission') return fixture.accessibility;
+      if (command === 'open_system_settings') {
+        fixture.openedPanes.push(args.pane);
+        return;
+      }
       if (command === 'get_credentials')
         return {
           ...mockCredentialsStatus,

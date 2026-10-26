@@ -1,4 +1,5 @@
 .ol-guide {
+  --ol-reveal-duration: 340ms;
   position: relative;
   height: 100%;
   min-height: 0;
@@ -14,6 +15,9 @@
   gap: 20px;
   padding: 48px 30px 12px;
   flex-shrink: 0;
+}
+.ol-guide[data-os='win'] .ol-guide-header {
+  padding-top: 24px;
 }
 .ol-guide-brand {
   display: flex;
@@ -357,7 +361,7 @@
 }
 .ol-reveal-glyph {
   display: inline-block;
-  animation: ol-glyph-reveal 260ms var(--ol-motion-soft) both;
+  animation: ol-glyph-reveal var(--ol-reveal-duration, 260ms) var(--ol-motion-soft) both;
   animation-delay: var(--ol-reveal-delay, 0ms);
 }
 @keyframes ol-glyph-reveal {

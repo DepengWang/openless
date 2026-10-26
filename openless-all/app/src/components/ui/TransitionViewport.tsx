@@ -25,6 +25,7 @@ interface Props {
   style?: CSSProperties;
   scrollRef?: RefObject<HTMLDivElement>;
   page?: string;
+  pace?: 'default' | 'gentle';
   onEntered?: () => void;
 }
 
@@ -38,6 +39,7 @@ export function TransitionViewport({
   style,
   scrollRef,
   page,
+  pace = 'default',
   onEntered,
 }: Props) {
   const reduced = useReducedMotion();
@@ -105,6 +107,7 @@ export function TransitionViewport({
             phase={phase}
             reduced={reduced}
             slow={slowKey === contentKey}
+            pace={pace}
             className={className}
             style={style}
             scrollRef={surface.key === contentKey ? scrollRef : undefined}
@@ -130,6 +133,7 @@ function TransitionSurface({
   phase,
   reduced,
   slow,
+  pace,
   children,
   className,
   style,
@@ -142,6 +146,7 @@ function TransitionSurface({
   phase: 'settled' | 'waiting' | 'enter' | 'exit' | 'restore';
   reduced: boolean;
   slow: boolean;
+  pace: 'default' | 'gentle';
   children: ReactNode;
   className?: string;
   style?: CSSProperties;
@@ -180,9 +185,10 @@ function TransitionSurface({
     node.style.willChange = 'transform, opacity, filter';
     // One native timeline keeps opacity, scale and blur synchronized even when
     // JavaScript frames are delayed. Cleanup freezes the painted pose for reversals.
+    const timingScale = pace === 'gentle' ? 1.2 : 1;
     const animation = node.animate([from, target], {
-      duration: phase === 'exit' ? (slow ? 220 : 160) : slow ? 260 : 180,
-      delay: phase === 'enter' ? (slow ? 120 : 70) : 0,
+      duration: (phase === 'exit' ? (slow ? 220 : 160) : slow ? 260 : 180) * timingScale,
+      delay: (phase === 'enter' ? (slow ? 120 : 70) : 0) * timingScale,
       easing,
       fill: 'both',
     });
@@ -207,7 +213,7 @@ function TransitionSurface({
       animation.cancel();
       node.style.willChange = '';
     };
-  }, [phase, reduced, slow]);
+  }, [phase, reduced, slow, pace]);
   useSmoothWheelScroll(ref, surfaceKey);
   useLayoutEffect(() => {
     const node = ref.current;

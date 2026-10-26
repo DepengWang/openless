@@ -17,6 +17,8 @@ export const desktopGuideEn = {
   microphoneTitle: 'First, let OpenLess hear you',
   microphoneBody: 'Microphone access lets you dictate. Recording starts only when you ask it to.',
   microphoneHint: 'You can grant access later in Settings → Permissions.',
+  windowsMicrophoneHint:
+    'Open Windows microphone settings, enable microphone access and access for desktop apps, then return here.',
   accessibilityTitle: 'Put your words where you need them',
   accessibilityBody:
     'On macOS, Accessibility access lets OpenLess respond to your shortcut and insert text into the app you are using.',
@@ -55,6 +57,8 @@ export const desktopGuideEn = {
   shortcutBody:
     'Choose a shortcut you can reach without thinking. You can change it again in Settings.',
   shortcutHint: 'Select the keys below to record a new shortcut. Escape cancels.',
+  windowsShortcutHint:
+    'On Windows, left and right Ctrl, Alt and Shift can be distinguished. You can also use mouse side buttons (Mouse4 / Mouse5). Escape cancels recording.',
   keepShortcut: 'Keep this shortcut',
   shortcutReply: 'Shortcut confirmed',
   finishTitle: 'Make yourself at home{{name}}',
@@ -88,6 +92,8 @@ export const desktopGuideZhCN: typeof desktopGuideEn = {
   microphoneTitle: '先让 OpenLess 听见你的声音',
   microphoneBody: '允许使用麦克风，就能把说出的话变成文字。只有你主动开始时才会录音。',
   microphoneHint: '现在不方便也没关系，之后可以在「设置 → 权限」中开启。',
+  windowsMicrophoneHint:
+    '打开 Windows 麦克风设置，开启麦克风访问权限及桌面应用访问权限，然后回到这里。',
   accessibilityTitle: '把文字送到你正在输入的地方',
   accessibilityBody:
     '在 macOS 上，辅助功能权限让 OpenLess 响应你的快捷键，并把文字输入到当前应用。',
@@ -120,6 +126,8 @@ export const desktopGuideZhCN: typeof desktopGuideEn = {
   shortcutTitle: '一个顺手的快捷键，就能开始',
   shortcutBody: '选一个方便按到的快捷键。之后可以随时在设置里修改。',
   shortcutHint: '点击下面的按键，录制新的快捷键；按 Esc 取消。',
+  windowsShortcutHint:
+    'Windows 支持区分左右 Ctrl、Alt 和 Shift，也可以使用鼠标侧键（Mouse4 / Mouse5）。按 Esc 取消录制。',
   keepShortcut: '就用这个快捷键',
   shortcutReply: '快捷键已确认',
   finishTitle: '准备好慢慢探索了{{name}}',
@@ -154,6 +162,8 @@ export const desktopGuideZhTW: typeof desktopGuideEn = {
   microphoneTitle: '先讓 OpenLess 聽見你的聲音',
   microphoneBody: '允許使用麥克風，就能把說出的話變成文字。只有你主動開始時才會錄音。',
   microphoneHint: '現在不方便也沒關係，之後可以在「設定 → 權限」中開啟。',
+  windowsMicrophoneHint:
+    '開啟 Windows 麥克風設定，允許麥克風存取及桌面應用程式存取，然後回到這裡。',
   accessibilityTitle: '把文字送到你正在輸入的地方',
   accessibilityBody:
     '在 macOS 上，輔助使用權限讓 OpenLess 回應你的快捷鍵，並把文字輸入到目前的應用程式。',
@@ -186,6 +196,8 @@ export const desktopGuideZhTW: typeof desktopGuideEn = {
   shortcutTitle: '一個順手的快捷鍵，就能開始',
   shortcutBody: '選一個方便按到的快捷鍵。之後可以隨時在設定裡修改。',
   shortcutHint: '點擊下面的按鍵，錄製新的快捷鍵；按 Esc 取消。',
+  windowsShortcutHint:
+    'Windows 支援區分左右 Ctrl、Alt 和 Shift，也可以使用滑鼠側鍵（Mouse4 / Mouse5）。按 Esc 取消錄製。',
   keepShortcut: '就用這個快捷鍵',
   shortcutReply: '快捷鍵已確認',
   finishTitle: '準備好慢慢探索了{{name}}',
@@ -220,6 +232,8 @@ export const desktopGuideJa: typeof desktopGuideEn = {
   microphoneTitle: 'まず、あなたの声を聞かせてください',
   microphoneBody: 'マイクを許可すると音声入力が使えます。録音は自分で開始したときだけ行われます。',
   microphoneHint: '後から「設定 → 権限」で許可できます。',
+  windowsMicrophoneHint:
+    'Windows のマイク設定で、マイクへのアクセスとデスクトップアプリからのアクセスを有効にして、ここに戻ってください。',
   accessibilityTitle: '文字を必要な場所へ',
   accessibilityBody:
     'macOS のアクセシビリティ権限で、ショートカットへの応答と使用中のアプリへの文字入力が可能になります。',
@@ -256,6 +270,8 @@ export const desktopGuideJa: typeof desktopGuideEn = {
   shortcutTitle: 'ショートカット一つで声を文字に',
   shortcutBody: '押しやすいキーを選びましょう。後から設定で変更できます。',
   shortcutHint: '下のキーを選んで新しいショートカットを記録。Esc でキャンセル。',
+  windowsShortcutHint:
+    'Windows では左右の Ctrl、Alt、Shift を区別できます。マウスのサイドボタン（Mouse4 / Mouse5）も使えます。Esc で記録をキャンセルします。',
   keepShortcut: 'このショートカットを使う',
   shortcutReply: 'ショートカットを確認しました',
   finishTitle: 'さあ、使ってみましょう{{name}}',
@@ -290,6 +306,8 @@ export const desktopGuideKo: typeof desktopGuideEn = {
   microphoneTitle: '먼저 목소리를 들려주세요',
   microphoneBody: '마이크를 허용하면 음성 입력을 사용할 수 있습니다. 직접 시작할 때만 녹음합니다.',
   microphoneHint: '나중에 설정 → 권한에서 허용할 수 있습니다.',
+  windowsMicrophoneHint:
+    'Windows 마이크 설정에서 마이크 액세스와 데스크톱 앱 액세스를 켠 뒤 여기로 돌아오세요.',
   accessibilityTitle: '필요한 곳에 글을 입력해요',
   accessibilityBody: 'macOS의 손쉬운 사용 권한으로 단축키에 응답하고 현재 앱에 글을 입력합니다.',
   accessibilityHint:
@@ -325,6 +343,8 @@ export const desktopGuideKo: typeof desktopGuideEn = {
   shortcutTitle: '단축키 하나로 시작',
   shortcutBody: '누르기 편한 단축키를 선택하세요. 나중에 설정에서 변경할 수 있습니다.',
   shortcutHint: '아래 키를 눌러 새 단축키를 기록하세요. Esc로 취소합니다.',
+  windowsShortcutHint:
+    'Windows에서는 왼쪽과 오른쪽 Ctrl, Alt, Shift를 구분할 수 있습니다. 마우스 측면 버튼(Mouse4 / Mouse5)도 사용할 수 있습니다. Esc로 기록을 취소합니다.',
   keepShortcut: '이 단축키 사용',
   shortcutReply: '단축키 확인됨',
   finishTitle: '이제 둘러보세요{{name}}',
@@ -362,6 +382,8 @@ export const desktopGuideEs: typeof desktopGuideEn = {
   microphoneTitle: 'Primero, deja que OpenLess te escuche',
   microphoneBody: 'El acceso al micrófono permite dictar. Solo se graba cuando tú lo inicias.',
   microphoneHint: 'Puedes dar permiso después en Ajustes → Permisos.',
+  windowsMicrophoneHint:
+    'Abre los ajustes del micrófono de Windows, permite el acceso al micrófono y a las aplicaciones de escritorio y vuelve aquí.',
   accessibilityTitle: 'Pon tus palabras donde las necesitas',
   accessibilityBody:
     'En macOS, el permiso de accesibilidad permite responder al atajo e insertar texto en la aplicación que usas.',
@@ -399,6 +421,8 @@ export const desktopGuideEs: typeof desktopGuideEn = {
   shortcutTitle: 'Tu voz, a un atajo de distancia',
   shortcutBody: 'Elige una combinación cómoda. Puedes cambiarla después en los ajustes.',
   shortcutHint: 'Selecciona las teclas para grabar un nuevo atajo. Esc cancela.',
+  windowsShortcutHint:
+    'En Windows se distinguen Ctrl, Alt y Mayús de ambos lados. También puedes usar los botones laterales del ratón (Mouse4 / Mouse5). Esc cancela la grabación.',
   keepShortcut: 'Usar este atajo',
   shortcutReply: 'Atajo confirmado',
   finishTitle: 'Empieza a explorar{{name}}',
@@ -437,6 +461,8 @@ export const desktopGuideFr: typeof desktopGuideEn = {
   microphoneBody:
     'L’accès au micro permet de dicter. L’enregistrement ne commence que sur votre demande.',
   microphoneHint: 'Vous pourrez autoriser le micro dans Réglages → Autorisations.',
+  windowsMicrophoneHint:
+    'Ouvrez les paramètres du microphone de Windows, autorisez son accès et celui des applications de bureau, puis revenez ici.',
   accessibilityTitle: 'Vos mots, là où il faut',
   accessibilityBody:
     'Sur macOS, l’autorisation d’accessibilité permet de répondre au raccourci et de saisir du texte dans l’application active.',
@@ -475,6 +501,8 @@ export const desktopGuideFr: typeof desktopGuideEn = {
   shortcutBody:
     'Choisissez des touches faciles à atteindre. Vous pourrez les modifier dans les réglages.',
   shortcutHint: 'Sélectionnez les touches pour enregistrer un nouveau raccourci. Échap annule.',
+  windowsShortcutHint:
+    'Sous Windows, les touches Ctrl, Alt et Maj gauche et droite sont distinctes. Vous pouvez aussi utiliser les boutons latéraux de la souris (Mouse4 / Mouse5). Échap annule l’enregistrement.',
   keepShortcut: 'Garder ce raccourci',
   shortcutReply: 'Raccourci confirmé',
   finishTitle: 'Prenez vos marques{{name}}',
@@ -513,6 +541,8 @@ export const desktopGuideDe: typeof desktopGuideEn = {
   microphoneBody:
     'Mit Mikrofonzugriff kannst du diktieren. Die Aufnahme beginnt nur, wenn du sie startest.',
   microphoneHint: 'Du kannst den Zugriff später unter Einstellungen → Berechtigungen erlauben.',
+  windowsMicrophoneHint:
+    'Öffne die Mikrofoneinstellungen von Windows, erlaube den Mikrofonzugriff sowie den Zugriff für Desktop-Apps und kehre hierher zurück.',
   accessibilityTitle: 'Deine Worte am richtigen Ort',
   accessibilityBody:
     'Unter macOS erlaubt die Bedienungshilfen-Freigabe Tastenkürzel und die Texteingabe in der aktiven App.',
@@ -550,6 +580,8 @@ export const desktopGuideDe: typeof desktopGuideEn = {
   shortcutTitle: 'Deine Stimme, ein Tastenkürzel entfernt',
   shortcutBody: 'Wähle gut erreichbare Tasten. Du kannst sie später in den Einstellungen ändern.',
   shortcutHint: 'Wähle die Tasten aus, um ein neues Kürzel aufzunehmen. Escape bricht ab.',
+  windowsShortcutHint:
+    'Windows unterscheidet linke und rechte Strg-, Alt- und Umschalttasten. Du kannst auch die seitlichen Maustasten (Mouse4 / Mouse5) verwenden. Escape bricht die Aufnahme ab.',
   keepShortcut: 'Dieses Kürzel verwenden',
   shortcutReply: 'Tastenkürzel bestätigt',
   finishTitle: 'Sieh dich in Ruhe um{{name}}',

@@ -107,14 +107,14 @@ export function DesktopOnboarding({ onComplete }: { onComplete: () => void | Pro
     const request = ++permissionRequest.current;
     const results = await Promise.allSettled([
       checkMicrophonePermission(),
-      checkAccessibilityPermission(),
+      os === 'mac' ? checkAccessibilityPermission() : Promise.resolve('notApplicable' as const),
     ]);
     if (!alive.current || request !== permissionRequest.current) return;
     if (results[0].status === 'fulfilled') setMicrophone(results[0].value);
     if (results[1].status === 'fulfilled') setAccessibility(results[1].value);
     if (results.some((result) => result.status === 'rejected'))
       setError(t('desktopGuide.saveError'));
-  }, [preview, t]);
+  }, [preview, os, t]);
 
   useEffect(() => {
     void refreshPermissions();
@@ -184,7 +184,7 @@ export function DesktopOnboarding({ onComplete }: { onComplete: () => void | Pro
         return;
       }
       const status = mic ? microphone : accessibility;
-      if (status === 'denied' || status === 'restricted') {
+      if ((mic && os === 'win') || status === 'denied' || status === 'restricted') {
         await openSystemSettings(mic ? 'microphone' : 'accessibility');
       } else {
         const next = await (mic ? requestMicrophonePermission() : requestAccessibilityPermission());
@@ -253,7 +253,7 @@ export function DesktopOnboarding({ onComplete }: { onComplete: () => void | Pro
       ? t('desktopGuide.start')
       : isPermission && !granted(permission)
         ? t(
-            `desktopGuide.${preview ? 'previewGrant' : step === 'accessibility' || permission === 'denied' || permission === 'restricted' ? 'openPermissions' : 'authorize'}`,
+            `desktopGuide.${preview ? 'previewGrant' : os === 'win' || step === 'accessibility' || permission === 'denied' || permission === 'restricted' ? 'openPermissions' : 'authorize'}`,
           )
         : step === 'recognition' || step === 'polish'
           ? t('desktopGuide.checkConfig')
@@ -276,7 +276,7 @@ export function DesktopOnboarding({ onComplete }: { onComplete: () => void | Pro
 
   return (
     <ProviderLeaveContext.Provider value={form.register}>
-      <div className="ol-guide" data-preview={preview || undefined}>
+      <div className="ol-guide" data-os={os} data-preview={preview || undefined}>
         <header className="ol-guide-header" data-tauri-drag-region>
           <div className="ol-guide-brand">
             <img src="/AppIcon.png" width="25" height="25" alt="" />
@@ -304,6 +304,7 @@ export function DesktopOnboarding({ onComplete }: { onComplete: () => void | Pro
           <div className="ol-guide-stage" ref={stageRef}>
             <TransitionViewport
               contentKey={step}
+              pace="gentle"
               className="ol-guide-reading ol-thinscroll"
               style={{ overflowY: 'auto' }}
               onEntered={() =>
@@ -384,7 +385,9 @@ export function DesktopOnboarding({ onComplete }: { onComplete: () => void | Pro
                             <p className="ol-guide-hint">
                               {permission === 'noDevice'
                                 ? t('desktopGuide.unavailable')
-                                : t(`desktopGuide.${id}Hint`)}
+                                : id === 'microphone' && os === 'win' && !granted(permission)
+                                  ? t('desktopGuide.windowsMicrophoneHint')
+                                  : t(`desktopGuide.${id}Hint`)}
                             </p>
                           </>
                         )}
@@ -456,7 +459,11 @@ export function DesktopOnboarding({ onComplete }: { onComplete: () => void | Pro
                                 />
                               )}
                             </div>
-                            <p className="ol-guide-hint">{t('desktopGuide.shortcutHint')}</p>
+                            <p className="ol-guide-hint">
+                              {t(
+                                `desktopGuide.${os === 'win' ? 'windowsShortcutHint' : 'shortcutHint'}`,
+                              )}
+                            </p>
                             {prefs && (
                               <p className="ol-guide-description">
                                 {getHotkeyUsageHint(prefs.hotkey, undefined, prefs.dictationHotkey)}
