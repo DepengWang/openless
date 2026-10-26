@@ -21,6 +21,7 @@ import { cancelAndCloseVoiceEditSession } from './lib/ipc/voice-edit-session';
 import type { PlatformCapabilities } from './lib/types';
 import { isWindowHotkeyKeyboardCandidate, windowMouseHotkeyCode } from './lib/windowHotkeyFallback';
 import { markStartup } from './lib/startupMetrics';
+import { withStartupDeadline } from './lib/startupProbe';
 import { HotkeySettingsProvider } from './state/HotkeySettingsContext';
 import {
   needsDesktopGuide,
@@ -361,6 +362,7 @@ function ReadyApp({
   useEffect(() => {
     if (!isTauri || !platformCaps) return;
     let cancelled = false;
+    const startupProbe = new AbortController();
 
     void (async () => {
       const caps = platformCaps;
@@ -384,7 +386,7 @@ function ReadyApp({
         setGate('ready');
         return;
       }
-      const credentials = await getCredentials();
+      const credentials = await withStartupDeadline(getCredentials(), startupProbe.signal);
       if (cancelled) return;
       if (needsDesktopGuide(progress, credentials)) {
         setGate('onboarding');
@@ -430,14 +432,14 @@ function ReadyApp({
       const mOk = m === 'granted' || m === 'notApplicable' || m === 'noDevice';
       setGate(aOk && mOk ? 'ready' : 'onboarding');
     })().catch((error) => {
+      if (cancelled) return;
       console.warn('[startup] permission gate failed', error);
-      if (!cancelled) {
-        setGate('ready');
-      }
+      setGate('ready');
     });
 
     return () => {
       cancelled = true;
+      startupProbe.abort();
     };
   }, [os, platformCaps]);
 
