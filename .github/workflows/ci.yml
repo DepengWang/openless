@@ -89,7 +89,15 @@ jobs:
           # Browser revisions follow Playwright, not unrelated npm lock changes.
           key: playwright-v1-${{ runner.os }}-${{ runner.arch }}-ubuntu24-${{ steps.playwright_version.outputs.version }}
       - name: Install Playwright system dependencies
-        run: npx playwright install-deps chromium webkit
+        timeout-minutes: 8
+        run: |
+          # Keep regional mirror stalls from blocking browser validation indefinitely.
+          printf '%s\n' 'Acquire::Retries "2";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' |
+            sudo tee /etc/apt/apt.conf.d/80-openless-ci-network >/dev/null
+          while IFS= read -r -d '' apt_source; do
+            sudo sed -i -E 's#https?://azure[.]archive[.]ubuntu[.]com/ubuntu#https://archive.ubuntu.com/ubuntu#g' "$apt_source"
+          done < <(find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -print0)
+          npx playwright install-deps chromium webkit
       - name: Install Playwright browsers on cache miss
         if: steps.playwright_cache.outputs.cache-hit != 'true'
         run: npx playwright install chromium webkit
