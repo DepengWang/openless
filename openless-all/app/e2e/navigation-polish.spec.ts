@@ -31,38 +31,60 @@ test('a pending lazy page keeps the old page visible and exits with blur, scale 
   await expect(previous.getByRole('heading', { name: '今日概览', exact: true })).toBeVisible();
   await expect(previous).toHaveCSS('opacity', '1');
   await page.evaluate(() => {
-    (window as any).navigationFrames = [];
-    let frames = 0;
-    const sample = () => {
-      const nodes = [...document.querySelectorAll<HTMLElement>('main [data-transition-phase]')];
-      (window as any).navigationFrames.push(
-        nodes.map((node) => {
-          const style = getComputedStyle(node);
+    const animate = Element.prototype.animate;
+    (window as any).navigationAnimations = [];
+    (window as any).restoreNavigationClock = () => {
+      Element.prototype.animate = animate;
+    };
+    Element.prototype.animate = function (keyframes, options) {
+      const animation = animate.call(this, keyframes, options);
+      if (
+        this.matches('main [data-transition-phase="enter"], main [data-transition-phase="exit"]')
+      ) {
+        // Sample the native timeline deterministically even when a busy runner skips RAF callbacks.
+        animation.pause();
+        animation.currentTime = 0;
+        (window as any).navigationAnimations.push({ animation, element: this });
+      }
+      return animation;
+    };
+  });
+  release();
+  await page.waitForFunction(() => {
+    const active = (window as any).navigationAnimations as { animation: Animation }[];
+    return ['ol-page-enter', 'ol-page-exit'].every((id) =>
+      active.some(({ animation }) => animation.id === id && animation.playState !== 'idle'),
+    );
+  });
+  const samples = await page.evaluate(async () => {
+    const active = (
+      (window as any).navigationAnimations as { animation: Animation; element: Element }[]
+    ).filter(({ animation }) => animation.playState !== 'idle');
+    await Promise.all(active.map(({ animation }) => animation.ready));
+    const end = Math.max(
+      ...active.map(({ animation }) => Number(animation.effect!.getComputedTiming().endTime)),
+    );
+    try {
+      return Array.from({ length: 20 }, (_, index) => {
+        for (const { animation } of active) animation.currentTime = (end * index) / 20;
+        return active.map(({ element }) => {
+          const style = getComputedStyle(element);
           return {
-            phase: node.dataset.transitionPhase,
+            phase: element.getAttribute('data-transition-phase'),
             opacity: Number(style.opacity),
             filter: style.filter,
             scale: new DOMMatrixReadOnly(style.transform).m11,
           };
-        }),
-      );
-      if (++frames < 90) requestAnimationFrame(sample);
-    };
-    requestAnimationFrame(sample);
+        });
+      });
+    } finally {
+      (window as any).restoreNavigationClock();
+      for (const { animation } of active) animation.play();
+    }
   });
-  release();
   await expect(page.locator('[data-ol-page="history"]')).toHaveAttribute(
     'data-transition-phase',
     'settled',
-  );
-  const samples = await page.evaluate(
-    () =>
-      (window as any).navigationFrames as {
-        phase: string;
-        opacity: number;
-        filter: string;
-        scale: number;
-      }[][],
   );
   expect(
     samples.some((frame) =>
