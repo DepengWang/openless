@@ -8,15 +8,14 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
-import { motion, useAnimationControls } from 'framer-motion';
 import { useReducedMotion } from '../../lib/motion';
 import { useSmoothWheelScroll } from '../../lib/useSmoothWheelScroll';
 import { PageSkeleton } from './PageSkeleton';
 
-const easing = [0.22, 1, 0.36, 1] as const;
-const settled = { opacity: 1, y: 0, scale: 1, filter: 'none' };
-const waiting = { opacity: 0, y: 12, scale: 0.975, filter: 'blur(8px)' };
-const departing = { opacity: 0, y: -12, scale: 0.985, filter: 'blur(6px)' };
+const easing = 'cubic-bezier(0.22, 1, 0.36, 1)';
+const settled = { opacity: 1, transform: 'none', filter: 'none' };
+const waiting = { opacity: 0, transform: 'translateY(12px) scale(0.975)', filter: 'blur(8px)' };
+const departing = { opacity: 0, transform: 'translateY(-12px) scale(0.985)', filter: 'blur(6px)' };
 
 type Surface = { key: string; children: ReactNode };
 interface Props {
@@ -58,7 +57,7 @@ export function TransitionViewport({
   const [readyKey, setReadyKey] = useState<string | null>(null);
   const switching = committed.key !== contentKey;
   const revealing = switching && readyKey === contentKey;
-  const restoring = !switching && readyKey !== null && readyKey !== contentKey;
+  const restoring = readyKey !== null && readyKey !== contentKey;
 
   useLayoutEffect(() => {
     if (!switching || reduced) retained.current = { key: contentKey, children };
@@ -154,31 +153,61 @@ function TransitionSurface({
   const ref = useRef<HTMLDivElement>(null);
   const completed = useRef(onEntered);
   completed.current = onEntered;
-  const controls = useAnimationControls();
-  useEffect(() => {
+  const initialPose = useRef(phase === 'waiting' ? waiting : settled);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node) return;
     let cancelled = false;
-    const finish = () => {
-      if (!cancelled && (phase === 'enter' || phase === 'restore')) completed.current();
+    const target = phase === 'waiting' ? waiting : phase === 'exit' ? departing : settled;
+    const apply = () => {
+      node.style.opacity = String(target.opacity);
+      node.style.transform = target.transform;
+      node.style.filter = target.filter;
+      node.style.willChange = '';
     };
-    // A per-request promise resolves even when a reversal arrives before the
-    // first painted frame and the target already equals the current pose.
-    void controls
-      .start(
-        phase === 'waiting' ? waiting : phase === 'exit' ? departing : settled,
-        reduced
-          ? { duration: 0 }
-          : {
-              duration: phase === 'exit' ? (slow ? 0.22 : 0.16) : slow ? 0.26 : 0.18,
-              delay: phase === 'enter' ? (slow ? 0.12 : 0.07) : 0,
-              ease: easing,
-            },
-      )
-      .then(finish, finish);
+    if (
+      reduced ||
+      phase === 'waiting' ||
+      phase === 'settled' ||
+      typeof node.animate !== 'function'
+    ) {
+      apply();
+      if (phase === 'enter' || phase === 'restore') completed.current();
+      return;
+    }
+    const current = getComputedStyle(node);
+    const from = { opacity: current.opacity, transform: current.transform, filter: current.filter };
+    node.style.willChange = 'transform, opacity, filter';
+    // One native timeline keeps opacity, scale and blur synchronized even when
+    // JavaScript frames are delayed. Cleanup freezes the painted pose for reversals.
+    const animation = node.animate([from, target], {
+      duration: phase === 'exit' ? (slow ? 220 : 160) : slow ? 260 : 180,
+      delay: phase === 'enter' ? (slow ? 120 : 70) : 0,
+      easing,
+      fill: 'both',
+    });
+    animation.id = `ol-page-${phase}`;
+    void animation.finished
+      .then(() => {
+        if (cancelled) return;
+        apply();
+        animation.cancel();
+        if (phase === 'enter' || phase === 'restore') completed.current();
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
-      controls.stop();
+      const painted = getComputedStyle(node);
+      const pose = {
+        opacity: painted.opacity,
+        transform: painted.transform,
+        filter: painted.filter,
+      };
+      Object.assign(node.style, pose);
+      animation.cancel();
+      node.style.willChange = '';
     };
-  }, [controls, phase, reduced, slow]);
+  }, [phase, reduced, slow]);
   useSmoothWheelScroll(ref, surfaceKey);
   useLayoutEffect(() => {
     const node = ref.current;
@@ -189,16 +218,15 @@ function TransitionSurface({
     if (reduced && phase === 'enter') completed.current();
   }, [phase, reduced]);
   return (
-    <motion.div
+    <div
       ref={ref}
       className={className}
       data-ol-page={page}
       data-transition-phase={phase}
       aria-hidden={phase !== 'settled' || undefined}
-      initial={phase === 'waiting' && !reduced ? waiting : false}
-      animate={controls}
       style={{
         ...style,
+        ...initialPose.current,
         position: 'absolute',
         inset: 0,
         width: '100%',
@@ -206,17 +234,13 @@ function TransitionSurface({
         boxSizing: 'border-box',
         transformOrigin: '50% 30%',
         pointerEvents: phase !== 'settled' ? 'none' : undefined,
-        willChange:
-          phase === 'enter' || phase === 'exit' || phase === 'restore'
-            ? 'transform, opacity, filter'
-            : '',
       }}
     >
       <Suspense fallback={phase === 'settled' ? <PageSkeleton /> : null}>
         {children}
         {phase === 'waiting' && <ReadyFrame container={ref} onReady={onReady} />}
       </Suspense>
-    </motion.div>
+    </div>
   );
 }
 
