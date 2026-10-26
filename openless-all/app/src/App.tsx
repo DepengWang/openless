@@ -201,7 +201,7 @@ function ReadyApp({
   }, [onboardingHandoff, reducedMotion]);
   useEffect(() => {
     const reopen = () => {
-      saveGuideProgress(newGuideProgress());
+      if (isTauri) saveGuideProgress(newGuideProgress());
       setGate('onboarding');
     };
     window.addEventListener(REOPEN_ONBOARDING_EVENT, reopen);

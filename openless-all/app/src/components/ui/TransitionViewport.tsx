@@ -8,7 +8,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
-import { motion } from 'framer-motion';
+import { motion, useAnimationControls } from 'framer-motion';
 import { useReducedMotion } from '../../lib/motion';
 import { useSmoothWheelScroll } from '../../lib/useSmoothWheelScroll';
 import { PageSkeleton } from './PageSkeleton';
@@ -58,11 +58,13 @@ export function TransitionViewport({
   const [readyKey, setReadyKey] = useState<string | null>(null);
   const switching = committed.key !== contentKey;
   const revealing = switching && readyKey === contentKey;
+  const restoring = !switching && readyKey !== null && readyKey !== contentKey;
 
   useLayoutEffect(() => {
     if (!switching || reduced) retained.current = { key: contentKey, children };
     if (reduced && switching) setCommitted({ key: contentKey, children });
-  }, [switching, contentKey, children, reduced]);
+    if (reduced && readyKey !== null) setReadyKey(null);
+  }, [switching, contentKey, children, reduced, readyKey]);
   useEffect(() => {
     if (reduced) entered.current?.();
   }, [contentKey, reduced]);
@@ -81,11 +83,22 @@ export function TransitionViewport({
       : [{ key: contentKey, children }];
 
   return (
-    <div className="ol-transition-viewport" aria-busy={(!reduced && switching) || undefined}>
+    <div
+      className="ol-transition-viewport"
+      aria-busy={(!reduced && (switching || restoring)) || undefined}
+    >
       {surfaces.map((surface) => {
         const incoming = !reduced && switching && surface.key === contentKey;
         const leaving = !reduced && revealing && !incoming;
-        const phase = incoming ? (revealing ? 'enter' : 'waiting') : leaving ? 'exit' : 'settled';
+        const phase = incoming
+          ? revealing
+            ? 'enter'
+            : 'waiting'
+          : leaving
+            ? 'exit'
+            : !reduced && restoring
+              ? 'restore'
+              : 'settled';
         return (
           <TransitionSurface
             key={surface.key}
@@ -127,7 +140,7 @@ function TransitionSurface({
   onEntered,
 }: {
   surfaceKey: string;
-  phase: 'settled' | 'waiting' | 'enter' | 'exit';
+  phase: 'settled' | 'waiting' | 'enter' | 'exit' | 'restore';
   reduced: boolean;
   slow: boolean;
   children: ReactNode;
@@ -141,6 +154,31 @@ function TransitionSurface({
   const ref = useRef<HTMLDivElement>(null);
   const completed = useRef(onEntered);
   completed.current = onEntered;
+  const controls = useAnimationControls();
+  useEffect(() => {
+    let cancelled = false;
+    const finish = () => {
+      if (!cancelled && (phase === 'enter' || phase === 'restore')) completed.current();
+    };
+    // A per-request promise resolves even when a reversal arrives before the
+    // first painted frame and the target already equals the current pose.
+    void controls
+      .start(
+        phase === 'waiting' ? waiting : phase === 'exit' ? departing : settled,
+        reduced
+          ? { duration: 0 }
+          : {
+              duration: phase === 'exit' ? (slow ? 0.22 : 0.16) : slow ? 0.26 : 0.18,
+              delay: phase === 'enter' ? (slow ? 0.12 : 0.07) : 0,
+              ease: easing,
+            },
+      )
+      .then(finish, finish);
+    return () => {
+      cancelled = true;
+      controls.stop();
+    };
+  }, [controls, phase, reduced, slow]);
   useSmoothWheelScroll(ref, surfaceKey);
   useLayoutEffect(() => {
     const node = ref.current;
@@ -158,19 +196,7 @@ function TransitionSurface({
       data-transition-phase={phase}
       aria-hidden={phase !== 'settled' || undefined}
       initial={phase === 'waiting' && !reduced ? waiting : false}
-      animate={phase === 'waiting' ? waiting : phase === 'exit' ? departing : settled}
-      transition={
-        reduced
-          ? { duration: 0 }
-          : {
-              duration: phase === 'exit' ? (slow ? 0.22 : 0.16) : slow ? 0.26 : 0.18,
-              delay: phase === 'enter' ? (slow ? 0.12 : 0.07) : 0,
-              ease: easing,
-            }
-      }
-      onAnimationComplete={() => {
-        if (phase === 'enter') completed.current();
-      }}
+      animate={controls}
       style={{
         ...style,
         position: 'absolute',
@@ -180,7 +206,10 @@ function TransitionSurface({
         boxSizing: 'border-box',
         transformOrigin: '50% 30%',
         pointerEvents: phase !== 'settled' ? 'none' : undefined,
-        willChange: phase === 'enter' || phase === 'exit' ? 'transform, opacity, filter' : '',
+        willChange:
+          phase === 'enter' || phase === 'exit' || phase === 'restore'
+            ? 'transform, opacity, filter'
+            : '',
       }}
     >
       <Suspense fallback={phase === 'settled' ? <PageSkeleton /> : null}>
