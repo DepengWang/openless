@@ -117,9 +117,9 @@ test('Windows opens microphone settings, refreshes on return, and permits deferr
   await page.getByRole('button', { name: '开始吧', exact: true }).click();
   await expect(active(page)).toContainText('桌面应用访问权限');
   await page.getByRole('button', { name: '打开系统设置', exact: true }).click();
-  expect(await page.evaluate(() => (window as any).guideFixture.openedPanes)).toEqual([
-    'microphone',
-  ]);
+  await expect
+    .poll(() => page.evaluate(() => (window as any).guideFixture.openedPanes))
+    .toEqual(['microphone']);
   await expect(active(page)).toHaveAttribute('data-guide-step', 'microphone');
   await page.evaluate(() => {
     (window as any).guideFixture.microphone = 'noDevice';
