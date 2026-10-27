@@ -411,7 +411,24 @@
    marquee reads as a soft glow rather than a hard bar. The mask only touches this background
    layer; the glyph track is a sibling. */
 .ol-live-transcript-pill[data-tone='frost'][data-enhanced='true'] {
-  background: color-mix(in srgb, var(--ol-capsule-pill-bg) 72%, transparent);
+  /* A faint light rim under the feather outlines the band on dark backgrounds; the centre,
+     where the glyphs sit, keeps the plain tint. */
+  background:
+    linear-gradient(
+      to right,
+      rgb(255 255 255 / 22%),
+      transparent 56px,
+      transparent calc(100% - 56px),
+      rgb(255 255 255 / 22%)
+    ),
+    linear-gradient(
+      to bottom,
+      rgb(255 255 255 / 18%),
+      transparent 14px,
+      transparent calc(100% - 14px),
+      rgb(255 255 255 / 18%)
+    ),
+    color-mix(in srgb, var(--ol-capsule-pill-bg) 72%, transparent);
   border: none;
   box-shadow: none;
   -webkit-mask-image:
