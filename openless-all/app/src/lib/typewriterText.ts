@@ -7,12 +7,15 @@
 import { useEffect, useRef, useState } from 'react';
 
 export const TYPEWRITER = {
-  /** Fastest gap between two revealed characters. */
-  minStepMs: 16,
+  /**
+   * Fastest gap between two revealed characters. Kept well under the glyph focus animation
+   * (~300 ms) so consecutive glyphs overlap into a wave instead of flashing one by one.
+   */
+  minStepMs: 32,
   /** Slowest gap, used when only a character or two is pending. */
-  maxStepMs: 60,
+  maxStepMs: 70,
   /** Aim to drain the pending text within roughly one ASR update interval. */
-  catchUpMs: 280,
+  catchUpMs: 320,
   /** Never trail the recognizer by more than this many characters. */
   maxLagChars: 40,
 } as const;

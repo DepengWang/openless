@@ -525,9 +525,10 @@ function TranscriptGlyph({
                 delay: birthDelay / 1000,
               },
               y: { type: 'spring', ...INSERT_TEXT_MOTION.charSpring, delay: birthDelay / 1000 },
+              // Expo-out: most of the blur clears in the first few frames, then settles.
               filter: {
-                duration: INSERT_TEXT_MOTION.bornFadeMs / 1000,
-                ease: [0.22, 0.61, 0.36, 1],
+                duration: INSERT_TEXT_MOTION.bornFocusMs / 1000,
+                ease: [0.16, 1, 0.3, 1],
                 delay: birthDelay / 1000,
               },
             }

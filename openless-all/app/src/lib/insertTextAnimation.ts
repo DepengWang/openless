@@ -16,10 +16,13 @@ export const INSERT_TEXT_MOTION = {
   glyphGapPx: 1.4,
   groupDelayMs: 26,
   groupRippleMs: 2,
-  bornFadeMs: 180,
-  bornY: 9,
-  bornBlurPx: 1.8,
-  bornStaggerMs: 8,
+  // Ink-wash birth: each glyph starts as a soft blur and snaps into focus, while
+  // neighbours start tens of ms apart, so several glyphs are mid-focus at once.
+  bornFadeMs: 240,
+  bornFocusMs: 300,
+  bornY: 2,
+  bornBlurPx: 6,
+  bornStaggerMs: 36,
   widthDelayMinMs: 12,
   recenterExtraMs: 140,
   maxDelayMs: 96,
