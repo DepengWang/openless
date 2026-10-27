@@ -112,6 +112,11 @@ fn capsule_transcript_rail_position(
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const SIRI_ENHANCED_RAIL_HEIGHT: f64 = 54.0;
 
+/// Logical distance the Siri enhanced band drops into the transparent headroom of the 180px Siri
+/// stage (the waveform is drawn at its vertical centre), so the band sits close to the wave.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const SIRI_ENHANCED_RAIL_DROP: f64 = 40.0;
+
 /// Physical `(x, width)` of the Siri enhanced transcript rail: a third of the monitor (never
 /// narrower than the capsule), centred on the capsule and kept on screen, so the marquee has the
 /// same length every time it appears on that screen.
@@ -168,14 +173,15 @@ fn position_rail_for_capsule<R: tauri::Runtime>(
         })
         .flatten();
     let (x, top_offset) = if let Some((x, width)) = wide {
-        // A third taller band; grow it upward so the gap above the capsule stays the same.
+        // A third taller band, grown upward, then dropped into the stage headroom toward the wave.
         rail.set_size(tauri::PhysicalSize::new(
             width.max(1) as u32,
             (SIRI_ENHANCED_RAIL_HEIGHT * scale).round().max(1.0) as u32,
         ))?;
         (
             x,
-            position.top_offset - (SIRI_ENHANCED_RAIL_HEIGHT - position.height),
+            position.top_offset - (SIRI_ENHANCED_RAIL_HEIGHT - position.height)
+                + SIRI_ENHANCED_RAIL_DROP,
         )
     } else {
         rail.set_size(tauri::LogicalSize::new(position.width, position.height))?;
