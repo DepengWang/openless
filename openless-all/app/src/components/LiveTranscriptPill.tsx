@@ -39,7 +39,6 @@ import {
 import { capsuleTranscriptFontSize, visibleCapsuleTranscript } from '../lib/capsuleTranscript';
 import { getCapsuleTranscriptRailHeight } from '../lib/capsuleLayout';
 import { planBirthDelays } from '../lib/typewriterText';
-import { useSettlePhase, type SettlePhase } from '../lib/useSettlePhase';
 import { getSettings } from '../lib/ipc/settings';
 import { getCapsuleSnapshot, isTauri } from '../lib/ipc';
 import type {
@@ -82,10 +81,10 @@ export interface LiveTranscriptPillProps {
   /** Siri enhanced: ink-wash glyph focus-in, with each burst's new glyphs entering in order. */
   enhancedMotion?: boolean;
   /**
-   * Siri enhanced end of speech: 'waiting' blurs the line and breathes until polishing completes;
-   * 'focusing' brings it back into focus glyph by glyph from left to right.
+   * Siri enhanced: speech has ended and the text is being finalised / polished; the line loops
+   * blur-together then focus left to right until the rail goes away.
    */
-  settlePhase?: SettlePhase;
+  settled?: boolean;
 }
 
 const FONT_SIZE = 16;
@@ -127,8 +126,8 @@ export interface CapsuleTranscriptRailProps {
   fontSize?: number;
   /** Siri enhanced presentation (fixed-length marquee, ink-wash glyphs). */
   enhanced?: boolean;
-  /** Siri enhanced end-of-speech phase (see useSettlePhase). */
-  settlePhase?: SettlePhase;
+  /** Speech has ended (transcribing / polishing). */
+  settled?: boolean;
 }
 
 /** Transcript is deliberately a sibling rail: the capsule body remains responsible for audio feedback and controls. */
@@ -140,7 +139,7 @@ export function CapsuleTranscriptRail({
   height = DEFAULT_PILL_HEIGHT,
   fontSize = FONT_SIZE,
   enhanced = false,
-  settlePhase = 'none',
+  settled = false,
 }: CapsuleTranscriptRailProps) {
   const liveText = text.trim();
   if (!liveText) return null;
@@ -155,7 +154,7 @@ export function CapsuleTranscriptRail({
         fontSize={fontSize}
         fixedWidth={enhanced}
         enhancedMotion={enhanced}
-        settlePhase={enhanced ? settlePhase : 'none'}
+        settled={enhanced && settled}
       />
     </div>
   );
@@ -174,7 +173,7 @@ export function CapsuleTranscriptOverlay() {
   const [enabled, setEnabled] = useState(true);
   const [fontSize, setFontSize] = useState(14);
   const [siriEnhanced, setSiriEnhanced] = useState(false);
-  // Siri enhanced: the host sizes this HWND to half of the screen; follow it.
+  // Siri enhanced: the host sizes this HWND to a third of the screen; follow it.
   const [railWidth, setRailWidth] = useState(() =>
     typeof window === 'undefined' ? 460 : window.innerWidth,
   );
@@ -297,15 +296,9 @@ export function CapsuleTranscriptOverlay() {
     };
   }, []);
 
-  const enhanced = style === 'siri' && siriEnhanced;
-  // Enhanced: the last line outlives Done for one focus pass (Capsule keeps the rail shown).
-  const settle = useSettlePhase(
-    visibleCapsuleTranscript(text, enabled, state, selectionPolish),
-    state,
-    enhanced,
-  );
-  const liveText = settle.text;
+  const liveText = visibleCapsuleTranscript(text, enabled, state, selectionPolish);
   const typeless = style === 'typeless';
+  const enhanced = style === 'siri' && siriEnhanced;
   // Enhanced: a third taller band; must match SIRI_ENHANCED_RAIL_HEIGHT in the Tauri host.
   const railHeight = enhanced ? SIRI_ENHANCED_RAIL_HEIGHT : getCapsuleTranscriptRailHeight(style);
   // Enhanced: the overlay spans the whole (wider) HWND so the pill and the text share one frame.
@@ -325,7 +318,7 @@ export function CapsuleTranscriptOverlay() {
         maxWidth={stageWidth - 20}
         height={railHeight}
         enhanced={enhanced}
-        settlePhase={settle.phase}
+        settled={state === 'transcribing' || state === 'polishing'}
       />
       {translation && !selectionPolish && style === 'classic' && <CapsuleTranslationBadge />}
       {translation && !selectionPolish && typeless && (
@@ -354,7 +347,7 @@ export function LiveTranscriptPill({
   fontSize = FONT_SIZE,
   fixedWidth = false,
   enhancedMotion = false,
-  settlePhase = 'none',
+  settled = false,
 }: LiveTranscriptPillProps) {
   const reduceMotion = useReducedMotion();
   const hasControls = Boolean(onCancel || onConfirm);
@@ -419,60 +412,23 @@ export function LiveTranscriptPill({
     () => (enhancedMotion ? planBirthDelays(renderUnits.map((unit) => unit.born)) : null),
     [enhancedMotion, renderUnits],
   );
-  // Enhanced, polishing done: glyphs focus left to right so the last one is sharp settleSweepMs
-  // after the first starts.
+  // Enhanced, polishing: each cycle the line blurs together, then glyphs focus left to right so
+  // the last one is sharp settleSweepMs after the first starts.
   const settleStepMs = useMemo(() => {
     const ink = SIRI_ENHANCED_GLYPH_MOTION;
     const count = renderUnits.length;
     return count > 1 ? (ink.settleSweepMs - ink.settleFocusMs) / (count - 1) : 0;
   }, [renderUnits.length]);
-
-  // Enhanced, waiting for polish: the whole track blurs and breathes as one.
-  const settleBlurMv = useMotionValue(0);
-  const settleScaleMv = useMotionValue(1);
-  const settleFilterMv = useTransform(settleBlurMv, (px) => `blur(${px}px)`);
-  // When focusing starts, the glyphs take over from wherever the breath was, so nothing jumps.
-  const [seenSettlePhase, setSeenSettlePhase] = useState<SettlePhase>(settlePhase);
-  const [focusFrom, setFocusFrom] = useState({ blur: 0, scale: 1 });
-  if (settlePhase !== seenSettlePhase) {
-    setSeenSettlePhase(settlePhase);
-    if (settlePhase === 'focusing') {
-      setFocusFrom({ blur: settleBlurMv.get(), scale: settleScaleMv.get() });
-    }
-  }
-  useEffect(() => {
-    const ink = SIRI_ENHANCED_GLYPH_MOTION;
-    if (!enhancedMotion || reduceMotion || settlePhase !== 'waiting') {
-      settleBlurMv.set(0);
-      settleScaleMv.set(1);
-      return undefined;
-    }
-    const blurIn = { duration: ink.settleBlurInMs / 1000, ease: 'easeOut' as const };
-    const breathe = {
-      duration: ink.breatheMs / 2 / 1000,
-      ease: 'easeInOut' as const,
-      repeat: Infinity,
-      repeatType: 'mirror' as const,
-    };
-    let blurAnim = animate(settleBlurMv, ink.settleBlurPx, blurIn);
-    let scaleAnim = animate(settleScaleMv, ink.settleScale, blurIn);
-    let stopped = false;
-    void blurAnim.then(() => {
-      if (stopped) return;
-      blurAnim = animate(settleBlurMv, ink.breatheBlurPx, breathe);
-      scaleAnim.stop();
-      scaleAnim = animate(settleScaleMv, ink.breatheScale, breathe);
-    });
-    return () => {
-      stopped = true;
-      blurAnim.stop();
-      scaleAnim.stop();
-    };
-  }, [enhancedMotion, reduceMotion, settlePhase, settleBlurMv, settleScaleMv]);
   const plan = useMemo(() => {
     if (fixedWidth) {
       const left = (stageWidth - maxWidth) / 2;
-      return { width: maxWidth, left, rightEdge: left + maxWidth, widthDelayMs: 0, recenterDelayMs: 0 };
+      return {
+        width: maxWidth,
+        left,
+        rightEdge: left + maxWidth,
+        widthDelayMs: 0,
+        recenterDelayMs: 0,
+      };
     }
     return planCapsuleInsertMotion({
       stageWidth,
@@ -605,7 +561,6 @@ export function LiveTranscriptPill({
           width: trackWidthMv,
           fontSize,
           height,
-          ...(enhancedMotion ? { filter: settleFilterMv, scale: settleScaleMv } : {}),
         }}
       >
         {renderUnits.map((unit, index) => (
@@ -628,16 +583,10 @@ export function LiveTranscriptPill({
           >
             <TranscriptGlyph
               text={unit.text}
-              delay={
-                birthDelays && unit.born ? (birthDelays[index] ?? 0) : (delays[index] ?? 0)
-              }
+              delay={birthDelays && unit.born ? (birthDelays[index] ?? 0) : (delays[index] ?? 0)}
               reduceMotion={Boolean(reduceMotion)}
               enhanced={enhancedMotion}
-              settleFocus={
-                enhancedMotion && settlePhase === 'focusing'
-                  ? { at: index * settleStepMs, ...focusFrom }
-                  : null
-              }
+              settleFocusAt={enhancedMotion && settled ? index * settleStepMs : null}
             />
           </motion.span>
         ))}
@@ -655,38 +604,45 @@ function TranscriptGlyph({
   delay,
   reduceMotion,
   enhanced = false,
-  settleFocus = null,
+  settleFocusAt = null,
 }: {
   text: string;
   delay: number;
   reduceMotion: boolean;
   enhanced?: boolean;
-  /**
-   * Siri enhanced, polishing done: hold the breath's blur/scale (taken over from the track),
-   * then focus `at` ms into the left-to-right pass.
-   */
-  settleFocus?: { at: number; blur: number; scale: number } | null;
+  /** Siri enhanced, polishing: ms after the line has blurred when this glyph starts to focus. */
+  settleFocusAt?: number | null;
 }) {
   const [birthDelay] = useState(delay);
   const ink = SIRI_ENHANCED_GLYPH_MOTION;
-  if (enhanced && !reduceMotion && settleFocus !== null) {
-    const total = settleFocus.at + ink.settleFocusMs;
+  if (enhanced && !reduceMotion && settleFocusAt !== null) {
+    // One cycle: all glyphs blur together, hold, focus in their left-to-right turn, stay sharp
+    // until the cycle ends. Every glyph shares the cycle length, so the loop stays in step.
+    const cycle = ink.settleBlurInMs + ink.settleSweepMs + ink.settleHoldMs;
+    const focusStart = ink.settleBlurInMs + settleFocusAt;
+    const focusEnd = focusStart + ink.settleFocusMs;
     const settle = {
-      duration: total / 1000,
-      times: [0, settleFocus.at / total, 1],
-      ease: ['linear', 'easeInOut'] as Easing[],
+      duration: cycle / 1000,
+      times: [0, ink.settleBlurInMs / cycle, focusStart / cycle, focusEnd / cycle, 1],
+      ease: ['easeInOut', 'linear', 'easeInOut', 'linear'] as Easing[],
+      repeat: Infinity,
     };
-    const blurred = `blur(${settleFocus.blur}px)`;
+    const blurred = `blur(${ink.settleBlurPx}px)`;
     return (
       <motion.span
         className="ol-live-transcript-char"
         animate={{
           opacity: 1,
           y: 0,
-          filter: [blurred, blurred, 'blur(0px)'],
-          scale: [settleFocus.scale, settleFocus.scale, 1],
+          filter: ['blur(0px)', blurred, blurred, 'blur(0px)', 'blur(0px)'],
+          scale: [1, ink.settleScale, ink.settleScale, 1, 1],
         }}
-        transition={{ opacity: { duration: 0.2 }, y: { duration: 0.2 }, filter: settle, scale: settle }}
+        transition={{
+          opacity: { duration: 0.2 },
+          y: { duration: 0.2 },
+          filter: settle,
+          scale: settle,
+        }}
       >
         {text === ' ' ? ' ' : text}
       </motion.span>
