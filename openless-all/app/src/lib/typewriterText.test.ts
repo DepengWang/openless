@@ -1,51 +1,32 @@
-import { TYPEWRITER, commonPrefixLength, nextTypewriterFrame } from './typewriterText';
+import { TYPEWRITER, planBirthDelays } from './typewriterText';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
 }
 
-function drain(shown: string, target: string): string[] {
-  const frames: string[] = [];
-  let current = shown;
-  for (let guard = 0; guard < 500; guard += 1) {
-    const frame = nextTypewriterFrame(current, target);
-    frames.push(frame.shown);
-    current = frame.shown;
-    if (frame.delayMs === null) return frames;
-  }
-  throw new Error('typewriter never caught up');
-}
-
-assert(commonPrefixLength(['a', 'b'], ['a', 'c']) === 1, 'prefix stops at first difference');
-
-const typed = drain('', '你好世界');
+assert(planBirthDelays([]).length === 0, 'empty window has no delays');
 assert(
-  typed.join('|') === '你|你好|你好世|你好世界',
-  `types one character per frame, got ${typed.join('|')}`,
+  planBirthDelays([false, false]).every((delay) => delay === 0),
+  'retained glyphs are not delayed',
 );
 
-const caughtUp = nextTypewriterFrame('你好', '你好');
-assert(caughtUp.shown === '你好' && caughtUp.delayMs === null, 'idle once caught up');
+const single = planBirthDelays([false, true]);
+assert(single[1] === 0, 'a lone new glyph appears at once');
 
-const revised = nextTypewriterFrame('今天天汽', '今天天气很好');
-assert(revised.shown === '今天天气', `rolls back a revised tail first, got ${revised.shown}`);
-
-const emoji = drain('', 'a😀b');
-assert(emoji.join('|') === 'a|a😀|a😀b', 'never splits a surrogate pair');
-
-const long = 'x'.repeat(100);
-const first = nextTypewriterFrame('', long);
+const few = planBirthDelays([false, true, true, true]);
 assert(
-  Array.from(first.shown).length === 100 - TYPEWRITER.maxLagChars + 1,
-  'jumps ahead so the lag stays bounded',
+  few.join(',') === `0,0,${TYPEWRITER.maxStepMs},${TYPEWRITER.maxStepMs * 2}`,
+  `a short burst types at the slowest pace, got ${few.join(',')}`,
 );
 
-const burst = nextTypewriterFrame('', 'x'.repeat(30));
-assert(burst.delayMs === TYPEWRITER.minStepMs, 'large backlog types at the fastest pace');
-const trickle = nextTypewriterFrame('', 'xy');
-assert(trickle.delayMs === TYPEWRITER.maxStepMs, 'small backlog types at the slowest pace');
+const many = planBirthDelays(Array(20).fill(true));
+assert(many[1] === TYPEWRITER.minStepMs, 'a long burst types at the fastest pace');
+assert(
+  many.every((delay, index) => index === 0 || delay > many[index - 1]),
+  'born glyphs enter strictly in order',
+);
 
-const cleared = nextTypewriterFrame('你好', '');
-assert(cleared.shown === '' && cleared.delayMs === null, 'clearing the target clears at once');
+const mixed = planBirthDelays([true, false, true]);
+assert(mixed[1] === 0 && mixed[2] > mixed[0], 'only born glyphs advance the typing order');
 
 console.log('typewriterText.test.ts: ok');

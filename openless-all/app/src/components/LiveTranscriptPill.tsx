@@ -30,7 +30,7 @@ import {
 } from '../lib/backendEvent';
 import { capsuleTranscriptFontSize, visibleCapsuleTranscript } from '../lib/capsuleTranscript';
 import { getCapsuleTranscriptRailHeight } from '../lib/capsuleLayout';
-import { useTypewriterText } from '../lib/typewriterText';
+import { planBirthDelays } from '../lib/typewriterText';
 import { getSettings } from '../lib/ipc/settings';
 import { getCapsuleSnapshot, isTauri } from '../lib/ipc';
 import type {
@@ -115,13 +115,11 @@ export function CapsuleTranscriptRail({
   fontSize = FONT_SIZE,
 }: CapsuleTranscriptRailProps) {
   const liveText = text.trim();
-  // Streaming ASR arrives in bursts; reveal them character by character.
-  const typedText = useTypewriterText(liveText, !useReducedMotion());
   if (!liveText) return null;
   return (
     <div className="ol-capsule-transcript-rail" data-tone={tone} data-transcript-rail="true">
       <LiveTranscriptPill
-        text={typedText}
+        text={liveText}
         tone={tone}
         stageWidth={stageWidth}
         maxWidth={maxWidth}
@@ -344,6 +342,11 @@ export function LiveTranscriptPill({
     () => planCharDelays(widths, originIndex, insertedCount),
     [widths, originIndex, insertedCount],
   );
+  // Layout moves once per ASR burst (above); the burst's new glyphs then ink in one by one.
+  const birthDelays = useMemo(
+    () => planBirthDelays(renderUnits.map((unit) => unit.born)),
+    [renderUnits],
+  );
   const plan = useMemo(
     () =>
       planCapsuleInsertMotion({
@@ -478,7 +481,7 @@ export function LiveTranscriptPill({
           >
             <TranscriptGlyph
               text={unit.text}
-              delay={delays[index] ?? 0}
+              delay={unit.born ? (birthDelays[index] ?? 0) : (delays[index] ?? 0)}
               reduceMotion={Boolean(reduceMotion)}
             />
           </motion.span>
