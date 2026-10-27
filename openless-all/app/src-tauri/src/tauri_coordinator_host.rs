@@ -117,7 +117,7 @@ const SIRI_ENHANCED_RAIL_HEIGHT: f64 = 54.0;
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const SIRI_ENHANCED_RAIL_DROP: f64 = 40.0;
 
-/// Physical `(x, width)` of the Siri enhanced transcript rail: a third of the monitor (never
+/// Physical `(x, width)` of the Siri enhanced transcript rail: 1/2.7 of the monitor (never
 /// narrower than the capsule), centred on the capsule and kept on screen, so the marquee has the
 /// same length every time it appears on that screen.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -127,16 +127,20 @@ fn wide_rail_span(
     monitor_left: i32,
     monitor_width: i32,
 ) -> (i32, i32) {
-    let width = (monitor_width / 3).max(capsule_width).min(monitor_width.max(1));
-    let x = (capsule_center_x - width / 2)
-        .clamp(monitor_left, (monitor_left + monitor_width - width).max(monitor_left));
+    let width = ((f64::from(monitor_width) / 2.7) as i32)
+        .max(capsule_width)
+        .min(monitor_width.max(1));
+    let x = (capsule_center_x - width / 2).clamp(
+        monitor_left,
+        (monitor_left + monitor_width - width).max(monitor_left),
+    );
     (x, width)
 }
 
 /// Places and shows (or hides) a transcript rail for the capsule whose outer origin is
 /// `capsule_origin`. Used for the primary rail and for every monitor's rail mirror, so the
 /// rail always sits on the same capsule it belongs to. `siri_enhanced` widens a Siri rail to
-/// a third of the monitor for the enhanced marquee.
+/// 1/2.7 of the monitor for the enhanced marquee.
 #[cfg(target_os = "windows")]
 #[allow(clippy::too_many_arguments)]
 fn position_rail_for_capsule<R: tauri::Runtime>(
@@ -2636,13 +2640,13 @@ mod tests {
     }
 
     #[test]
-    fn wide_rail_spans_a_third_of_the_monitor_centred_and_on_screen() {
+    fn wide_rail_spans_1_over_2_7_of_the_monitor_centred_and_on_screen() {
         // 2560 px monitor at x = 0, 460 px capsule centred at 1280.
-        assert_eq!(super::wide_rail_span(1280, 460, 0, 2560), (854, 853));
+        assert_eq!(super::wide_rail_span(1280, 460, 0, 2560), (806, 948));
         // A capsule near the right edge keeps the rail fully on screen.
-        assert_eq!(super::wide_rail_span(2500, 460, 0, 2560), (1707, 853));
+        assert_eq!(super::wide_rail_span(2500, 460, 0, 2560), (1612, 948));
         // A monitor left of the primary (negative origin) clamps to its own left edge.
-        assert_eq!(super::wide_rail_span(-2000, 460, -2048, 1536), (-2048, 512));
+        assert_eq!(super::wide_rail_span(-2000, 460, -2048, 1536), (-2048, 568));
         // Never narrower than the capsule on a small screen.
         assert_eq!(super::wide_rail_span(400, 460, 0, 800), (170, 460));
     }

@@ -173,7 +173,7 @@ export function CapsuleTranscriptOverlay() {
   const [enabled, setEnabled] = useState(true);
   const [fontSize, setFontSize] = useState(14);
   const [siriEnhanced, setSiriEnhanced] = useState(false);
-  // Siri enhanced: the host sizes this HWND to a third of the screen; follow it.
+  // Siri enhanced: the host sizes this HWND to 1/2.7 of the screen; follow it.
   const [railWidth, setRailWidth] = useState(() =>
     typeof window === 'undefined' ? 460 : window.innerWidth,
   );
