@@ -33,16 +33,24 @@ export const INSERT_TEXT_MOTION = {
 
 /**
  * Siri enhanced glyph birth ("ink wash"): the glyph fades in quickly as a soft, slightly
- * oversized blur, lingers briefly, then comes into focus (ease-in on the blur). Births 45-80 ms
- * apart and a focus about one ASR burst long keep several glyphs mid-focus at a normal pace.
+ * oversized blur, lingers briefly, then comes into focus and eases to rest (ease-in-out, so the
+ * focus does not snap at full speed). Births 45-80 ms apart and a focus about one ASR burst long
+ * keep several glyphs mid-focus at a normal pace.
  */
 export const SIRI_ENHANCED_GLYPH_MOTION = {
   fadeMs: 200,
   focusMs: 380,
   bornY: 2,
   bornBlurPx: 6,
-  bornScale: 1.04,
-  focusEase: [0.5, 0, 0.75, 0],
+  bornScale: 1.3,
+  focusEase: [0.6, 0, 0.3, 1],
+  /** When speech ends, a blur-to-focus wave sweeps the line left to right once. */
+  settleBlurPx: 4,
+  settleScale: 1.08,
+  settleMs: 560,
+  /** Time for the wave to cross the whole line; per-glyph step is clamped to settleStepMs. */
+  settleSweepMs: 700,
+  settleStepMs: [12, 40],
   /** Render window for the wide marquee pill (the default 64 glyphs leave its left side empty). */
   maxUnits: 160,
 } as const;

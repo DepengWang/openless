@@ -73,6 +73,8 @@ export interface LiveTranscriptPillProps {
   fixedWidth?: boolean;
   /** Siri enhanced: ink-wash glyph focus-in, with each burst's new glyphs entering in order. */
   enhancedMotion?: boolean;
+  /** Siri enhanced: speech has ended; a blur-to-focus wave sweeps the line once on entering it. */
+  settled?: boolean;
 }
 
 const FONT_SIZE = 16;
@@ -114,6 +116,8 @@ export interface CapsuleTranscriptRailProps {
   fontSize?: number;
   /** Siri enhanced presentation (fixed-length marquee, ink-wash glyphs). */
   enhanced?: boolean;
+  /** Speech has ended (transcribing / polishing). */
+  settled?: boolean;
 }
 
 /** Transcript is deliberately a sibling rail: the capsule body remains responsible for audio feedback and controls. */
@@ -125,6 +129,7 @@ export function CapsuleTranscriptRail({
   height = DEFAULT_PILL_HEIGHT,
   fontSize = FONT_SIZE,
   enhanced = false,
+  settled = false,
 }: CapsuleTranscriptRailProps) {
   const liveText = text.trim();
   if (!liveText) return null;
@@ -139,6 +144,7 @@ export function CapsuleTranscriptRail({
         fontSize={fontSize}
         fixedWidth={enhanced}
         enhancedMotion={enhanced}
+        settled={enhanced && settled}
       />
     </div>
   );
@@ -302,6 +308,7 @@ export function CapsuleTranscriptOverlay() {
         maxWidth={stageWidth - 20}
         height={railHeight}
         enhanced={enhanced}
+        settled={state === 'transcribing' || state === 'polishing'}
       />
       {translation && !selectionPolish && style === 'classic' && <CapsuleTranslationBadge />}
       {translation && !selectionPolish && typeless && (
@@ -330,6 +337,7 @@ export function LiveTranscriptPill({
   fontSize = FONT_SIZE,
   fixedWidth = false,
   enhancedMotion = false,
+  settled = false,
 }: LiveTranscriptPillProps) {
   const reduceMotion = useReducedMotion();
   const hasControls = Boolean(onCancel || onConfirm);
@@ -394,6 +402,15 @@ export function LiveTranscriptPill({
     () => (enhancedMotion ? planBirthDelays(renderUnits.map((unit) => unit.born)) : null),
     [enhancedMotion, renderUnits],
   );
+  // Enhanced, speech ended: stagger a blur-to-focus wave across the line, left to right.
+  const settleStepMs = useMemo(() => {
+    const ink = SIRI_ENHANCED_GLYPH_MOTION;
+    const count = Math.max(1, renderUnits.length);
+    return Math.min(
+      ink.settleStepMs[1],
+      Math.max(ink.settleStepMs[0], Math.round(ink.settleSweepMs / count)),
+    );
+  }, [renderUnits.length]);
   const plan = useMemo(() => {
     if (fixedWidth) {
       const left = (stageWidth - maxWidth) / 2;
@@ -557,6 +574,7 @@ export function LiveTranscriptPill({
               }
               reduceMotion={Boolean(reduceMotion)}
               enhanced={enhancedMotion}
+              settleDelay={enhancedMotion && settled ? index * settleStepMs : null}
             />
           </motion.span>
         ))}
@@ -574,14 +592,39 @@ function TranscriptGlyph({
   delay,
   reduceMotion,
   enhanced = false,
+  settleDelay = null,
 }: {
   text: string;
   delay: number;
   reduceMotion: boolean;
   enhanced?: boolean;
+  /** Siri enhanced, speech ended: this glyph's turn in the blur-to-focus wave. */
+  settleDelay?: number | null;
 }) {
   const [birthDelay] = useState(delay);
   const ink = SIRI_ENHANCED_GLYPH_MOTION;
+  if (enhanced && !reduceMotion && settleDelay !== null) {
+    const settle = {
+      duration: ink.settleMs / 1000,
+      times: [0, 0.35, 1],
+      ease: 'easeInOut' as const,
+      delay: settleDelay / 1000,
+    };
+    return (
+      <motion.span
+        className="ol-live-transcript-char"
+        animate={{
+          opacity: 1,
+          y: 0,
+          filter: ['blur(0px)', `blur(${ink.settleBlurPx}px)`, 'blur(0px)'],
+          scale: [1, ink.settleScale, 1],
+        }}
+        transition={{ opacity: { duration: 0.2 }, y: { duration: 0.2 }, filter: settle, scale: settle }}
+      >
+        {text === ' ' ? ' ' : text}
+      </motion.span>
+    );
+  }
   return (
     <motion.span
       className="ol-live-transcript-char"
