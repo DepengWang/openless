@@ -253,7 +253,7 @@ test('voice activation opens model setup without leaving the multimodal pipeline
   await dialog.getByRole('button', { name: '多模态模式', exact: true }).click();
   const models = dialog.locator('.ol-service-views').getByRole('button', { name: /^本地模型/ });
   await expect(models).toBeDisabled();
-  await categories.getByRole('button', { name: '录音与输入', exact: true }).click();
+  await categories.locator('button.ol-settings-rail-btn', { hasText: '录音与输入' }).click();
   await dialog.getByRole('switch', { name: '语音唤醒听写', exact: true }).click();
   const download = dialog.getByRole('button', {
     name: '前往 AI 服务与模型下载 Zipformer',
@@ -288,8 +288,8 @@ test('voice activation opens model setup without leaving the multimodal pipeline
   ).toBeDisabled();
   expect(await providerState()).toEqual(before);
   await page.screenshot({ path: testInfo.outputPath('voice-activation-model-setup.png') });
-  await categories.getByRole('button', { name: '录音与输入', exact: true }).click();
+  await categories.locator('button.ol-settings-rail-btn', { hasText: '录音与输入' }).click();
   await dialog.getByRole('switch', { name: '语音唤醒听写', exact: true }).click();
-  await categories.getByRole('button', { name: 'AI 服务与模型', exact: true }).click();
+  await categories.locator('button.ol-settings-rail-btn', { hasText: 'AI 服务与模型' }).click();
   await expect(models).toBeDisabled();
 });
