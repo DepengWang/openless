@@ -68,6 +68,8 @@ export interface LiveTranscriptPillProps {
   confirmLabel?: string;
   controlSize?: number;
   fontSize?: number;
+  /** Keep the pill at `maxWidth` and scroll the text through it like a marquee. */
+  fixedWidth?: boolean;
 }
 
 const FONT_SIZE = 16;
@@ -103,6 +105,7 @@ export interface CapsuleTranscriptRailProps {
   maxWidth: number;
   height?: number;
   fontSize?: number;
+  fixedWidth?: boolean;
 }
 
 /** Transcript is deliberately a sibling rail: the capsule body remains responsible for audio feedback and controls. */
@@ -113,6 +116,7 @@ export function CapsuleTranscriptRail({
   maxWidth,
   height = DEFAULT_PILL_HEIGHT,
   fontSize = FONT_SIZE,
+  fixedWidth = false,
 }: CapsuleTranscriptRailProps) {
   const liveText = text.trim();
   if (!liveText) return null;
@@ -125,6 +129,7 @@ export function CapsuleTranscriptRail({
         maxWidth={maxWidth}
         height={height}
         fontSize={fontSize}
+        fixedWidth={fixedWidth}
       />
     </div>
   );
@@ -147,6 +152,15 @@ export function CapsuleTranscriptOverlay() {
   const transcriptRef = useRef<TranscriptViewState>(createTranscriptViewState());
   const stateRef = useRef<CapsuleState>('idle');
   const snapshotRetryDelays = [0, 16, 32, 64, 128, 256] as const;
+  // The host sizes this HWND (a third of the screen for Siri / Classic); follow it.
+  const [railWidth, setRailWidth] = useState(() =>
+    typeof window === 'undefined' ? 460 : window.innerWidth,
+  );
+  useEffect(() => {
+    const onResize = () => setRailWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -267,9 +281,10 @@ export function CapsuleTranscriptOverlay() {
         text={liveText}
         fontSize={typeless ? fontSize / 0.447 : fontSize}
         tone={typeless ? 'dark' : 'frost'}
-        stageWidth={460}
-        maxWidth={440}
+        stageWidth={typeless ? 460 : Math.max(460, railWidth)}
+        maxWidth={typeless ? 440 : Math.max(440, railWidth - 20)}
         height={railHeight}
+        fixedWidth={!typeless}
       />
       {translation && !selectionPolish && style === 'classic' && <CapsuleTranslationBadge />}
       {translation && !selectionPolish && typeless && (
@@ -296,6 +311,7 @@ export function LiveTranscriptPill({
   confirmLabel,
   controlSize = 28,
   fontSize = FONT_SIZE,
+  fixedWidth = false,
 }: LiveTranscriptPillProps) {
   const reduceMotion = useReducedMotion();
   const hasControls = Boolean(onCancel || onConfirm);
@@ -347,21 +363,24 @@ export function LiveTranscriptPill({
     () => planBirthDelays(renderUnits.map((unit) => unit.born)),
     [renderUnits],
   );
-  const plan = useMemo(
-    () =>
-      planCapsuleInsertMotion({
-        stageWidth,
-        contentWidth,
-        originX,
-        minWidth: pillMinWidth,
-        maxWidth,
-        padX,
-      }),
-    [stageWidth, contentWidth, originX, pillMinWidth, maxWidth, padX],
-  );
+  const plan = useMemo(() => {
+    if (fixedWidth) {
+      const left = (stageWidth - maxWidth) / 2;
+      return { width: maxWidth, left, rightEdge: left + maxWidth, widthDelayMs: 0, recenterDelayMs: 0 };
+    }
+    return planCapsuleInsertMotion({
+      stageWidth,
+      contentWidth,
+      originX,
+      minWidth: pillMinWidth,
+      maxWidth,
+      padX,
+    });
+  }, [fixedWidth, stageWidth, contentWidth, originX, pillMinWidth, maxWidth, padX]);
 
-  const widthMv = useMotionValue(pillMinWidth);
-  const rightEdgeMv = useMotionValue(stageWidth / 2 + pillMinWidth / 2);
+  const initialWidth = fixedWidth ? maxWidth : pillMinWidth;
+  const widthMv = useMotionValue(initialWidth);
+  const rightEdgeMv = useMotionValue(stageWidth / 2 + initialWidth / 2);
   // Delayed recentering may otherwise push a large batch beyond the native
   // WebView's left edge. Constrain the rendered frame, not spring momentum.
   const visibleRightMv = useTransform([rightEdgeMv, widthMv], ([right, width]) =>
