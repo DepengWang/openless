@@ -306,7 +306,10 @@ test('playback echo cancellation is opt-in and does not change output muting', a
   await expect(cancellation).toBeChecked();
   await expect(mute).toHaveAttribute('aria-checked', String(muted));
   await dialog.getByRole('button', { name: '外观与语言', exact: true }).click();
-  await dialog.getByRole('button', { name: '录音与输入', exact: true }).click();
+  await dialog
+    .getByRole('navigation', { name: '设置分类' })
+    .locator('button.ol-settings-rail-btn', { hasText: '录音与输入' })
+    .click();
   await expect(cancellation).toBeChecked();
   await cancellation.scrollIntoViewIfNeeded();
   await page.screenshot({ path: testInfo.outputPath('playback-echo-cancellation.png') });
