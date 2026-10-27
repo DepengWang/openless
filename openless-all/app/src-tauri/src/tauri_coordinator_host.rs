@@ -107,6 +107,11 @@ fn capsule_transcript_rail_position(
     }
 }
 
+/// Logical height of the Siri enhanced transcript band: the 40px Siri rail plus a third. Must
+/// match `SIRI_ENHANCED_RAIL_HEIGHT` in `LiveTranscriptPill.tsx`.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const SIRI_ENHANCED_RAIL_HEIGHT: f64 = 54.0;
+
 /// Physical `(x, width)` of the Siri enhanced transcript rail: half of the monitor (never
 /// narrower than the capsule), centred on the capsule and kept on screen, so the marquee has the
 /// same length every time it appears on that screen.
@@ -162,19 +167,23 @@ fn position_rail_for_capsule<R: tauri::Runtime>(
             ))
         })
         .flatten();
-    let x = if let Some((x, width)) = wide {
+    let (x, top_offset) = if let Some((x, width)) = wide {
+        // A third taller band; grow it upward so the gap above the capsule stays the same.
         rail.set_size(tauri::PhysicalSize::new(
             width.max(1) as u32,
-            (position.height * scale).round().max(1.0) as u32,
+            (SIRI_ENHANCED_RAIL_HEIGHT * scale).round().max(1.0) as u32,
         ))?;
-        x
+        (
+            x,
+            position.top_offset - (SIRI_ENHANCED_RAIL_HEIGHT - position.height),
+        )
     } else {
         rail.set_size(tauri::LogicalSize::new(position.width, position.height))?;
-        capsule_origin.x
+        (capsule_origin.x, position.top_offset)
     };
     rail.set_position(tauri::PhysicalPosition::new(
         x,
-        capsule_origin.y + (position.top_offset * scale).round() as i32,
+        capsule_origin.y + (top_offset * scale).round() as i32,
     ))?;
     // Positioning happens on every streaming frame, but presentation must happen only on a
     // hidden-to-visible transition. Re-showing the dedicated rail for each transcript character

@@ -101,6 +101,12 @@
   width: 100%;
 }
 
+/* Siri enhanced band is a third taller (54px, SIRI_ENHANCED_RAIL_HEIGHT). */
+.ol-capsule-transcript-overlay[data-style='siri'][data-enhanced='true'],
+.ol-capsule-transcript-overlay[data-style='siri'][data-enhanced='true'] .ol-capsule-transcript-rail {
+  height: 54px;
+}
+
 .ol-capsule-transcript-overlay--typeless {
   width: 460px;
   zoom: 0.447;
@@ -433,11 +439,11 @@
   box-shadow: none;
   -webkit-mask-image:
     linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent),
-    linear-gradient(to bottom, transparent, #000 9px, #000 calc(100% - 9px), transparent);
+    linear-gradient(to bottom, transparent, #000 12px, #000 calc(100% - 12px), transparent);
   -webkit-mask-composite: source-in;
   mask-image:
     linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent),
-    linear-gradient(to bottom, transparent, #000 9px, #000 calc(100% - 9px), transparent);
+    linear-gradient(to bottom, transparent, #000 12px, #000 calc(100% - 12px), transparent);
   mask-composite: intersect;
 }
 

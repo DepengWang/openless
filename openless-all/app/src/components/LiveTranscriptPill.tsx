@@ -78,6 +78,8 @@ export interface LiveTranscriptPillProps {
 const FONT_SIZE = 16;
 /** Matches the horizontal feather of the enhanced pill in CapsuleStyles.css. */
 const SIRI_ENHANCED_FEATHER_PX = 40;
+/** Siri enhanced band height: the 40px Siri rail plus a third. */
+const SIRI_ENHANCED_RAIL_HEIGHT = 54;
 const FONT_WEIGHT = 500;
 const DEFAULT_PILL_HEIGHT = 40;
 
@@ -281,7 +283,8 @@ export function CapsuleTranscriptOverlay() {
   const liveText = visibleCapsuleTranscript(text, enabled, state, selectionPolish);
   const typeless = style === 'typeless';
   const enhanced = style === 'siri' && siriEnhanced;
-  const railHeight = getCapsuleTranscriptRailHeight(style);
+  // Enhanced: a third taller band; must match SIRI_ENHANCED_RAIL_HEIGHT in the Tauri host.
+  const railHeight = enhanced ? SIRI_ENHANCED_RAIL_HEIGHT : getCapsuleTranscriptRailHeight(style);
   // Enhanced: the overlay spans the whole (wider) HWND so the pill and the text share one frame.
   const stageWidth = enhanced ? Math.max(460, railWidth) : 460;
   return (
