@@ -293,3 +293,23 @@ test('voice activation opens model setup without leaving the multimodal pipeline
   await categories.locator('button.ol-settings-rail-btn', { hasText: 'AI 服务与模型' }).click();
   await expect(models).toBeDisabled();
 });
+
+test('playback echo cancellation is opt-in and does not change output muting', async ({
+  page,
+}, testInfo) => {
+  const dialog = await openSettings(page);
+  const cancellation = dialog.getByRole('switch', { name: '播放回声抑制', exact: true });
+  const mute = dialog.getByRole('switch', { name: '录音时静音', exact: true });
+  await expect(cancellation).not.toBeChecked();
+  const muted = await mute.isChecked();
+  await cancellation.click();
+  await expect(cancellation).toBeChecked();
+  await expect(mute).toHaveAttribute('aria-checked', String(muted));
+  await dialog.getByRole('button', { name: '外观与语言', exact: true }).click();
+  await dialog.getByRole('button', { name: '录音与输入', exact: true }).click();
+  await expect(cancellation).toBeChecked();
+  await cancellation.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('playback-echo-cancellation.png') });
+  await cancellation.click();
+  await expect(cancellation).not.toBeChecked();
+});
