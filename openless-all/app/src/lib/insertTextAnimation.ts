@@ -45,13 +45,18 @@ export const SIRI_ENHANCED_GLYPH_MOTION = {
   bornScale: 1.3,
   focusEase: [0.6, 0, 0.3, 1],
   /**
-   * When speech ends (the AI polish step), the whole line blurs together, then comes back into
-   * focus glyph by glyph from left to right; settleSweepMs runs from the first glyph starting to
-   * focus until the last one is sharp.
+   * When speech ends (the AI polish step), the whole line blurs together and breathes softly
+   * until polishing completes, then comes back into focus glyph by glyph from left to right;
+   * settleSweepMs runs from the first glyph starting to focus until the last one is sharp.
    */
   settleBlurPx: 4,
   settleScale: 1.08,
   settleBlurInMs: 160,
+  /** Breathing while waiting: blur and scale ease between the settle values and these. */
+  breatheBlurPx: 1.5,
+  breatheScale: 1.05,
+  /** One full breath (blurred → lighter → blurred). */
+  breatheMs: 1800,
   settleFocusMs: 300,
   settleSweepMs: 1100,
   /** Render window for the wide marquee pill (the default 64 glyphs leave its left side empty). */
