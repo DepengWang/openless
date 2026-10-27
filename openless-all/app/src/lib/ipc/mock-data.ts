@@ -146,6 +146,8 @@ export let mockSettings: UserPreferences = {
   autoUpdateCheck: true,
   historyMaxEntries: null,
   recordAudioForDebug: false,
+  debugArchiveProcessed: false,
+  debugArchiveRaw: false,
   audioRecordingMaxEntries: null,
   quickNoteExportDirectory: '',
   marketplaceBaseUrl: 'https://apic.openless.top',
