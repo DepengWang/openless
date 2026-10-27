@@ -107,22 +107,6 @@ fn capsule_transcript_rail_position(
     }
 }
 
-/// Physical `(x, width)` of a Siri / Classic transcript rail: a third of the monitor (never
-/// narrower than the capsule), centred on the capsule and kept on screen, so the marquee has the
-/// same length every time it appears on that screen.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-fn wide_rail_span(
-    capsule_center_x: i32,
-    capsule_width: i32,
-    monitor_left: i32,
-    monitor_width: i32,
-) -> (i32, i32) {
-    let width = (monitor_width / 3).max(capsule_width).min(monitor_width.max(1));
-    let x = (capsule_center_x - width / 2)
-        .clamp(monitor_left, (monitor_left + monitor_width - width).max(monitor_left));
-    (x, width)
-}
-
 /// Places and shows (or hides) a transcript rail for the capsule whose outer origin is
 /// `capsule_origin`. Used for the primary rail and for every monitor's rail mirror, so the
 /// rail always sits on the same capsule it belongs to.
@@ -143,28 +127,9 @@ fn position_rail_for_capsule<R: tauri::Runtime>(
         return Ok(());
     };
     rail.set_ignore_cursor_events(true)?;
-    let capsule_width = (position.width * scale).round() as i32;
-    let (x, width) = match style {
-        CapsuleStyle::Siri | CapsuleStyle::Classic => {
-            let center_x = capsule_origin.x + capsule_width / 2;
-            match app.monitor_from_point(f64::from(center_x), f64::from(capsule_origin.y)) {
-                Ok(Some(monitor)) => wide_rail_span(
-                    center_x,
-                    capsule_width,
-                    monitor.position().x,
-                    monitor.size().width as i32,
-                ),
-                _ => (capsule_origin.x, capsule_width),
-            }
-        }
-        CapsuleStyle::Typeless => (capsule_origin.x, capsule_width),
-    };
-    rail.set_size(tauri::PhysicalSize::new(
-        width.max(1) as u32,
-        (position.height * scale).round().max(1.0) as u32,
-    ))?;
+    rail.set_size(tauri::LogicalSize::new(position.width, position.height))?;
     rail.set_position(tauri::PhysicalPosition::new(
-        x,
+        capsule_origin.x,
         capsule_origin.y + (position.top_offset * scale).round() as i32,
     ))?;
     // Positioning happens on every streaming frame, but presentation must happen only on a
@@ -2600,18 +2565,6 @@ mod tests {
             capsule_window_action(false, false, CapsuleState::Recording),
             CapsuleWindowAction::HideCapsule
         );
-    }
-
-    #[test]
-    fn wide_rail_spans_a_third_of_the_monitor_centred_and_on_screen() {
-        // 2560 px monitor at x = 0, 460 px capsule centred at 1280.
-        assert_eq!(super::wide_rail_span(1280, 460, 0, 2560), (854, 853));
-        // A capsule near the right edge keeps the rail fully on screen.
-        assert_eq!(super::wide_rail_span(2500, 460, 0, 2560), (1707, 853));
-        // A monitor left of the primary (negative origin) clamps to its own left edge.
-        assert_eq!(super::wide_rail_span(-2000, 460, -2048, 1536), (-2048, 512));
-        // Never narrower than the capsule on a small screen.
-        assert_eq!(super::wide_rail_span(600, 460, 0, 1200), (370, 460));
     }
 
     #[test]

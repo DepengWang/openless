@@ -30,7 +30,6 @@ import {
 } from '../lib/backendEvent';
 import { capsuleTranscriptFontSize, visibleCapsuleTranscript } from '../lib/capsuleTranscript';
 import { getCapsuleTranscriptRailHeight } from '../lib/capsuleLayout';
-import { planBirthDelays } from '../lib/typewriterText';
 import { getSettings } from '../lib/ipc/settings';
 import { getCapsuleSnapshot, isTauri } from '../lib/ipc';
 import type {
@@ -68,8 +67,6 @@ export interface LiveTranscriptPillProps {
   confirmLabel?: string;
   controlSize?: number;
   fontSize?: number;
-  /** Keep the pill at `maxWidth` and scroll the text through it like a marquee. */
-  fixedWidth?: boolean;
 }
 
 const FONT_SIZE = 16;
@@ -105,7 +102,6 @@ export interface CapsuleTranscriptRailProps {
   maxWidth: number;
   height?: number;
   fontSize?: number;
-  fixedWidth?: boolean;
 }
 
 /** Transcript is deliberately a sibling rail: the capsule body remains responsible for audio feedback and controls. */
@@ -116,7 +112,6 @@ export function CapsuleTranscriptRail({
   maxWidth,
   height = DEFAULT_PILL_HEIGHT,
   fontSize = FONT_SIZE,
-  fixedWidth = false,
 }: CapsuleTranscriptRailProps) {
   const liveText = text.trim();
   if (!liveText) return null;
@@ -129,7 +124,6 @@ export function CapsuleTranscriptRail({
         maxWidth={maxWidth}
         height={height}
         fontSize={fontSize}
-        fixedWidth={fixedWidth}
       />
     </div>
   );
@@ -152,15 +146,6 @@ export function CapsuleTranscriptOverlay() {
   const transcriptRef = useRef<TranscriptViewState>(createTranscriptViewState());
   const stateRef = useRef<CapsuleState>('idle');
   const snapshotRetryDelays = [0, 16, 32, 64, 128, 256] as const;
-  // The host sizes this HWND (a third of the screen for Siri / Classic); follow it.
-  const [railWidth, setRailWidth] = useState(() =>
-    typeof window === 'undefined' ? 460 : window.innerWidth,
-  );
-  useEffect(() => {
-    const onResize = () => setRailWidth(window.innerWidth);
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -281,10 +266,9 @@ export function CapsuleTranscriptOverlay() {
         text={liveText}
         fontSize={typeless ? fontSize / 0.447 : fontSize}
         tone={typeless ? 'dark' : 'frost'}
-        stageWidth={typeless ? 460 : Math.max(460, railWidth)}
-        maxWidth={typeless ? 440 : Math.max(440, railWidth - 20)}
+        stageWidth={460}
+        maxWidth={440}
         height={railHeight}
-        fixedWidth={!typeless}
       />
       {translation && !selectionPolish && style === 'classic' && <CapsuleTranslationBadge />}
       {translation && !selectionPolish && typeless && (
@@ -311,7 +295,6 @@ export function LiveTranscriptPill({
   confirmLabel,
   controlSize = 28,
   fontSize = FONT_SIZE,
-  fixedWidth = false,
 }: LiveTranscriptPillProps) {
   const reduceMotion = useReducedMotion();
   const hasControls = Boolean(onCancel || onConfirm);
@@ -358,29 +341,21 @@ export function LiveTranscriptPill({
     () => planCharDelays(widths, originIndex, insertedCount),
     [widths, originIndex, insertedCount],
   );
-  // Layout moves once per ASR burst (above); the burst's new glyphs then ink in one by one.
-  const birthDelays = useMemo(
-    () => planBirthDelays(renderUnits.map((unit) => unit.born)),
-    [renderUnits],
+  const plan = useMemo(
+    () =>
+      planCapsuleInsertMotion({
+        stageWidth,
+        contentWidth,
+        originX,
+        minWidth: pillMinWidth,
+        maxWidth,
+        padX,
+      }),
+    [stageWidth, contentWidth, originX, pillMinWidth, maxWidth, padX],
   );
-  const plan = useMemo(() => {
-    if (fixedWidth) {
-      const left = (stageWidth - maxWidth) / 2;
-      return { width: maxWidth, left, rightEdge: left + maxWidth, widthDelayMs: 0, recenterDelayMs: 0 };
-    }
-    return planCapsuleInsertMotion({
-      stageWidth,
-      contentWidth,
-      originX,
-      minWidth: pillMinWidth,
-      maxWidth,
-      padX,
-    });
-  }, [fixedWidth, stageWidth, contentWidth, originX, pillMinWidth, maxWidth, padX]);
 
-  const initialWidth = fixedWidth ? maxWidth : pillMinWidth;
-  const widthMv = useMotionValue(initialWidth);
-  const rightEdgeMv = useMotionValue(stageWidth / 2 + initialWidth / 2);
+  const widthMv = useMotionValue(pillMinWidth);
+  const rightEdgeMv = useMotionValue(stageWidth / 2 + pillMinWidth / 2);
   // Delayed recentering may otherwise push a large batch beyond the native
   // WebView's left edge. Constrain the rendered frame, not spring momentum.
   const visibleRightMv = useTransform([rightEdgeMv, widthMv], ([right, width]) =>
@@ -500,7 +475,7 @@ export function LiveTranscriptPill({
           >
             <TranscriptGlyph
               text={unit.text}
-              delay={unit.born ? (birthDelays[index] ?? 0) : (delays[index] ?? 0)}
+              delay={delays[index] ?? 0}
               reduceMotion={Boolean(reduceMotion)}
             />
           </motion.span>
@@ -547,10 +522,9 @@ function TranscriptGlyph({
                 delay: birthDelay / 1000,
               },
               y: { type: 'spring', ...INSERT_TEXT_MOTION.charSpring, delay: birthDelay / 1000 },
-              // Expo-out: most of the blur clears in the first few frames, then settles.
               filter: {
-                duration: INSERT_TEXT_MOTION.bornFocusMs / 1000,
-                ease: [0.16, 1, 0.3, 1],
+                duration: INSERT_TEXT_MOTION.bornFadeMs / 1000,
+                ease: [0.22, 0.61, 0.36, 1],
                 delay: birthDelay / 1000,
               },
             }

@@ -395,8 +395,7 @@
 }
 
 .ol-live-transcript-pill[data-tone='frost'] {
-  /* Lighter than the capsule body so the long transcript bar does not dominate the screen. */
-  background: color-mix(in srgb, var(--ol-capsule-pill-bg) 72%, transparent);
+  background: var(--ol-capsule-pill-bg);
   border: 1px solid var(--ol-capsule-pill-border);
   box-shadow: var(--ol-capsule-pill-shadow), var(--ol-capsule-pill-inset);
 }
