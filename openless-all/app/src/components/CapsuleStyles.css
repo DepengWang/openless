@@ -538,21 +538,6 @@
   will-change: transform, opacity, filter;
 }
 
-/* Siri enhanced ink bleed: a same-colour halo spreads out and fades while the glyph focuses.
-   Duration matches SIRI_ENHANCED_GLYPH_MOTION.inkBleedMs; the delay is set per glyph. */
-.ol-live-transcript-char[data-ink='true'] {
-  animation: ol-ink-bleed 450ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
-}
-
-@keyframes ol-ink-bleed {
-  from {
-    text-shadow: 0 0 8px color-mix(in srgb, currentColor 45%, transparent);
-  }
-  to {
-    text-shadow: 0 0 16px color-mix(in srgb, currentColor 0%, transparent);
-  }
-}
-
 .ol-live-transcript-sr {
   position: absolute;
   width: 1px;
@@ -572,8 +557,7 @@
   .ol-capsule-waveform > span {
     transition: none;
   }
-  .ol-typeless-capsule[data-processing='true'] .ol-typeless-status > span,
-  .ol-live-transcript-char[data-ink='true'] {
+  .ol-typeless-capsule[data-processing='true'] .ol-typeless-status > span {
     animation: none;
   }
   .ol-live-transcript-pill,
