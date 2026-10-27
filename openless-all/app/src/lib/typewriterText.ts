@@ -7,7 +7,7 @@
 export const TYPEWRITER = {
   /**
    * Fastest gap between two glyph births. Kept well under the glyph focus animation
-   * (~460 ms) so consecutive glyphs overlap into a wave instead of flashing one by one.
+   * (~380 ms) so consecutive glyphs overlap into a wave instead of flashing one by one.
    */
   minStepMs: 45,
   /** Slowest gap, used when only a few glyphs are born in a burst. */

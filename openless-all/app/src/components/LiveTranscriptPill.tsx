@@ -419,7 +419,26 @@ export function LiveTranscriptPill({
     [visibleRightMv, widthMv],
     ([right, width]) => Number(right) - Number(width),
   );
-  const trackRightMv = useTransform(visibleRightMv, (right) => stageWidth - Number(right) + padX);
+  // Siri enhanced: while the line is shorter than the band, shift the right-anchored track left by
+  // half the free space so the text sits centred and grows outward both ways; once it fills the
+  // band the offset reaches 0 and the line scrolls as a marquee.
+  const centerOffset = fixedWidth ? Math.max(0, (maxWidth - padX * 2 - contentWidth) / 2) : 0;
+  const centerOffsetMv = useMotionValue(centerOffset);
+  useEffect(() => {
+    if (reduceMotion) {
+      centerOffsetMv.set(centerOffset);
+      return undefined;
+    }
+    const anim = animate(centerOffsetMv, centerOffset, {
+      type: 'spring',
+      ...INSERT_TEXT_MOTION.shiftSpring,
+    });
+    return () => anim.stop();
+  }, [centerOffset, centerOffsetMv, reduceMotion]);
+  const trackRightMv = useTransform(
+    [visibleRightMv, centerOffsetMv],
+    ([right, offset]) => stageWidth - Number(right) + padX + Number(offset),
+  );
 
   const trackWidthMv = useTransform(widthMv, (width) => Math.max(1, width - padX * 2));
 
