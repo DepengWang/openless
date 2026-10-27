@@ -47,10 +47,10 @@ export const SIRI_ENHANCED_GLYPH_MOTION = {
   /** When speech ends, a blur-to-focus wave sweeps the line left to right once. */
   settleBlurPx: 4,
   settleScale: 1.08,
-  settleMs: 560,
+  settleMs: 700,
   /** Time for the wave to cross the whole line; per-glyph step is clamped to settleStepMs. */
-  settleSweepMs: 700,
-  settleStepMs: [12, 40],
+  settleSweepMs: 1100,
+  settleStepMs: [18, 60],
   /** Render window for the wide marquee pill (the default 64 glyphs leave its left side empty). */
   maxUnits: 160,
 } as const;
