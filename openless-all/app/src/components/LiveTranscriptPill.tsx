@@ -30,6 +30,7 @@ import {
 } from '../lib/backendEvent';
 import { capsuleTranscriptFontSize, visibleCapsuleTranscript } from '../lib/capsuleTranscript';
 import { getCapsuleTranscriptRailHeight } from '../lib/capsuleLayout';
+import { useTypewriterText } from '../lib/typewriterText';
 import { getSettings } from '../lib/ipc/settings';
 import { getCapsuleSnapshot, isTauri } from '../lib/ipc';
 import type {
@@ -114,11 +115,13 @@ export function CapsuleTranscriptRail({
   fontSize = FONT_SIZE,
 }: CapsuleTranscriptRailProps) {
   const liveText = text.trim();
+  // Streaming ASR arrives in bursts; reveal them character by character.
+  const typedText = useTypewriterText(liveText, !useReducedMotion());
   if (!liveText) return null;
   return (
     <div className="ol-capsule-transcript-rail" data-tone={tone} data-transcript-rail="true">
       <LiveTranscriptPill
-        text={liveText}
+        text={typedText}
         tone={tone}
         stageWidth={stageWidth}
         maxWidth={maxWidth}
