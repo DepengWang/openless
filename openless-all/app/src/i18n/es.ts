@@ -1537,6 +1537,7 @@ export const es: typeof zhCN = {
         'Cambiar del modo de todas las pantallas requiere reiniciar para cerrar las cápsulas anteriores. ¿Reiniciar ahora?',
       capsuleStyleLabel: 'Estilo de cápsula',
       capsuleStyleSiri: 'Estilo luminoso Siri',
+      capsuleStyleSiriEnhanced: 'Siri mejorado',
       capsuleStyleClassic: 'Estilo predeterminado de OpenLess',
       stableTranscriptionLabel: 'Modo estable (grabar y luego transcribir)',
       stableTranscriptionDesc:

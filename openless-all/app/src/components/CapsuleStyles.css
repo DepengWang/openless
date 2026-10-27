@@ -94,6 +94,13 @@
   height: 40px;
 }
 
+/* Siri enhanced: the host widens this HWND to a third of the screen. Span all of it so the
+   pill and the text track are laid out in the same frame (a fixed 460px overlay inside the
+   wider window put the text off the pill). */
+.ol-capsule-transcript-overlay[data-enhanced='true'] {
+  width: 100%;
+}
+
 .ol-capsule-transcript-overlay--typeless {
   width: 460px;
   zoom: 0.447;
@@ -398,6 +405,11 @@
   background: var(--ol-capsule-pill-bg);
   border: 1px solid var(--ol-capsule-pill-border);
   box-shadow: var(--ol-capsule-pill-shadow), var(--ol-capsule-pill-inset);
+}
+
+/* Siri enhanced: lighter than the capsule body so the long marquee does not dominate the screen. */
+.ol-live-transcript-pill[data-tone='frost'][data-enhanced='true'] {
+  background: color-mix(in srgb, var(--ol-capsule-pill-bg) 72%, transparent);
 }
 
 .ol-live-transcript-pill[data-tone='dark'] {

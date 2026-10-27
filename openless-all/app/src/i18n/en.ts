@@ -1516,6 +1516,7 @@ export const en: typeof zhCN = {
         'Switching from all-screen display requires a restart to clear the previous capsule windows. Restart now?',
       capsuleStyleLabel: 'Capsule style',
       capsuleStyleSiri: 'Shimmer Siri style',
+      capsuleStyleSiriEnhanced: 'Siri enhanced',
       capsuleStyleClassic: 'OpenLess default style',
       stableTranscriptionLabel: 'Stable mode (record, then transcribe)',
       stableTranscriptionDesc:

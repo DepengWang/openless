@@ -605,10 +605,26 @@ export function RecordingInputSection({
           <SettingRow label={t('settings.recording.capsuleStyleLabel')}>
             <div style={{ minWidth: 0 }}>
               <SelectLite
-                value={prefs.capsuleStyle ?? 'siri'}
-                onChange={(next) => savePrefs({ ...prefs, capsuleStyle: next as CapsuleStyle })}
+                value={
+                  (prefs.capsuleStyle ?? 'siri') === 'siri' && prefs.capsuleSiriEnhanced
+                    ? 'siriEnhanced'
+                    : (prefs.capsuleStyle ?? 'siri')
+                }
+                // "Siri enhanced" is Siri plus a device-local flag, so synced devices that do not
+                // know it keep showing plain Siri.
+                onChange={(next) =>
+                  savePrefs(
+                    next === 'siriEnhanced'
+                      ? { ...prefs, capsuleStyle: 'siri', capsuleSiriEnhanced: true }
+                      : { ...prefs, capsuleStyle: next as CapsuleStyle, capsuleSiriEnhanced: false },
+                  )
+                }
                 options={[
                   { value: 'siri', label: t('settings.recording.capsuleStyleSiri') },
+                  {
+                    value: 'siriEnhanced',
+                    label: t('settings.recording.capsuleStyleSiriEnhanced'),
+                  },
                   { value: 'classic', label: t('settings.recording.capsuleStyleClassic') },
                   { value: 'typeless', label: t('settings.recording.capsuleStyleTypeless') },
                 ]}

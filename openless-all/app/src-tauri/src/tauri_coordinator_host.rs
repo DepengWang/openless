@@ -107,16 +107,35 @@ fn capsule_transcript_rail_position(
     }
 }
 
+/// Physical `(x, width)` of the Siri enhanced transcript rail: a third of the monitor (never
+/// narrower than the capsule), centred on the capsule and kept on screen, so the marquee has the
+/// same length every time it appears on that screen.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn wide_rail_span(
+    capsule_center_x: i32,
+    capsule_width: i32,
+    monitor_left: i32,
+    monitor_width: i32,
+) -> (i32, i32) {
+    let width = (monitor_width / 3).max(capsule_width).min(monitor_width.max(1));
+    let x = (capsule_center_x - width / 2)
+        .clamp(monitor_left, (monitor_left + monitor_width - width).max(monitor_left));
+    (x, width)
+}
+
 /// Places and shows (or hides) a transcript rail for the capsule whose outer origin is
 /// `capsule_origin`. Used for the primary rail and for every monitor's rail mirror, so the
-/// rail always sits on the same capsule it belongs to.
+/// rail always sits on the same capsule it belongs to. `siri_enhanced` widens a Siri rail to a
+/// third of the monitor for the enhanced marquee.
 #[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
 fn position_rail_for_capsule<R: tauri::Runtime>(
     app: &AppHandle<R>,
     rail: &tauri::WebviewWindow<R>,
     capsule_origin: tauri::PhysicalPosition<i32>,
     scale: f64,
     style: CapsuleStyle,
+    siri_enhanced: bool,
     translation_active: bool,
     visible: bool,
 ) -> tauri::Result<()> {
@@ -127,9 +146,34 @@ fn position_rail_for_capsule<R: tauri::Runtime>(
         return Ok(());
     };
     rail.set_ignore_cursor_events(true)?;
-    rail.set_size(tauri::LogicalSize::new(position.width, position.height))?;
+    let wide = (style == CapsuleStyle::Siri && siri_enhanced)
+        .then(|| {
+            let capsule_width = (position.width * scale).round() as i32;
+            let center_x = capsule_origin.x + capsule_width / 2;
+            let monitor = app
+                .monitor_from_point(f64::from(center_x), f64::from(capsule_origin.y))
+                .ok()
+                .flatten()?;
+            Some(wide_rail_span(
+                center_x,
+                capsule_width,
+                monitor.position().x,
+                monitor.size().width as i32,
+            ))
+        })
+        .flatten();
+    let x = if let Some((x, width)) = wide {
+        rail.set_size(tauri::PhysicalSize::new(
+            width.max(1) as u32,
+            (position.height * scale).round().max(1.0) as u32,
+        ))?;
+        x
+    } else {
+        rail.set_size(tauri::LogicalSize::new(position.width, position.height))?;
+        capsule_origin.x
+    };
     rail.set_position(tauri::PhysicalPosition::new(
-        capsule_origin.x,
+        x,
         capsule_origin.y + (position.top_offset * scale).round() as i32,
     ))?;
     // Positioning happens on every streaming frame, but presentation must happen only on a
@@ -828,6 +872,8 @@ struct CapsuleWindowState {
     hit_test_mode: AtomicU8,
     transcript_visible: AtomicBool,
     style: AtomicU8,
+    /// Device-local "Siri enhanced" presentation (wide marquee transcript rail).
+    siri_enhanced: AtomicBool,
     display_mode: AtomicU8,
     foreground_monitor: Mutex<Option<crate::capsule_mirrors::MonitorRect>>,
     foreground_session_id: Mutex<Option<String>>,
@@ -853,6 +899,7 @@ impl Default for CapsuleWindowState {
             hit_test_mode: AtomicU8::new(HIT_TEST_MODE_CAPSULE),
             transcript_visible: AtomicBool::new(false),
             style: AtomicU8::new(0),
+            siri_enhanced: AtomicBool::new(false),
             display_mode: AtomicU8::new(0),
             foreground_monitor: Mutex::new(None),
             foreground_session_id: Mutex::new(None),
@@ -1125,6 +1172,7 @@ impl TauriCapsuleWindow {
             main_position,
             scale,
             style,
+            self.state.siri_enhanced.load(Ordering::Relaxed),
             translation_active,
             visible,
         )
@@ -1439,6 +1487,7 @@ impl TauriCapsuleWindow {
                             tauri::PhysicalPosition::new(x, y),
                             monitor.scale,
                             style,
+                            self.state.siri_enhanced.load(Ordering::Relaxed),
                             translation_active,
                             transcript_visible,
                         ) {
@@ -2137,6 +2186,10 @@ impl TauriCoordinatorHost {
         self.capsule.cache_display_mode(mode);
     }
 
+    pub(crate) fn cache_capsule_siri_enhanced(&self, enabled: bool) {
+        self.capsule.siri_enhanced.store(enabled, Ordering::Relaxed);
+    }
+
     pub(crate) fn cache_capsule_style(&self, style: CapsuleStyle) {
         self.capsule.cache_style(style);
         if let Some(capsule) = self.capsule_window() {
@@ -2565,6 +2618,18 @@ mod tests {
             capsule_window_action(false, false, CapsuleState::Recording),
             CapsuleWindowAction::HideCapsule
         );
+    }
+
+    #[test]
+    fn wide_rail_spans_a_third_of_the_monitor_centred_and_on_screen() {
+        // 2560 px monitor at x = 0, 460 px capsule centred at 1280.
+        assert_eq!(super::wide_rail_span(1280, 460, 0, 2560), (854, 853));
+        // A capsule near the right edge keeps the rail fully on screen.
+        assert_eq!(super::wide_rail_span(2500, 460, 0, 2560), (1707, 853));
+        // A monitor left of the primary (negative origin) clamps to its own left edge.
+        assert_eq!(super::wide_rail_span(-2000, 460, -2048, 1536), (-2048, 512));
+        // Never narrower than the capsule on a small screen.
+        assert_eq!(super::wide_rail_span(600, 460, 0, 1200), (370, 460));
     }
 
     #[test]
