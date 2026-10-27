@@ -434,6 +434,13 @@
       transparent calc(100% - 14px),
       rgb(255 255 255 / 18%)
     ),
+    /* Faint Siri-orb hue (blue → violet → pink) so the band reads as part of the Siri glow. */
+    linear-gradient(
+      to right,
+      rgb(59 130 246 / 16%),
+      rgb(139 92 246 / 16%) 50%,
+      rgb(236 72 153 / 16%)
+    ),
     color-mix(in srgb, var(--ol-capsule-pill-bg) 72%, transparent);
   border: none;
   box-shadow: none;
