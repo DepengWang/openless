@@ -94,7 +94,7 @@
   height: 40px;
 }
 
-/* Siri enhanced: the host widens this HWND to a third of the screen. Span all of it so the
+/* Siri enhanced: the host widens this HWND to half of the screen. Span all of it so the
    pill and the text track are laid out in the same frame (a fixed 460px overlay inside the
    wider window put the text off the pill). */
 .ol-capsule-transcript-overlay[data-enhanced='true'] {
@@ -407,9 +407,21 @@
   box-shadow: var(--ol-capsule-pill-shadow), var(--ol-capsule-pill-inset);
 }
 
-/* Siri enhanced: lighter than the capsule body so the long marquee does not dominate the screen. */
+/* Siri enhanced: a lighter, borderless band whose edges feather into the desktop, so the long
+   marquee reads as a soft glow rather than a hard bar. The mask only touches this background
+   layer; the glyph track is a sibling. */
 .ol-live-transcript-pill[data-tone='frost'][data-enhanced='true'] {
   background: color-mix(in srgb, var(--ol-capsule-pill-bg) 72%, transparent);
+  border: none;
+  box-shadow: none;
+  -webkit-mask-image:
+    linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent),
+    linear-gradient(to bottom, transparent, #000 9px, #000 calc(100% - 9px), transparent);
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent),
+    linear-gradient(to bottom, transparent, #000 9px, #000 calc(100% - 9px), transparent);
+  mask-composite: intersect;
 }
 
 .ol-live-transcript-pill[data-tone='dark'] {

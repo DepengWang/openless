@@ -76,6 +76,8 @@ export interface LiveTranscriptPillProps {
 }
 
 const FONT_SIZE = 16;
+/** Matches the horizontal feather of the enhanced pill in CapsuleStyles.css. */
+const SIRI_ENHANCED_FEATHER_PX = 40;
 const FONT_WEIGHT = 500;
 const DEFAULT_PILL_HEIGHT = 40;
 
@@ -153,7 +155,7 @@ export function CapsuleTranscriptOverlay() {
   const [enabled, setEnabled] = useState(true);
   const [fontSize, setFontSize] = useState(14);
   const [siriEnhanced, setSiriEnhanced] = useState(false);
-  // Siri enhanced: the host sizes this HWND to a third of the screen; follow it.
+  // Siri enhanced: the host sizes this HWND to half of the screen; follow it.
   const [railWidth, setRailWidth] = useState(() =>
     typeof window === 'undefined' ? 460 : window.innerWidth,
   );
@@ -328,13 +330,26 @@ export function LiveTranscriptPill({
 }: LiveTranscriptPillProps) {
   const reduceMotion = useReducedMotion();
   const hasControls = Boolean(onCancel || onConfirm);
-  const padX = INSERT_TEXT_MOTION.padX + (hasControls ? controlSize + 6 : 0);
+  // The enhanced pill feathers its outer 40px; keep the glyphs inside the solid part.
+  const padX =
+    (fixedWidth ? SIRI_ENHANCED_FEATHER_PX : INSERT_TEXT_MOTION.padX) +
+    (hasControls ? controlSize + 6 : 0);
   const pillMinWidth = hasControls ? Math.max(minWidth, controlSize * 2 + 72) : minWidth;
-  const [units, setUnits] = useState<InsertUnit[]>(() => diffInsertWindowUnits([], text));
+  // The wide fixed marquee needs more glyphs than the default window to stay filled.
+  const windowOptions = useMemo(
+    () =>
+      fixedWidth
+        ? { ...INSERT_TEXT_RENDER_WINDOW, maxUnits: SIRI_ENHANCED_GLYPH_MOTION.maxUnits }
+        : INSERT_TEXT_RENDER_WINDOW,
+    [fixedWidth],
+  );
+  const [units, setUnits] = useState<InsertUnit[]>(() =>
+    diffInsertWindowUnits([], text, windowOptions),
+  );
   const [seenText, setSeenText] = useState(text);
   if (text !== seenText) {
     setSeenText(text);
-    setUnits((prev) => diffInsertWindowUnits(prev, text));
+    setUnits((prev) => diffInsertWindowUnits(prev, text, windowOptions));
   }
 
   const renderWindow = useMemo(
@@ -344,9 +359,9 @@ export function LiveTranscriptPill({
         (glyph) => measureGlyphWidth(glyph, fontSize),
         maxWidth,
         padX,
-        INSERT_TEXT_RENDER_WINDOW,
+        windowOptions,
       ),
-    [units, fontSize, maxWidth, padX],
+    [units, fontSize, maxWidth, padX, windowOptions],
   );
   const renderUnits = renderWindow.units;
   const widths = renderWindow.widths;
@@ -555,9 +570,10 @@ function TranscriptGlyph({
               opacity: 0,
               y: enhanced ? ink.bornY : INSERT_TEXT_MOTION.bornY,
               filter: `blur(${enhanced ? ink.bornBlurPx : INSERT_TEXT_MOTION.bornBlurPx}px)`,
+              ...(enhanced ? { scale: ink.bornScale } : {}),
             }
       }
-      animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+      animate={{ opacity: 1, y: 0, filter: 'blur(0px)', ...(enhanced ? { scale: 1 } : {}) }}
       transition={
         reduceMotion
           ? { duration: 0 }
@@ -573,6 +589,16 @@ function TranscriptGlyph({
                 ease: enhanced ? [...ink.focusEase] : [0.22, 0.61, 0.36, 1],
                 delay: birthDelay / 1000,
               },
+              // Ink settles: the oversized blur contracts to the glyph as it comes into focus.
+              ...(enhanced
+                ? {
+                    scale: {
+                      duration: ink.focusMs / 1000,
+                      ease: [...ink.focusEase],
+                      delay: birthDelay / 1000,
+                    },
+                  }
+                : {}),
             }
       }
     >
