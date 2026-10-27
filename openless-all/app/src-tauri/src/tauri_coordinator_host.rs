@@ -21,6 +21,9 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::types::{CapsuleDisplayMode, CapsulePayload, CapsuleState, CapsuleStyle};
 
+/// The Tauri event-loop thread, recorded by [`TauriCoordinatorHost::bind`].
+static MAIN_THREAD: OnceLock<std::thread::ThreadId> = OnceLock::new();
+
 static CAPSULE_SUPPRESSED_BY_TOGGLE_LOGGED: AtomicBool = AtomicBool::new(false);
 static CAPSULE_FIRST_SHOW_LOGGED: AtomicBool = AtomicBool::new(false);
 static CAPSULE_NO_ACTIVATE_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
@@ -1945,6 +1948,8 @@ impl TauriCoordinatorHost {
     }
 
     pub(crate) fn bind(&self, app: AppHandle) {
+        // `bind` runs in Tauri's `setup`, on the event-loop thread.
+        let _ = MAIN_THREAD.set(std::thread::current().id());
         #[cfg(not(mobile))]
         if crate::desktop_resources::active() {
             match crate::native_capsule::NativeCapsule::new(app.clone()) {
@@ -1959,6 +1964,27 @@ impl TauriCoordinatorHost {
             }
         }
         *self.app.lock() = Some(app);
+    }
+
+    /// Runs `task` on the event-loop thread.
+    ///
+    /// Tauri handles (`AppHandle`, windows, `TauriCapsuleWindow`) share the event loop through a
+    /// non-atomic `Rc`, so cloning or dropping one off the main thread races the main thread's
+    /// refcount and eventually frees the event loop while it runs (heap corruption 0xc0000374).
+    /// This posts through the bound handle by reference instead of cloning it on the caller.
+    pub(crate) fn on_main_thread<F>(&self, task: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        if MAIN_THREAD.get() == Some(&std::thread::current().id()) {
+            task();
+            return;
+        }
+        // On a worker thread `run_on_main_thread` only queues through the event-loop proxy, so
+        // holding the slot lock here cannot re-enter it.
+        if let Some(app) = self.app.lock().as_ref() {
+            let _ = app.run_on_main_thread(task);
+        }
     }
 
     /// `(available, last_error)` for the disposable capsule sidecar.
