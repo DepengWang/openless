@@ -1,4 +1,11 @@
-import { animate, motion, useMotionValue, useReducedMotion, useTransform } from 'framer-motion';
+import {
+  animate,
+  motion,
+  useMotionValue,
+  useReducedMotion,
+  useTransform,
+  type Easing,
+} from 'framer-motion';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import './CapsuleStyles.css';
@@ -402,14 +409,12 @@ export function LiveTranscriptPill({
     () => (enhancedMotion ? planBirthDelays(renderUnits.map((unit) => unit.born)) : null),
     [enhancedMotion, renderUnits],
   );
-  // Enhanced, speech ended: stagger a blur-to-focus wave across the line, left to right.
+  // Enhanced, speech ended: the line blurs together, then glyphs focus left to right so the last
+  // one is sharp settleSweepMs after the first starts.
   const settleStepMs = useMemo(() => {
     const ink = SIRI_ENHANCED_GLYPH_MOTION;
-    const count = Math.max(1, renderUnits.length);
-    return Math.min(
-      ink.settleStepMs[1],
-      Math.max(ink.settleStepMs[0], Math.round(ink.settleSweepMs / count)),
-    );
+    const count = renderUnits.length;
+    return count > 1 ? (ink.settleSweepMs - ink.settleFocusMs) / (count - 1) : 0;
   }, [renderUnits.length]);
   const plan = useMemo(() => {
     if (fixedWidth) {
@@ -574,7 +579,7 @@ export function LiveTranscriptPill({
               }
               reduceMotion={Boolean(reduceMotion)}
               enhanced={enhancedMotion}
-              settleDelay={enhancedMotion && settled ? index * settleStepMs : null}
+              settleFocusAt={enhancedMotion && settled ? index * settleStepMs : null}
             />
           </motion.span>
         ))}
@@ -592,32 +597,35 @@ function TranscriptGlyph({
   delay,
   reduceMotion,
   enhanced = false,
-  settleDelay = null,
+  settleFocusAt = null,
 }: {
   text: string;
   delay: number;
   reduceMotion: boolean;
   enhanced?: boolean;
-  /** Siri enhanced, speech ended: this glyph's turn in the blur-to-focus wave. */
-  settleDelay?: number | null;
+  /** Siri enhanced, speech ended: ms after the line has blurred when this glyph starts to focus. */
+  settleFocusAt?: number | null;
 }) {
   const [birthDelay] = useState(delay);
   const ink = SIRI_ENHANCED_GLYPH_MOTION;
-  if (enhanced && !reduceMotion && settleDelay !== null) {
+  if (enhanced && !reduceMotion && settleFocusAt !== null) {
+    // All glyphs blur together, hold, then focus in their left-to-right turn.
+    const focusStart = ink.settleBlurInMs + settleFocusAt;
+    const total = focusStart + ink.settleFocusMs;
     const settle = {
-      duration: ink.settleMs / 1000,
-      times: [0, 0.35, 1],
-      ease: 'easeInOut' as const,
-      delay: settleDelay / 1000,
+      duration: total / 1000,
+      times: [0, ink.settleBlurInMs / total, focusStart / total, 1],
+      ease: ['easeOut', 'linear', 'easeInOut'] as Easing[],
     };
+    const blurred = `blur(${ink.settleBlurPx}px)`;
     return (
       <motion.span
         className="ol-live-transcript-char"
         animate={{
           opacity: 1,
           y: 0,
-          filter: ['blur(0px)', `blur(${ink.settleBlurPx}px)`, 'blur(0px)'],
-          scale: [1, ink.settleScale, 1],
+          filter: ['blur(0px)', blurred, blurred, 'blur(0px)'],
+          scale: [1, ink.settleScale, ink.settleScale, 1],
         }}
         transition={{ opacity: { duration: 0.2 }, y: { duration: 0.2 }, filter: settle, scale: settle }}
       >
