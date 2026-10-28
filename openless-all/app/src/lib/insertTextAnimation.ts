@@ -76,9 +76,9 @@ export const SIRI_ENHANCED_GLYPH_MOTION = {
   riseY: 85,
   /** closeWidth × riseScale ≈ a 30px dot at the wave's centre. */
   riseScale: 0.54,
-  /** Slow out of the centre, quicker through the middle, soft landing. */
+  /** Constant speed, so the dot clears the wave instead of lingering behind it. */
   openMs: 1000,
-  openEase: [0.45, 0, 0.2, 1],
+  openEase: [0, 0, 1, 1],
   closeWidth: 56,
   collapseMs: 450,
   sinkDelayMs: 80,
