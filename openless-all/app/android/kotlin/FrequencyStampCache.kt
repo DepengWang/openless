@@ -48,6 +48,7 @@ internal class FrequencyStampCache private constructor(
     }
 
     /** Call alongside the preference write, so a query right after sees it before the listener runs. */
+    @Synchronized
     fun put(key: String, stamp: Stamp) {
         ensureLoaded()
         store(key, stamp)
@@ -71,6 +72,7 @@ internal class FrequencyStampCache private constructor(
         }
     }
 
+    @Synchronized
     private fun refresh(key: String) {
         if (!loaded) return
         val stamp = parseStamp(preferences.getString(key, null))

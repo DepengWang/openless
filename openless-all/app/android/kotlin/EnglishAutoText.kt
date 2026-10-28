@@ -44,6 +44,13 @@ internal object EnglishAutoText {
         }
     }
 
+    /** Preserve the capitalization already typed when a completion replaces its prefix. */
+    fun candidateText(word: String, typedPrefix: CharSequence, capsLock: Boolean): String = when {
+        capsLock || (typedPrefix.length > 1 && typedPrefix.all { it.isUpperCase() }) -> word.uppercase()
+        typedPrefix.firstOrNull()?.isUpperCase() == true -> word.replaceFirstChar { it.titlecase() }
+        else -> word
+    }
+
     /**
      * A second quick space turns "word " into "word. ". Only right after a
      * letter or digit and its single space — never after punctuation, a

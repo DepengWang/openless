@@ -1,6 +1,7 @@
 package com.openless.app
 
 import android.text.InputType
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -33,6 +34,16 @@ class EnglishAutoTextTest {
         assertFalse(EnglishAutoText.allowsAutoCapitals(text or InputType.TYPE_TEXT_VARIATION_PASSWORD))
         assertFalse(EnglishAutoText.allowsAutoCapitals(text or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD))
         assertFalse(EnglishAutoText.allowsAutoCapitals(InputType.TYPE_CLASS_NUMBER))
+    }
+
+    @Test fun candidatesKeepTheTypedCapitalization() {
+        assertEquals("hello", EnglishAutoText.candidateText("hello", "", capsLock = false))
+        assertEquals("hello", EnglishAutoText.candidateText("hello", "he", capsLock = false))
+        assertEquals("Hello", EnglishAutoText.candidateText("hello", "H", capsLock = false))
+        assertEquals("Hello", EnglishAutoText.candidateText("hello", "He", capsLock = false))
+        assertEquals("HELLO", EnglishAutoText.candidateText("hello", "HE", capsLock = false))
+        assertEquals("HELLO", EnglishAutoText.candidateText("hello", "H", capsLock = true))
+        assertEquals("HELLO", EnglishAutoText.candidateText("hello", "", capsLock = true))
     }
 
     @Test fun doubleSpaceFullStopOnlyRightAfterAWord() {
