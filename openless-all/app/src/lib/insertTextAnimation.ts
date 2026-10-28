@@ -75,14 +75,14 @@ export const SIRI_ENHANCED_GLYPH_MOTION = {
    */
   riseY: 85,
   riseScale: 0.15,
-  openMs: 450,
+  openMs: 750,
   openEase: [0.22, 1, 0.36, 1],
   closeWidth: 56,
-  collapseMs: 300,
-  sinkDelayMs: 60,
-  sinkMs: 380,
+  collapseMs: 450,
+  sinkDelayMs: 80,
+  sinkMs: 600,
   /** How long the last line outlives the transcript: until the sink has finished. */
-  closeMs: 460,
+  closeMs: 680,
 } as const;
 
 export interface InsertUnit {
