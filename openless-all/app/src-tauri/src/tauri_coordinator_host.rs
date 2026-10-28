@@ -1138,8 +1138,21 @@ impl TauriCapsuleWindow {
         translation_active: bool,
         visible: bool,
     ) -> tauri::Result<()> {
-        let Some(rail) = self.rail_window() else {
-            return Ok(());
+        // The rail is destroyed after the system resumes (see `rebuild_capsule_webviews`); build a
+        // fresh one the next time it is needed.
+        let rail = match self.rail_window() {
+            Some(rail) => rail,
+            None if !visible => return Ok(()),
+            None => match crate::capsule_mirrors::ensure_rail_mirror(&self.app, "capsule-rail") {
+                Ok(rail) => {
+                    log::info!("[capsule] transcript rail recreated");
+                    rail
+                }
+                Err(error) => {
+                    log::warn!("[capsule] transcript rail could not be recreated: {error}");
+                    return Ok(());
+                }
+            },
         };
         let scale = capsule.scale_factor().unwrap_or(1.0);
         let main_position = capsule.outer_position()?;
@@ -2059,6 +2072,71 @@ impl TauriCoordinatorHost {
             }
         }
         *self.app.lock() = Some(app);
+        #[cfg(target_os = "windows")]
+        self.spawn_resume_watch();
+    }
+
+    /// After the system sleeps, WebView2 can keep the transparent capsule windows alive but stop
+    /// painting them (no orb, no transcript) until the app restarts. A wall-clock jump much longer
+    /// than the poll interval means the machine was asleep; the capsule WebViews are then rebuilt.
+    #[cfg(target_os = "windows")]
+    fn spawn_resume_watch(&self) {
+        use std::time::{Duration, SystemTime};
+        const POLL: Duration = Duration::from_secs(5);
+        const SLEPT: Duration = Duration::from_secs(30);
+        // Give the display driver a moment after resume before rebuilding the renderers.
+        const SETTLE: Duration = Duration::from_secs(3);
+        let host = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("openless-resume-watch".into())
+            .spawn(move || {
+                let mut last = SystemTime::now();
+                loop {
+                    std::thread::sleep(POLL);
+                    let now = SystemTime::now();
+                    let gap = now.duration_since(last).unwrap_or_default();
+                    last = now;
+                    if gap > SLEPT {
+                        log::info!(
+                            "[capsule] resume detected (clock gap {}s); rebuilding capsule webviews",
+                            gap.as_secs()
+                        );
+                        std::thread::sleep(SETTLE);
+                        last = SystemTime::now();
+                        host.rebuild_capsule_webviews();
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            log::warn!("[capsule] resume watch could not start: {error}");
+        }
+    }
+
+    /// Rebuilds the capsule WebViews after a resume. Reloading the page is not enough for the
+    /// transcript rails: their WebView2 surface can stay unpainted, so they are destroyed and built
+    /// fresh on next use (`position_transcript_overlay`, `ensure_rail_mirror`). The capsule body
+    /// and its mirrors are reloaded; the pages replay the current capsule snapshot on load.
+    #[cfg(target_os = "windows")]
+    fn rebuild_capsule_webviews(&self) {
+        let host = self.clone();
+        self.on_main_thread(move || {
+            let slot = host.app.lock();
+            let Some(app) = slot.as_ref() else {
+                return;
+            };
+            for (label, window) in app.webview_windows() {
+                let result = if label.starts_with("capsule-rail") {
+                    window.destroy()
+                } else if label.starts_with("capsule") {
+                    window.reload()
+                } else {
+                    continue;
+                };
+                if let Err(error) = result {
+                    log::warn!("[capsule] rebuild {label} failed: {error}");
+                }
+            }
+        });
     }
 
     /// Runs `task` on the event-loop thread.

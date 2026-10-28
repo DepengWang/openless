@@ -439,12 +439,19 @@ pub(crate) fn ensure_rail_mirror<R: tauri::Runtime>(
     if let Some(window) = app.get_webview_window(label) {
         return Ok(window);
     }
+    // Also rebuilds the primary rail after a resume, with the settings it has in
+    // tauri.windows.conf.json.
+    let title = if label == "capsule-rail" {
+        "OpenLess Transcript Rail"
+    } else {
+        "OpenLess Transcript Rail Mirror"
+    };
     WebviewWindowBuilder::new(
         app,
         label,
         WebviewUrl::App("index.html?window=capsule-rail&os=win".into()),
     )
-    .title("OpenLess Transcript Rail Mirror")
+    .title(title)
     .inner_size(460.0, 52.0)
     .decorations(false)
     .transparent(true)
