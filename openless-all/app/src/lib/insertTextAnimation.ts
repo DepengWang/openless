@@ -66,8 +66,20 @@ export const SIRI_ENHANCED_GLYPH_MOTION = {
   minWidth: 460,
   /** Room kept ahead of the text while growing, in glyphs (font sizes), so it widens early. */
   lookaheadEm: 3,
-  /** When the transcript goes away, the band collapses into its centre over this time. */
-  closeMs: 300,
+  /**
+   * Open: the band rises out of the Siri wave (riseY below, at riseScale) with a slight bounce
+   * while it spreads out from its centre. Close: it collapses into a small blob (closeWidth) over
+   * collapseMs, then sinks back into the wave over sinkMs. riseY must stay within
+   * SIRI_ENHANCED_RAIL_TRAVEL in the Tauri host.
+   */
+  riseY: 28,
+  riseScale: 0.6,
+  riseSpring: { stiffness: 420, damping: 22, mass: 0.9 },
+  closeWidth: 56,
+  collapseMs: 300,
+  sinkMs: 240,
+  /** How long the last line outlives the transcript: collapse then sink. */
+  closeMs: 540,
 } as const;
 
 export interface InsertUnit {

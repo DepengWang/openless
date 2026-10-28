@@ -117,6 +117,12 @@ const SIRI_ENHANCED_RAIL_HEIGHT: f64 = 54.0;
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const SIRI_ENHANCED_RAIL_DROP: f64 = 40.0;
 
+/// Transparent room kept below the Siri enhanced band, so it can rise out of the wave when it
+/// opens and sink back into it when it closes without being clipped by the HWND. Must cover
+/// `riseY` in `SIRI_ENHANCED_GLYPH_MOTION`.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const SIRI_ENHANCED_RAIL_TRAVEL: f64 = 36.0;
+
 /// Physical `(x, width)` of the Siri enhanced transcript rail: 1/2.7 of the monitor (never
 /// narrower than the capsule), centred on the capsule and kept on screen, so the marquee has the
 /// same length every time it appears on that screen.
@@ -177,10 +183,13 @@ fn position_rail_for_capsule<R: tauri::Runtime>(
         })
         .flatten();
     let (x, top_offset) = if let Some((x, width)) = wide {
-        // A third taller band, grown upward, then dropped into the stage headroom toward the wave.
+        // A third taller band, grown upward, then dropped into the stage headroom toward the wave;
+        // the HWND reaches further down by the travel room the open/close motion needs.
         rail.set_size(tauri::PhysicalSize::new(
             width.max(1) as u32,
-            (SIRI_ENHANCED_RAIL_HEIGHT * scale).round().max(1.0) as u32,
+            ((SIRI_ENHANCED_RAIL_HEIGHT + SIRI_ENHANCED_RAIL_TRAVEL) * scale)
+                .round()
+                .max(1.0) as u32,
         ))?;
         (
             x,

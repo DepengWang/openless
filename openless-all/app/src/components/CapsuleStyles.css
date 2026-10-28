@@ -393,12 +393,6 @@
   overflow: visible;
 }
 
-/* Siri enhanced close: fades while the band collapses into its centre (closeMs). */
-.ol-live-transcript-stage[data-closing='true'] {
-  opacity: 0;
-  transition: opacity 300ms cubic-bezier(0.4, 0, 1, 1);
-}
-
 .ol-live-transcript-pill {
   position: absolute;
   top: 0;
@@ -438,8 +432,8 @@
     linear-gradient(
       to right,
       rgb(255 255 255 / 22%),
-      transparent 56px,
-      transparent calc(100% - 56px),
+      transparent min(56px, 35%),
+      transparent calc(100% - min(56px, 35%)),
       rgb(255 255 255 / 22%)
     ),
     linear-gradient(
@@ -460,11 +454,23 @@
   border: none;
   box-shadow: none;
   -webkit-mask-image:
-    linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent),
+    linear-gradient(
+      to right,
+      transparent,
+      #000 min(40px, 30%),
+      #000 calc(100% - min(40px, 30%)),
+      transparent
+    ),
     linear-gradient(to bottom, transparent, #000 12px, #000 calc(100% - 12px), transparent);
   -webkit-mask-composite: source-in;
   mask-image:
-    linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent),
+    linear-gradient(
+      to right,
+      transparent,
+      #000 min(40px, 30%),
+      #000 calc(100% - min(40px, 30%)),
+      transparent
+    ),
     linear-gradient(to bottom, transparent, #000 12px, #000 calc(100% - 12px), transparent);
   mask-composite: intersect;
 }

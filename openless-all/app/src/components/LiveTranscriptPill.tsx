@@ -440,11 +440,11 @@ export function LiveTranscriptPill({
   const plan = useMemo(() => {
     if (fixedWidth) {
       // Centred band: capsule-wide at first, then a few glyphs ahead of the text up to maxWidth;
-      // closing collapses it to the centre.
+      // closing collapses it into a small blob at the centre before it sinks.
       const ink = SIRI_ENHANCED_GLYPH_MOTION;
       const grown = contentWidth + padX * 2 + fontSize * ink.lookaheadEm;
       const width = closing
-        ? 0
+        ? Math.min(ink.closeWidth, maxWidth)
         : Math.min(maxWidth, Math.max(Math.min(ink.minWidth, maxWidth), grown));
       const left = (stageWidth - width) / 2;
       return { width, left, rightEdge: left + width, widthDelayMs: 0, recenterDelayMs: 0 };
@@ -514,7 +514,7 @@ export function LiveTranscriptPill({
     }
     // Closing is a short ease-in toward the centre, not a spring, so it ends cleanly.
     const collapse = {
-      duration: SIRI_ENHANCED_GLYPH_MOTION.closeMs / 1000,
+      duration: SIRI_ENHANCED_GLYPH_MOTION.collapseMs / 1000,
       ease: [0.4, 0, 1, 1] as Easing,
     };
     const widthAnim = animate(
@@ -550,15 +550,63 @@ export function LiveTranscriptPill({
     widthMv,
   ]);
 
+  // Siri enhanced: the band rises out of the Siri wave with a slight bounce as it opens, and once
+  // it has collapsed on close it sinks back into the wave.
+  const rises = fixedWidth && !reduceMotion;
+  const rise = SIRI_ENHANCED_GLYPH_MOTION;
+  const stageYMv = useMotionValue(rises ? rise.riseY : 0);
+  const stageScaleMv = useMotionValue(rises ? rise.riseScale : 1);
+  const stageOpacityMv = useMotionValue(rises ? 0 : 1);
+  useEffect(() => {
+    if (!rises) {
+      stageYMv.set(0);
+      stageScaleMv.set(1);
+      stageOpacityMv.set(1);
+      return undefined;
+    }
+    const anims = closing
+      ? (() => {
+          const sink = {
+            duration: rise.sinkMs / 1000,
+            ease: [0.4, 0, 1, 1] as Easing,
+            delay: rise.collapseMs / 1000,
+          };
+          return [
+            animate(stageYMv, rise.riseY, sink),
+            animate(stageScaleMv, rise.riseScale, sink),
+            animate(stageOpacityMv, 0, sink),
+          ];
+        })()
+      : [
+          animate(stageYMv, 0, { type: 'spring', ...rise.riseSpring }),
+          animate(stageScaleMv, 1, { type: 'spring', ...rise.riseSpring }),
+          animate(stageOpacityMv, 1, { duration: 0.15 }),
+        ];
+    return () => {
+      for (const anim of anims) anim.stop();
+    };
+  }, [rises, closing, rise, stageYMv, stageScaleMv, stageOpacityMv]);
+
   const overflowing = contentWidth + padX * 2 >= maxWidth - 0.5;
 
   return (
-    <div
+    <motion.div
       className="ol-live-transcript-stage"
       data-tone={tone}
       data-controls={hasControls ? 'true' : 'false'}
-      data-closing={closing ? 'true' : undefined}
-      style={{ width: '100%', height, maxWidth: stageWidth }}
+      style={{
+        width: '100%',
+        height,
+        maxWidth: stageWidth,
+        ...(fixedWidth
+          ? {
+              y: stageYMv,
+              scale: stageScaleMv,
+              opacity: stageOpacityMv,
+              transformOrigin: '50% 100%',
+            }
+          : {}),
+      }}
     >
       <motion.div
         className="ol-live-transcript-pill"
@@ -639,7 +687,7 @@ export function LiveTranscriptPill({
       <span className="ol-live-transcript-sr" role="status" aria-live="polite">
         {text}
       </span>
-    </div>
+    </motion.div>
   );
 }
 
