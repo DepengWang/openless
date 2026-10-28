@@ -1189,8 +1189,21 @@ impl TauriCapsuleWindow {
         translation_active: bool,
         visible: bool,
     ) -> tauri::Result<()> {
-        let Some(rail) = self.rail_window() else {
-            return Ok(());
+        // The rail is destroyed after the system resumes (see `rebuild_capsule_webviews`); build a
+        // fresh one the next time it is needed.
+        let rail = match self.rail_window() {
+            Some(rail) => rail,
+            None if !visible => return Ok(()),
+            None => match crate::capsule_mirrors::ensure_rail_mirror(&self.app, "capsule-rail") {
+                Ok(rail) => {
+                    log::info!("[capsule] transcript rail recreated");
+                    rail
+                }
+                Err(error) => {
+                    log::warn!("[capsule] transcript rail could not be recreated: {error}");
+                    return Ok(());
+                }
+            },
         };
         let scale = capsule.scale_factor().unwrap_or(1.0);
         let main_position = capsule.outer_position()?;
@@ -2047,7 +2060,7 @@ impl TauriCoordinatorHost {
 
     /// After the system sleeps, WebView2 can keep the transparent capsule windows alive but stop
     /// painting them (no orb, no transcript) until the app restarts. A wall-clock jump much longer
-    /// than the poll interval means the machine was asleep; the capsule WebViews are then reloaded.
+    /// than the poll interval means the machine was asleep; the capsule WebViews are then rebuilt.
     #[cfg(target_os = "windows")]
     fn spawn_resume_watch(&self) {
         use std::time::{Duration, SystemTime};
@@ -2067,12 +2080,12 @@ impl TauriCoordinatorHost {
                     last = now;
                     if gap > SLEPT {
                         log::info!(
-                            "[capsule] resume detected (clock gap {}s); reloading capsule webviews",
+                            "[capsule] resume detected (clock gap {}s); rebuilding capsule webviews",
                             gap.as_secs()
                         );
                         std::thread::sleep(SETTLE);
                         last = SystemTime::now();
-                        host.reload_capsule_webviews();
+                        host.rebuild_capsule_webviews();
                     }
                 }
             });
@@ -2081,10 +2094,12 @@ impl TauriCoordinatorHost {
         }
     }
 
-    /// Reloads the capsule body, transcript rail and their monitor mirrors. The pages replay the
-    /// current capsule snapshot on load, so an idle or active capsule comes back as it was.
+    /// Rebuilds the capsule WebViews after a resume. Reloading the page is not enough for the
+    /// transcript rails: their WebView2 surface can stay unpainted, so they are destroyed and built
+    /// fresh on next use (`position_transcript_overlay`, `ensure_rail_mirror`). The capsule body
+    /// and its mirrors are reloaded; the pages replay the current capsule snapshot on load.
     #[cfg(target_os = "windows")]
-    fn reload_capsule_webviews(&self) {
+    fn rebuild_capsule_webviews(&self) {
         let host = self.clone();
         self.on_main_thread(move || {
             let slot = host.app.lock();
@@ -2092,10 +2107,15 @@ impl TauriCoordinatorHost {
                 return;
             };
             for (label, window) in app.webview_windows() {
-                if label.starts_with("capsule") {
-                    if let Err(error) = window.reload() {
-                        log::warn!("[capsule] reload {label} failed: {error}");
-                    }
+                let result = if label.starts_with("capsule-rail") {
+                    window.destroy()
+                } else if label.starts_with("capsule") {
+                    window.reload()
+                } else {
+                    continue;
+                };
+                if let Err(error) = result {
+                    log::warn!("[capsule] rebuild {label} failed: {error}");
                 }
             }
         });
