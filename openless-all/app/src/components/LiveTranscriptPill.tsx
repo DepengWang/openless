@@ -469,9 +469,12 @@ export function LiveTranscriptPill({
     padX,
   ]);
 
-  // The enhanced band opens from its centre: it starts at zero width and the width spring below
-  // spreads it out to the capsule's width.
-  const initialWidth = fixedWidth ? 0 : pillMinWidth;
+  // The enhanced band opens from its centre: it starts as a small blob (so the point it grows from
+  // is visible) and spreads out to the capsule's width in step with its rise.
+  const initialWidth = fixedWidth
+    ? Math.min(SIRI_ENHANCED_GLYPH_MOTION.closeWidth, maxWidth)
+    : pillMinWidth;
+  const openedAtRef = useRef(performance.now());
   const widthMv = useMotionValue(initialWidth);
   const rightEdgeMv = useMotionValue(stageWidth / 2 + initialWidth / 2);
   // Delayed recentering may otherwise push a large batch beyond the native
@@ -517,23 +520,39 @@ export function LiveTranscriptPill({
       duration: SIRI_ENHANCED_GLYPH_MOTION.collapseMs / 1000,
       ease: [0.4, 0, 1, 1] as Easing,
     };
+    // While the enhanced band is still rising, spread it on the same curve so it finishes with the
+    // rise instead of reaching full width while it is still a small dot.
+    const openLeftMs = fixedWidth
+      ? SIRI_ENHANCED_GLYPH_MOTION.openMs - (performance.now() - openedAtRef.current)
+      : 0;
+    const unfold =
+      !closing && openLeftMs > 0
+        ? {
+            duration: openLeftMs / 1000,
+            ease: [...SIRI_ENHANCED_GLYPH_MOTION.openEase] as Easing,
+          }
+        : null;
     const widthAnim = animate(
       widthMv,
       plan.width,
       closing
         ? collapse
-        : { type: 'spring', ...INSERT_TEXT_MOTION.widthSpring, delay: plan.widthDelayMs / 1000 },
+        : (unfold ?? {
+            type: 'spring',
+            ...INSERT_TEXT_MOTION.widthSpring,
+            delay: plan.widthDelayMs / 1000,
+          }),
     );
     const rightAnim = animate(
       rightEdgeMv,
       plan.rightEdge,
       closing
         ? collapse
-        : {
+        : (unfold ?? {
             type: 'spring',
             ...INSERT_TEXT_MOTION.recenterSpring,
             delay: plan.recenterDelayMs / 1000,
-          },
+          }),
     );
     return () => {
       widthAnim.stop();
@@ -556,7 +575,8 @@ export function LiveTranscriptPill({
   const rise = SIRI_ENHANCED_GLYPH_MOTION;
   const stageYMv = useMotionValue(rises ? rise.riseY : 0);
   const stageScaleMv = useMotionValue(rises ? rise.riseScale : 1);
-  const stageOpacityMv = useMotionValue(rises ? 0 : 1);
+  // Fully visible from the first frame, so the dot is seen at the wave's centre at once.
+  const stageOpacityMv = useMotionValue(1);
   useEffect(() => {
     if (!rises) {
       stageYMv.set(0);
@@ -582,7 +602,7 @@ export function LiveTranscriptPill({
           return [
             animate(stageYMv, 0, unfold),
             animate(stageScaleMv, 1, unfold),
-            animate(stageOpacityMv, 1, { duration: rise.openMs / 2000 }),
+            animate(stageOpacityMv, 1, { duration: 0 }),
           ];
         })();
     return () => {

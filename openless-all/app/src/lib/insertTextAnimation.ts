@@ -74,9 +74,11 @@ export const SIRI_ENHANCED_GLYPH_MOTION = {
    * stay within SIRI_ENHANCED_RAIL_TRAVEL in the Tauri host.
    */
   riseY: 85,
-  riseScale: 0.15,
-  openMs: 750,
-  openEase: [0.22, 1, 0.36, 1],
+  /** closeWidth × riseScale ≈ a 30px dot at the wave's centre. */
+  riseScale: 0.54,
+  /** Slow out of the centre, quicker through the middle, soft landing. */
+  openMs: 1000,
+  openEase: [0.45, 0, 0.2, 1],
   closeWidth: 56,
   collapseMs: 450,
   sinkDelayMs: 80,
