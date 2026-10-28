@@ -6,7 +6,7 @@ import {
   useTransform,
   type Easing,
 } from 'framer-motion';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import './CapsuleStyles.css';
 import {
@@ -36,7 +36,11 @@ import {
   type BackendEvent,
   type TranscriptViewState,
 } from '../lib/backendEvent';
-import { capsuleTranscriptFontSize, visibleCapsuleTranscript } from '../lib/capsuleTranscript';
+import {
+  capsuleTranscriptBandPresent,
+  capsuleTranscriptFontSize,
+  visibleCapsuleTranscript,
+} from '../lib/capsuleTranscript';
 import { getCapsuleTranscriptRailHeight } from '../lib/capsuleLayout';
 import { planBirthDelays } from '../lib/typewriterText';
 import { useTranscriptLinger } from '../lib/useTranscriptLinger';
@@ -136,6 +140,8 @@ export interface CapsuleTranscriptRailProps {
   settled?: boolean;
   /** The transcript has gone and the enhanced band is collapsing. */
   closing?: boolean;
+  /** Siri enhanced: show the band even before there is any text (recording has started). */
+  present?: boolean;
 }
 
 /** Transcript is deliberately a sibling rail: the capsule body remains responsible for audio feedback and controls. */
@@ -149,9 +155,10 @@ export function CapsuleTranscriptRail({
   enhanced = false,
   settled = false,
   closing = false,
+  present = false,
 }: CapsuleTranscriptRailProps) {
   const liveText = text.trim();
-  if (!liveText) return null;
+  if (!liveText && !(enhanced && present)) return null;
   return (
     <div className="ol-capsule-transcript-rail" data-tone={tone} data-transcript-rail="true">
       <LiveTranscriptPill
@@ -194,6 +201,8 @@ export function CapsuleTranscriptOverlay() {
   }, []);
   const [selectionPolish, setSelectionPolish] = useState(false);
   const [translation, setTranslation] = useState(false);
+  // Microphone not producing audio yet (the orb's standby form); the enhanced band waits for it.
+  const [warming, setWarming] = useState(false);
   const transcriptRef = useRef<TranscriptViewState>(createTranscriptViewState());
   const stateRef = useRef<CapsuleState>('idle');
   const snapshotRetryDelays = [0, 16, 32, 64, 128, 256] as const;
@@ -216,6 +225,7 @@ export function CapsuleTranscriptOverlay() {
         if (payload.capsuleStyle) setStyle(payload.capsuleStyle);
         setSelectionPolish(payload.selectionPolish === true);
         setTranslation(payload.translation === true);
+        setWarming(payload.warming === true);
         if (payload.state === 'recording' && previousState !== 'recording' && !sessionChanged) {
           transcriptRef.current = beginTranscriptGeneration(transcriptRef.current);
           setText(transcriptRef.current.text);
@@ -257,6 +267,7 @@ export function CapsuleTranscriptOverlay() {
         setStyle(snapshot.capsuleStyle ?? fallbackStyle);
         setSelectionPolish(snapshot.selectionPolish === true);
         setTranslation(snapshot.translation === true);
+        setWarming(snapshot.warming === true);
         if (snapshot.state === 'recording' && previousState !== 'recording' && !sessionChanged) {
           transcriptRef.current = beginTranscriptGeneration(transcriptRef.current);
           setText(transcriptRef.current.text);
@@ -307,9 +318,14 @@ export function CapsuleTranscriptOverlay() {
   }, []);
 
   const enhanced = style === 'siri' && siriEnhanced;
-  // Enhanced: the last line outlives the session for the collapse (Capsule keeps the rail shown).
+  // Enhanced: the band shows from the start of recording, and outlives the session for its
+  // collapse (Capsule keeps the rail shown for both).
+  const visibleText = visibleCapsuleTranscript(text, enabled, state, selectionPolish);
   const linger = useTranscriptLinger(
-    visibleCapsuleTranscript(text, enabled, state, selectionPolish),
+    visibleText,
+    enhanced
+      ? capsuleTranscriptBandPresent(enabled, state, selectionPolish, warming)
+      : Boolean(visibleText),
     enhanced,
     SIRI_ENHANCED_GLYPH_MOTION.closeMs,
   );
@@ -324,7 +340,7 @@ export function CapsuleTranscriptOverlay() {
       className={`ol-capsule-transcript-overlay${typeless ? ' ol-typeless-capsule-wrap ol-capsule-transcript-overlay--typeless' : ''}`}
       data-style={style}
       data-enhanced={enhanced ? 'true' : undefined}
-      data-transcript-visible={liveText ? 'true' : 'false'}
+      data-transcript-visible={linger.visible ? 'true' : 'false'}
     >
       <CapsuleTranscriptRail
         text={liveText}
@@ -336,6 +352,7 @@ export function CapsuleTranscriptOverlay() {
         enhanced={enhanced}
         settled={state === 'transcribing' || state === 'polishing'}
         closing={linger.closing}
+        present={linger.visible}
       />
       {translation && !selectionPolish && style === 'classic' && <CapsuleTranslationBadge />}
       {translation && !selectionPolish && typeless && (
@@ -477,6 +494,15 @@ export function LiveTranscriptPill({
   const openedAtRef = useRef(performance.now());
   const widthMv = useMotionValue(initialWidth);
   const rightEdgeMv = useMotionValue(stageWidth / 2 + initialWidth / 2);
+  // The host widens the enhanced rail HWND when it shows it, and the new size reaches this page a
+  // moment later. Re-centre the band at once when the stage width changes, so it never appears
+  // off to one side and slides over to the middle.
+  const seenStageWidthRef = useRef(stageWidth);
+  useLayoutEffect(() => {
+    const shift = (stageWidth - seenStageWidthRef.current) / 2;
+    seenStageWidthRef.current = stageWidth;
+    if (fixedWidth && shift !== 0) rightEdgeMv.set(rightEdgeMv.get() + shift);
+  }, [fixedWidth, stageWidth, rightEdgeMv]);
   // Delayed recentering may otherwise push a large batch beyond the native
   // WebView's left edge. Constrain the rendered frame, not spring momentum.
   const visibleRightMv = useTransform([rightEdgeMv, widthMv], ([right, width]) =>

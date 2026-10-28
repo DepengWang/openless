@@ -6,7 +6,11 @@ import { warmUpSiriShaders } from './SiriGL';
 import { VoiceOrbStage } from './VoiceOrbStage';
 import { TypelessCapsule } from './TypelessCapsule';
 import { CapsuleTranscriptRail, CapsuleTranslationBadge } from './LiveTranscriptPill';
-import { capsuleTranscriptFontSize, visibleCapsuleTranscript } from '../lib/capsuleTranscript';
+import {
+  capsuleTranscriptBandPresent,
+  capsuleTranscriptFontSize,
+  visibleCapsuleTranscript,
+} from '../lib/capsuleTranscript';
 import { getSettings } from '../lib/ipc/settings';
 import { cancelDictation, setCapsuleTranscriptVisible, stopDictation } from '../lib/ipc/dictation';
 import {
@@ -1052,14 +1056,18 @@ export function Capsule({ os: forcedOs }: CapsuleProps = {}) {
     renderedState,
     renderedSelectionPolish,
   );
-  // Siri enhanced keeps the rail up briefly after the transcript goes, for its collapse
-  // (CapsuleTranscriptOverlay plays it).
+  // Siri enhanced shows the rail from the start of recording, before any words, and keeps it up
+  // briefly after the session for its collapse (CapsuleTranscriptOverlay plays both).
+  const enhancedRail = splitTranscriptRail && capsuleStyle === 'siri' && siriEnhanced;
   const railLinger = useTranscriptLinger(
     liveTranscript,
-    splitTranscriptRail && capsuleStyle === 'siri' && siriEnhanced,
+    enhancedRail
+      ? capsuleTranscriptBandPresent(transcriptEnabled, state, selectionPolish, warming)
+      : liveTranscript.length > 0,
+    enhancedRail,
     SIRI_ENHANCED_GLYPH_MOTION.closeMs,
   );
-  const showLiveTranscript = state !== 'idle' && railLinger.text.length > 0;
+  const showLiveTranscript = state !== 'idle' && railLinger.visible;
   const transcriptVisible = showLiveTranscript && !insertFallback && suggestions.length === 0;
 
   useEffect(() => {
