@@ -77,14 +77,14 @@ export const SIRI_ENHANCED_GLYPH_MOTION = {
   /** closeWidth × riseScale ≈ a 30px dot at the wave's centre. */
   riseScale: 0.54,
   /** Constant speed, so the dot clears the wave instead of lingering behind it. */
-  openMs: 1000,
+  openMs: 800,
   openEase: [0, 0, 1, 1],
   closeWidth: 56,
-  collapseMs: 450,
-  sinkDelayMs: 80,
-  sinkMs: 600,
+  collapseMs: 360,
+  sinkDelayMs: 60,
+  sinkMs: 480,
   /** How long the last line outlives the transcript: until the sink has finished. */
-  closeMs: 680,
+  closeMs: 540,
 } as const;
 
 export interface InsertUnit {
