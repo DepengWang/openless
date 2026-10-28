@@ -413,66 +413,34 @@
   box-shadow: var(--ol-capsule-pill-shadow), var(--ol-capsule-pill-inset);
 }
 
-/* Siri enhanced: a lighter, borderless band whose edges feather into the desktop, so the long
-   marquee reads as a soft glow rather than a hard bar. The mask only touches this background
-   layer; the glyph track is a sibling. */
+/* Siri enhanced: no solid band at all, just a heavily blurred blue -> violet -> pink glow behind
+   the words so the eye stays on the text. Only the background layer lives on the pill; the glyph
+   track is a sibling and is forced to white (with a soft shadow) in every theme. */
 .ol-live-transcript-pill[data-tone='frost'][data-enhanced='true'] {
-  /* A faint light rim under the feather outlines the band on dark backgrounds; the centre,
-     where the glyphs sit, keeps the plain tint. Frosted look: a smooth milky haze and a soft
-     top sheen over the same tint (a transparent WebView cannot blur the desktop behind it). */
-  background:
-    /* Milky haze, densest through the middle, for a smooth frosted surface without grain. */
-    linear-gradient(
-      to bottom,
-      rgb(255 255 255 / 6%),
-      rgb(255 255 255 / 14%) 50%,
-      rgb(255 255 255 / 6%)
-    ),
-    linear-gradient(to bottom, rgb(255 255 255 / 28%), transparent 50%),
-    linear-gradient(
-      to right,
-      rgb(255 255 255 / 22%),
-      transparent min(56px, 35%),
-      transparent calc(100% - min(56px, 35%)),
-      rgb(255 255 255 / 22%)
-    ),
-    linear-gradient(
-      to bottom,
-      rgb(255 255 255 / 18%),
-      transparent 14px,
-      transparent calc(100% - 14px),
-      rgb(255 255 255 / 18%)
-    ),
-    /* Faint Siri-orb hue (blue → violet → pink) so the band reads as part of the Siri glow. */
-    linear-gradient(
-      to right,
-      rgb(59 130 246 / 16%),
-      rgb(139 92 246 / 16%) 50%,
-      rgb(236 72 153 / 16%)
-    ),
-    color-mix(in srgb, var(--ol-capsule-pill-bg) 72%, transparent);
+  background: none;
   border: none;
   box-shadow: none;
-  -webkit-mask-image:
-    linear-gradient(
-      to right,
-      transparent,
-      #000 min(40px, 30%),
-      #000 calc(100% - min(40px, 30%)),
-      transparent
-    ),
-    linear-gradient(to bottom, transparent, #000 12px, #000 calc(100% - 12px), transparent);
-  -webkit-mask-composite: source-in;
-  mask-image:
-    linear-gradient(
-      to right,
-      transparent,
-      #000 min(40px, 30%),
-      #000 calc(100% - min(40px, 30%)),
-      transparent
-    ),
-    linear-gradient(to bottom, transparent, #000 12px, #000 calc(100% - 12px), transparent);
-  mask-composite: intersect;
+}
+
+.ol-live-transcript-pill[data-tone='frost'][data-enhanced='true']::before {
+  content: '';
+  position: absolute;
+  inset: 6px 2px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    rgb(37 99 235 / 80%),
+    rgb(109 40 217 / 80%) 50%,
+    rgb(190 24 93 / 80%)
+  );
+  filter: blur(12px);
+  pointer-events: none;
+}
+
+.ol-live-transcript-stage:has(> .ol-live-transcript-pill[data-enhanced='true'])
+  .ol-live-transcript-track {
+  color: #fff;
+  text-shadow: 0 1px 6px rgb(0 0 0 / 45%);
 }
 
 .ol-live-transcript-pill[data-tone='dark'] {
