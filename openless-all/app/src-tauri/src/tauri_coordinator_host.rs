@@ -2032,6 +2032,64 @@ impl TauriCoordinatorHost {
             }
         }
         *self.app.lock() = Some(app);
+        #[cfg(target_os = "windows")]
+        self.spawn_resume_watch();
+    }
+
+    /// After the system sleeps, WebView2 can keep the transparent capsule windows alive but stop
+    /// painting them (no orb, no transcript) until the app restarts. A wall-clock jump much longer
+    /// than the poll interval means the machine was asleep; the capsule WebViews are then reloaded.
+    #[cfg(target_os = "windows")]
+    fn spawn_resume_watch(&self) {
+        use std::time::{Duration, SystemTime};
+        const POLL: Duration = Duration::from_secs(5);
+        const SLEPT: Duration = Duration::from_secs(30);
+        // Give the display driver a moment after resume before rebuilding the renderers.
+        const SETTLE: Duration = Duration::from_secs(3);
+        let host = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("openless-resume-watch".into())
+            .spawn(move || {
+                let mut last = SystemTime::now();
+                loop {
+                    std::thread::sleep(POLL);
+                    let now = SystemTime::now();
+                    let gap = now.duration_since(last).unwrap_or_default();
+                    last = now;
+                    if gap > SLEPT {
+                        log::info!(
+                            "[capsule] resume detected (clock gap {}s); reloading capsule webviews",
+                            gap.as_secs()
+                        );
+                        std::thread::sleep(SETTLE);
+                        last = SystemTime::now();
+                        host.reload_capsule_webviews();
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            log::warn!("[capsule] resume watch could not start: {error}");
+        }
+    }
+
+    /// Reloads the capsule body, transcript rail and their monitor mirrors. The pages replay the
+    /// current capsule snapshot on load, so an idle or active capsule comes back as it was.
+    #[cfg(target_os = "windows")]
+    fn reload_capsule_webviews(&self) {
+        let host = self.clone();
+        self.on_main_thread(move || {
+            let slot = host.app.lock();
+            let Some(app) = slot.as_ref() else {
+                return;
+            };
+            for (label, window) in app.webview_windows() {
+                if label.starts_with("capsule") {
+                    if let Err(error) = window.reload() {
+                        log::warn!("[capsule] reload {label} failed: {error}");
+                    }
+                }
+            }
+        });
     }
 
     /// Runs `task` on the event-loop thread.
