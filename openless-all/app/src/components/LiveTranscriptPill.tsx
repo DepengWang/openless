@@ -39,6 +39,7 @@ import {
 import { capsuleTranscriptFontSize, visibleCapsuleTranscript } from '../lib/capsuleTranscript';
 import { getCapsuleTranscriptRailHeight } from '../lib/capsuleLayout';
 import { planBirthDelays } from '../lib/typewriterText';
+import { useTranscriptLinger } from '../lib/useTranscriptLinger';
 import { getSettings } from '../lib/ipc/settings';
 import { getCapsuleSnapshot, isTauri } from '../lib/ipc';
 import type {
@@ -76,8 +77,13 @@ export interface LiveTranscriptPillProps {
   confirmLabel?: string;
   controlSize?: number;
   fontSize?: number;
-  /** Siri enhanced: keep the pill at `maxWidth` and scroll the text through it like a marquee. */
+  /**
+   * Siri enhanced: a centred band that starts at the capsule's width, widens ahead of the text up
+   * to `maxWidth`, then scrolls the text through it like a marquee.
+   */
   fixedWidth?: boolean;
+  /** Siri enhanced: the transcript has gone; collapse the band into its centre. */
+  closing?: boolean;
   /** Siri enhanced: ink-wash glyph focus-in, with each burst's new glyphs entering in order. */
   enhancedMotion?: boolean;
   /**
@@ -128,6 +134,8 @@ export interface CapsuleTranscriptRailProps {
   enhanced?: boolean;
   /** Speech has ended (transcribing / polishing). */
   settled?: boolean;
+  /** The transcript has gone and the enhanced band is collapsing. */
+  closing?: boolean;
 }
 
 /** Transcript is deliberately a sibling rail: the capsule body remains responsible for audio feedback and controls. */
@@ -140,6 +148,7 @@ export function CapsuleTranscriptRail({
   fontSize = FONT_SIZE,
   enhanced = false,
   settled = false,
+  closing = false,
 }: CapsuleTranscriptRailProps) {
   const liveText = text.trim();
   if (!liveText) return null;
@@ -155,6 +164,7 @@ export function CapsuleTranscriptRail({
         fixedWidth={enhanced}
         enhancedMotion={enhanced}
         settled={enhanced && settled}
+        closing={enhanced && closing}
       />
     </div>
   );
@@ -296,9 +306,15 @@ export function CapsuleTranscriptOverlay() {
     };
   }, []);
 
-  const liveText = visibleCapsuleTranscript(text, enabled, state, selectionPolish);
-  const typeless = style === 'typeless';
   const enhanced = style === 'siri' && siriEnhanced;
+  // Enhanced: the last line outlives the session for the collapse (Capsule keeps the rail shown).
+  const linger = useTranscriptLinger(
+    visibleCapsuleTranscript(text, enabled, state, selectionPolish),
+    enhanced,
+    SIRI_ENHANCED_GLYPH_MOTION.closeMs,
+  );
+  const liveText = linger.text;
+  const typeless = style === 'typeless';
   // Enhanced: a third taller band; must match SIRI_ENHANCED_RAIL_HEIGHT in the Tauri host.
   const railHeight = enhanced ? SIRI_ENHANCED_RAIL_HEIGHT : getCapsuleTranscriptRailHeight(style);
   // Enhanced: the overlay spans the whole (wider) HWND so the pill and the text share one frame.
@@ -319,6 +335,7 @@ export function CapsuleTranscriptOverlay() {
         height={railHeight}
         enhanced={enhanced}
         settled={state === 'transcribing' || state === 'polishing'}
+        closing={linger.closing}
       />
       {translation && !selectionPolish && style === 'classic' && <CapsuleTranslationBadge />}
       {translation && !selectionPolish && typeless && (
@@ -348,6 +365,7 @@ export function LiveTranscriptPill({
   fixedWidth = false,
   enhancedMotion = false,
   settled = false,
+  closing = false,
 }: LiveTranscriptPillProps) {
   const reduceMotion = useReducedMotion();
   const hasControls = Boolean(onCancel || onConfirm);
@@ -421,14 +439,15 @@ export function LiveTranscriptPill({
   }, [renderUnits.length]);
   const plan = useMemo(() => {
     if (fixedWidth) {
-      const left = (stageWidth - maxWidth) / 2;
-      return {
-        width: maxWidth,
-        left,
-        rightEdge: left + maxWidth,
-        widthDelayMs: 0,
-        recenterDelayMs: 0,
-      };
+      // Centred band: capsule-wide at first, then a few glyphs ahead of the text up to maxWidth;
+      // closing collapses it to the centre.
+      const ink = SIRI_ENHANCED_GLYPH_MOTION;
+      const grown = contentWidth + padX * 2 + fontSize * ink.lookaheadEm;
+      const width = closing
+        ? 0
+        : Math.min(maxWidth, Math.max(Math.min(ink.minWidth, maxWidth), grown));
+      const left = (stageWidth - width) / 2;
+      return { width, left, rightEdge: left + width, widthDelayMs: 0, recenterDelayMs: 0 };
     }
     return planCapsuleInsertMotion({
       stageWidth,
@@ -438,10 +457,22 @@ export function LiveTranscriptPill({
       maxWidth,
       padX,
     });
-  }, [fixedWidth, stageWidth, contentWidth, originX, pillMinWidth, maxWidth, padX]);
+  }, [
+    fixedWidth,
+    closing,
+    fontSize,
+    stageWidth,
+    contentWidth,
+    originX,
+    pillMinWidth,
+    maxWidth,
+    padX,
+  ]);
 
-  // A fixed pill starts at its final length instead of growing out of the minimum width.
-  const initialWidth = fixedWidth ? maxWidth : pillMinWidth;
+  // The enhanced band appears at the capsule's width rather than growing out of the minimum.
+  const initialWidth = fixedWidth
+    ? Math.min(SIRI_ENHANCED_GLYPH_MOTION.minWidth, maxWidth)
+    : pillMinWidth;
   const widthMv = useMotionValue(initialWidth);
   const rightEdgeMv = useMotionValue(stageWidth / 2 + initialWidth / 2);
   // Delayed recentering may otherwise push a large batch beyond the native
@@ -454,9 +485,9 @@ export function LiveTranscriptPill({
     ([right, width]) => Number(right) - Number(width),
   );
   // Siri enhanced: while the line is shorter than the band, shift the right-anchored track left by
-  // half the free space so the text sits centred and grows outward both ways; once it fills the
-  // band the offset reaches 0 and the line scrolls as a marquee.
-  const centerOffset = fixedWidth ? Math.max(0, (maxWidth - padX * 2 - contentWidth) / 2) : 0;
+  // half the free space so the text sits centred and grows outward both ways; once the band is at
+  // maxWidth and full, the offset reaches 0 and the line scrolls as a marquee.
+  const centerOffset = fixedWidth ? Math.max(0, (plan.width - padX * 2 - contentWidth) / 2) : 0;
   const centerOffsetMv = useMotionValue(centerOffset);
   useEffect(() => {
     if (reduceMotion) {
@@ -482,16 +513,29 @@ export function LiveTranscriptPill({
       rightEdgeMv.set(plan.rightEdge);
       return undefined;
     }
-    const widthAnim = animate(widthMv, plan.width, {
-      type: 'spring',
-      ...INSERT_TEXT_MOTION.widthSpring,
-      delay: plan.widthDelayMs / 1000,
-    });
-    const rightAnim = animate(rightEdgeMv, plan.rightEdge, {
-      type: 'spring',
-      ...INSERT_TEXT_MOTION.recenterSpring,
-      delay: plan.recenterDelayMs / 1000,
-    });
+    // Closing is a short ease-in toward the centre, not a spring, so it ends cleanly.
+    const collapse = {
+      duration: SIRI_ENHANCED_GLYPH_MOTION.closeMs / 1000,
+      ease: [0.4, 0, 1, 1] as Easing,
+    };
+    const widthAnim = animate(
+      widthMv,
+      plan.width,
+      closing
+        ? collapse
+        : { type: 'spring', ...INSERT_TEXT_MOTION.widthSpring, delay: plan.widthDelayMs / 1000 },
+    );
+    const rightAnim = animate(
+      rightEdgeMv,
+      plan.rightEdge,
+      closing
+        ? collapse
+        : {
+            type: 'spring',
+            ...INSERT_TEXT_MOTION.recenterSpring,
+            delay: plan.recenterDelayMs / 1000,
+          },
+    );
     return () => {
       widthAnim.stop();
       rightAnim.stop();
@@ -501,6 +545,7 @@ export function LiveTranscriptPill({
     plan.rightEdge,
     plan.widthDelayMs,
     plan.recenterDelayMs,
+    closing,
     reduceMotion,
     rightEdgeMv,
     widthMv,
@@ -513,6 +558,7 @@ export function LiveTranscriptPill({
       className="ol-live-transcript-stage"
       data-tone={tone}
       data-controls={hasControls ? 'true' : 'false'}
+      data-closing={closing ? 'true' : undefined}
       style={{ width: '100%', height, maxWidth: stageWidth }}
     >
       <motion.div

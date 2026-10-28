@@ -62,6 +62,12 @@ export const SIRI_ENHANCED_GLYPH_MOTION = {
   settleEase: [0.37, 0, 0.63, 1],
   /** Render window for the wide marquee pill (the default 64 glyphs leave its left side empty). */
   maxUnits: 160,
+  /** The band starts as wide as the Siri capsule below it and grows with the text. */
+  minWidth: 460,
+  /** Room kept ahead of the text while growing, in glyphs (font sizes), so it widens early. */
+  lookaheadEm: 3,
+  /** When the transcript goes away, the band collapses into its centre over this time. */
+  closeMs: 300,
 } as const;
 
 export interface InsertUnit {

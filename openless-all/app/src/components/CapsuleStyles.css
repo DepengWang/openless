@@ -393,6 +393,12 @@
   overflow: visible;
 }
 
+/* Siri enhanced close: fades while the band collapses into its centre (closeMs). */
+.ol-live-transcript-stage[data-closing='true'] {
+  opacity: 0;
+  transition: opacity 300ms cubic-bezier(0.4, 0, 1, 1);
+}
+
 .ol-live-transcript-pill {
   position: absolute;
   top: 0;

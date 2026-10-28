@@ -19,6 +19,8 @@ import {
   parseCapsuleStyle,
 } from '../lib/capsuleLayout';
 import { getCapsuleSnapshot, isTauri } from '../lib/ipc';
+import { SIRI_ENHANCED_GLYPH_MOTION } from '../lib/insertTextAnimation';
+import { useTranscriptLinger } from '../lib/useTranscriptLinger';
 import type {
   CapsulePayload,
   CapsuleState,
@@ -696,6 +698,7 @@ export function Capsule({ os: forcedOs }: CapsuleProps = {}) {
         : Number(new URLSearchParams(window.location.search).get('fontSize') || 14),
     ),
   );
+  const [siriEnhanced, setSiriEnhanced] = useState(false);
   const transcriptViewRef = useRef<TranscriptViewState>(createTranscriptViewState());
   const capsuleStateRef = useRef<CapsuleState>(preview.state);
   const [translation, setTranslation] = useState<boolean>(preview.translation);
@@ -922,6 +925,7 @@ export function Capsule({ os: forcedOs }: CapsuleProps = {}) {
       const handle = await listen<UserPreferences>('prefs:changed', (event) => {
         setTranscriptEnabled(event.payload.capsuleTranscriptEnabled ?? true);
         setTranscriptFontSize(capsuleTranscriptFontSize(event.payload.capsuleTranscriptFontSize));
+        setSiriEnhanced(event.payload.capsuleSiriEnhanced ?? false);
         preferenceRevision += 1;
         const next = parseCapsuleStyle(event.payload?.capsuleStyle);
         if (next) {
@@ -940,6 +944,7 @@ export function Capsule({ os: forcedOs }: CapsuleProps = {}) {
       if (!cancelled && revisionAtRead === preferenceRevision && next) {
         setTranscriptEnabled(preferences.capsuleTranscriptEnabled ?? true);
         setTranscriptFontSize(capsuleTranscriptFontSize(preferences.capsuleTranscriptFontSize));
+        setSiriEnhanced(preferences.capsuleSiriEnhanced ?? false);
         stylePreferenceReadyRef.current = true;
         setCapsuleStyle(next);
       }
@@ -1047,7 +1052,14 @@ export function Capsule({ os: forcedOs }: CapsuleProps = {}) {
     renderedState,
     renderedSelectionPolish,
   );
-  const showLiveTranscript = state !== 'idle' && liveTranscript.length > 0;
+  // Siri enhanced keeps the rail up briefly after the transcript goes, for its collapse
+  // (CapsuleTranscriptOverlay plays it).
+  const railLinger = useTranscriptLinger(
+    liveTranscript,
+    splitTranscriptRail && capsuleStyle === 'siri' && siriEnhanced,
+    SIRI_ENHANCED_GLYPH_MOTION.closeMs,
+  );
+  const showLiveTranscript = state !== 'idle' && railLinger.text.length > 0;
   const transcriptVisible = showLiveTranscript && !insertFallback && suggestions.length === 0;
 
   useEffect(() => {
