@@ -117,11 +117,11 @@ const SIRI_ENHANCED_RAIL_HEIGHT: f64 = 54.0;
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const SIRI_ENHANCED_RAIL_DROP: f64 = 40.0;
 
-/// Transparent room kept below the Siri enhanced band, so it can rise out of the wave when it
-/// opens and sink back into it when it closes without being clipped by the HWND. Must cover
-/// `riseY` in `SIRI_ENHANCED_GLYPH_MOTION`.
+/// Transparent room kept below the Siri enhanced band, so it can grow out of the wave's centre
+/// (about 85px below the band's centre) when it opens and move back into it when it closes
+/// without being clipped by the HWND. Must cover `riseY` in `SIRI_ENHANCED_GLYPH_MOTION`.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-const SIRI_ENHANCED_RAIL_TRAVEL: f64 = 36.0;
+const SIRI_ENHANCED_RAIL_TRAVEL: f64 = 100.0;
 
 /// Physical `(x, width)` of the Siri enhanced transcript rail: 1/2.7 of the monitor (never
 /// narrower than the capsule), centred on the capsule and kept on screen, so the marquee has the

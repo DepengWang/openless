@@ -550,8 +550,8 @@ export function LiveTranscriptPill({
     widthMv,
   ]);
 
-  // Siri enhanced: the band rises out of the Siri wave with a slight bounce as it opens, and once
-  // it has collapsed on close it sinks back into the wave.
+  // Siri enhanced: the band grows out of the centre of the Siri wave as it opens, and moves back
+  // into it, shrinking, as it closes.
   const rises = fixedWidth && !reduceMotion;
   const rise = SIRI_ENHANCED_GLYPH_MOTION;
   const stageYMv = useMotionValue(rises ? rise.riseY : 0);
@@ -569,7 +569,7 @@ export function LiveTranscriptPill({
           const sink = {
             duration: rise.sinkMs / 1000,
             ease: [0.4, 0, 1, 1] as Easing,
-            delay: rise.collapseMs / 1000,
+            delay: rise.sinkDelayMs / 1000,
           };
           return [
             animate(stageYMv, rise.riseY, sink),
@@ -577,11 +577,14 @@ export function LiveTranscriptPill({
             animate(stageOpacityMv, 0, sink),
           ];
         })()
-      : [
-          animate(stageYMv, 0, { type: 'spring', ...rise.riseSpring }),
-          animate(stageScaleMv, 1, { type: 'spring', ...rise.riseSpring }),
-          animate(stageOpacityMv, 1, { duration: 0.15 }),
-        ];
+      : (() => {
+          const unfold = { duration: rise.openMs / 1000, ease: [...rise.openEase] as Easing };
+          return [
+            animate(stageYMv, 0, unfold),
+            animate(stageScaleMv, 1, unfold),
+            animate(stageOpacityMv, 1, { duration: rise.openMs / 2000 }),
+          ];
+        })();
     return () => {
       for (const anim of anims) anim.stop();
     };
@@ -603,7 +606,7 @@ export function LiveTranscriptPill({
               y: stageYMv,
               scale: stageScaleMv,
               opacity: stageOpacityMv,
-              transformOrigin: '50% 100%',
+              transformOrigin: '50% 50%',
             }
           : {}),
       }}
