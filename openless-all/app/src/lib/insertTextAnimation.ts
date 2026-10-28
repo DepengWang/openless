@@ -45,17 +45,21 @@ export const SIRI_ENHANCED_GLYPH_MOTION = {
   bornScale: 1.3,
   focusEase: [0.6, 0, 0.3, 1],
   /**
-   * While the transcript is finalised and polished, a cycle repeats until the rail goes away:
-   * the whole line blurs together (settleBlurInMs), comes back into focus glyph by glyph from
-   * left to right (settleSweepMs, first glyph starting to focus until the last is sharp), then
-   * holds sharp for settleHoldMs.
+   * While the transcript is finalised and polished, a breathing cycle repeats until the rail goes
+   * away: the whole line slowly blurs together (settleBlurInMs), rests (settleBlurHoldMs), comes
+   * back into focus glyph by glyph from left to right (settleSweepMs, first glyph starting to focus
+   * until the last is sharp; each glyph takes settleFocusMs, so neighbours overlap into a wave),
+   * then rests sharp (settleHoldMs). Sine easing keeps both ends of every ramp soft.
    */
   settleBlurPx: 4,
   settleScale: 1.08,
-  settleBlurInMs: 300,
-  settleFocusMs: 300,
+  settleBlurInMs: 800,
+  settleBlurHoldMs: 200,
+  settleFocusMs: 600,
   settleSweepMs: 1100,
-  settleHoldMs: 200,
+  settleHoldMs: 400,
+  /** easeInOutSine. */
+  settleEase: [0.37, 0, 0.63, 1],
   /** Render window for the wide marquee pill (the default 64 glyphs leave its left side empty). */
   maxUnits: 160,
 } as const;

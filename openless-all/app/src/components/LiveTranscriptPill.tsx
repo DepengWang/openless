@@ -616,15 +616,17 @@ function TranscriptGlyph({
   const [birthDelay] = useState(delay);
   const ink = SIRI_ENHANCED_GLYPH_MOTION;
   if (enhanced && !reduceMotion && settleFocusAt !== null) {
-    // One cycle: all glyphs blur together, hold, focus in their left-to-right turn, stay sharp
-    // until the cycle ends. Every glyph shares the cycle length, so the loop stays in step.
-    const cycle = ink.settleBlurInMs + ink.settleSweepMs + ink.settleHoldMs;
-    const focusStart = ink.settleBlurInMs + settleFocusAt;
+    // One breath: all glyphs slowly blur together, rest, focus in their left-to-right turn, stay
+    // sharp until the cycle ends. Every glyph shares the cycle length, so the loop stays in step.
+    const blurredAt = ink.settleBlurInMs + ink.settleBlurHoldMs;
+    const cycle = blurredAt + ink.settleSweepMs + ink.settleHoldMs;
+    const focusStart = blurredAt + settleFocusAt;
     const focusEnd = focusStart + ink.settleFocusMs;
+    const sine = [...ink.settleEase] as Easing;
     const settle = {
       duration: cycle / 1000,
       times: [0, ink.settleBlurInMs / cycle, focusStart / cycle, focusEnd / cycle, 1],
-      ease: ['easeInOut', 'linear', 'easeInOut', 'linear'] as Easing[],
+      ease: [sine, 'linear', sine, 'linear'] as Easing[],
       repeat: Infinity,
     };
     const blurred = `blur(${ink.settleBlurPx}px)`;
