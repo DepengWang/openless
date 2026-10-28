@@ -469,10 +469,9 @@ export function LiveTranscriptPill({
     padX,
   ]);
 
-  // The enhanced band appears at the capsule's width rather than growing out of the minimum.
-  const initialWidth = fixedWidth
-    ? Math.min(SIRI_ENHANCED_GLYPH_MOTION.minWidth, maxWidth)
-    : pillMinWidth;
+  // The enhanced band opens from its centre: it starts at zero width and the width spring below
+  // spreads it out to the capsule's width.
+  const initialWidth = fixedWidth ? 0 : pillMinWidth;
   const widthMv = useMotionValue(initialWidth);
   const rightEdgeMv = useMotionValue(stageWidth / 2 + initialWidth / 2);
   // Delayed recentering may otherwise push a large batch beyond the native
