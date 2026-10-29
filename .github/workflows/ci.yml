@@ -276,6 +276,9 @@ jobs:
           -x :app:rustBuildX86_64Debug
           --no-daemon
 
+      - name: Check Android emulator cleanup
+        run: bash scripts/android-emulator-cleanup.test.sh
+
       - name: Enable KVM for Android instrumentation tests
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
@@ -391,8 +394,17 @@ jobs:
             trap - EXIT
             if [ -n "$emulator_pid" ]; then
               if kill -0 "$emulator_pid" 2>/dev/null; then
-                timeout 10s adb -s emulator-5554 emu kill >/dev/null 2>&1 || true
+                timeout --kill-after=5s 10s adb -s emulator-5554 emu kill >/dev/null 2>&1 || true
                 kill "$emulator_pid" 2>/dev/null || true
+                # The emulator can ignore SIGTERM while shutting down.
+                for attempt in {1..10}; do
+                  kill -0 "$emulator_pid" 2>/dev/null || break
+                  sleep 1
+                done
+                if kill -0 "$emulator_pid" 2>/dev/null; then
+                  echo 'Android emulator did not exit; sending SIGKILL'
+                  kill -KILL "$emulator_pid" 2>/dev/null || true
+                fi
               fi
               wait "$emulator_pid" 2>/dev/null || true
             fi
