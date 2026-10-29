@@ -23,7 +23,7 @@ use crate::types::{CapsuleDisplayMode, CapsulePayload, CapsuleState, CapsuleStyl
 
 /// The Tauri event-loop thread, recorded by [`TauriCoordinatorHost::bind`].
 #[cfg(target_os = "windows")]
-static MAIN_THREAD: OnceLock<std::thread::ThreadId> = OnceLock::new();
+static MAIN_THREAD: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
 
 static CAPSULE_SUPPRESSED_BY_TOGGLE_LOGGED: AtomicBool = AtomicBool::new(false);
 static CAPSULE_FIRST_SHOW_LOGGED: AtomicBool = AtomicBool::new(false);
