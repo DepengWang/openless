@@ -4,13 +4,15 @@
 //! [`tauri::AppHandle`] and keeps window, main-thread and managed-state access
 //! out of the coordinator's business paths.
 
-#[cfg(target_os = "windows")]
-use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
+
 #[cfg(target_os = "windows")]
-use std::sync::OnceLock;
+#[path = "capsule_hit_test.rs"]
+mod capsule_hit_test;
+#[cfg(target_os = "windows")]
+use capsule_hit_test::{install_capsule_hit_test_proc, CapsuleHitTestRect};
 
 #[path = "capsule_snapshot.rs"]
 mod capsule_snapshot;
@@ -139,34 +141,6 @@ fn position_rail_for_capsule<R: tauri::Runtime>(
 }
 
 #[cfg(target_os = "windows")]
-#[derive(Clone, Copy)]
-struct CapsuleHitTestEntry {
-    previous_proc: isize,
-    control_left: i32,
-    control_right: i32,
-    control_top: i32,
-    control_bottom: i32,
-}
-
-#[cfg(target_os = "windows")]
-static CAPSULE_HIT_TEST_ENTRIES: OnceLock<Mutex<HashMap<isize, CapsuleHitTestEntry>>> =
-    OnceLock::new();
-
-#[cfg(target_os = "windows")]
-fn capsule_hit_test_entries() -> &'static Mutex<HashMap<isize, CapsuleHitTestEntry>> {
-    CAPSULE_HIT_TEST_ENTRIES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CapsuleHitTestRect {
-    left: i32,
-    right: i32,
-    top: i32,
-    bottom: i32,
-}
-
-#[cfg(target_os = "windows")]
 fn capsule_control_hit_rect(
     style: CapsuleStyle,
     transcript_visible: bool,
@@ -228,118 +202,6 @@ fn capsule_card_hit_rect(window_width: i32, window_height: i32) -> CapsuleHitTes
         top: 0,
         bottom: window_height.max(0),
     }
-}
-
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn capsule_hit_test_window_proc(
-    hwnd: windows::Win32::Foundation::HWND,
-    msg: u32,
-    wparam: windows::Win32::Foundation::WPARAM,
-    lparam: windows::Win32::Foundation::LPARAM,
-) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::Foundation::RECT;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        CallWindowProcW, DefWindowProcW, GetWindowRect, SetWindowLongPtrW, GWLP_WNDPROC,
-        HTTRANSPARENT, WM_NCDESTROY, WM_NCHITTEST,
-    };
-
-    if msg == WM_NCDESTROY {
-        let previous_proc = capsule_hit_test_entries()
-            .lock()
-            .remove(&(hwnd.0 as isize))
-            .map(|entry| entry.previous_proc)
-            .unwrap_or_default();
-        if previous_proc != 0 {
-            let previous: windows::Win32::UI::WindowsAndMessaging::WNDPROC =
-                std::mem::transmute(previous_proc);
-            let _ = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, previous_proc);
-            return CallWindowProcW(previous, hwnd, msg, wparam, lparam);
-        }
-        return DefWindowProcW(hwnd, msg, wparam, lparam);
-    }
-
-    if msg == WM_NCHITTEST {
-        let key = hwnd.0 as isize;
-        let entry = capsule_hit_test_entries().lock().get(&key).copied();
-        if let Some(entry) = entry {
-            let screen_x = (lparam.0 as i32 & 0xffff) as u16 as i16 as i32;
-            let screen_y = ((lparam.0 >> 16) & 0xffff) as u16 as i16 as i32;
-            let mut rect = RECT::default();
-            if GetWindowRect(hwnd, &mut rect).is_ok() {
-                let client_x = screen_x - rect.left;
-                let client_y = screen_y - rect.top;
-                if client_x < entry.control_left
-                    || client_x >= entry.control_right
-                    || client_y < entry.control_top
-                    || client_y >= entry.control_bottom
-                {
-                    return windows::Win32::Foundation::LRESULT(HTTRANSPARENT as isize);
-                }
-            }
-        }
-    }
-
-    let previous_proc = capsule_hit_test_entries()
-        .lock()
-        .get(&(hwnd.0 as isize))
-        .map(|entry| entry.previous_proc)
-        .unwrap_or_default();
-    if previous_proc != 0 {
-        let previous: windows::Win32::UI::WindowsAndMessaging::WNDPROC =
-            std::mem::transmute(previous_proc);
-        CallWindowProcW(previous, hwnd, msg, wparam, lparam)
-    } else {
-        DefWindowProcW(hwnd, msg, wparam, lparam)
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn install_capsule_hit_test_proc(
-    hwnd: windows::Win32::Foundation::HWND,
-    rect: CapsuleHitTestRect,
-) -> tauri::Result<()> {
-    use windows::Win32::Foundation::{GetLastError, SetLastError, ERROR_SUCCESS};
-    use windows::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_WNDPROC};
-
-    if hwnd.0.is_null() {
-        return Err(tauri::Error::Anyhow(anyhow::anyhow!(
-            "cannot install hit-test proc for a null HWND"
-        )));
-    }
-
-    let key = hwnd.0 as isize;
-    let mut entries = capsule_hit_test_entries().lock();
-    if let Some(entry) = entries.get_mut(&key) {
-        entry.control_left = rect.left;
-        entry.control_right = rect.right;
-        entry.control_top = rect.top;
-        entry.control_bottom = rect.bottom;
-        return Ok(());
-    }
-    unsafe { SetLastError(ERROR_SUCCESS) };
-    let previous = unsafe {
-        SetWindowLongPtrW(
-            hwnd,
-            GWLP_WNDPROC,
-            capsule_hit_test_window_proc as usize as isize,
-        )
-    };
-    if previous == 0 && unsafe { GetLastError() } != ERROR_SUCCESS {
-        return Err(tauri::Error::Anyhow(anyhow::anyhow!(
-            "SetWindowLongPtrW(GWLP_WNDPROC) failed"
-        )));
-    }
-    entries.insert(
-        key,
-        CapsuleHitTestEntry {
-            previous_proc: previous,
-            control_left: rect.left,
-            control_right: rect.right,
-            control_top: rect.top,
-            control_bottom: rect.bottom,
-        },
-    );
-    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -426,7 +288,7 @@ fn configure_capsule_hit_test<R: tauri::Runtime>(
     set_capsule_input_region(hwnd, rect)?;
     if let Err(error) = install_capsule_hit_test_proc(hwnd, rect) {
         clear_capsule_input_region(hwnd);
-        return Err(error);
+        return Err(tauri::Error::Anyhow(error.into()));
     }
     Ok(())
 }
@@ -458,6 +320,7 @@ fn configure_card_hit_test<R: tauri::Runtime>(
     let rect = capsule_card_hit_rect(client.right - client.left, client.bottom - client.top);
     clear_capsule_input_region(hwnd);
     install_capsule_hit_test_proc(hwnd, rect)
+        .map_err(|error| tauri::Error::Anyhow(error.into()))
 }
 
 #[cfg(target_os = "windows")]
