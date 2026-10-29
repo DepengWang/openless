@@ -22,6 +22,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::types::{CapsuleDisplayMode, CapsulePayload, CapsuleState, CapsuleStyle};
 
 /// The Tauri event-loop thread, recorded by [`TauriCoordinatorHost::bind`].
+#[cfg(target_os = "windows")]
 static MAIN_THREAD: OnceLock<std::thread::ThreadId> = OnceLock::new();
 
 static CAPSULE_SUPPRESSED_BY_TOGGLE_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -2044,6 +2045,7 @@ impl TauriCoordinatorHost {
 
     pub(crate) fn bind(&self, app: AppHandle) {
         // `bind` runs in Tauri's `setup`, on the event-loop thread.
+        #[cfg(target_os = "windows")]
         let _ = MAIN_THREAD.set(std::thread::current().id());
         #[cfg(not(mobile))]
         if crate::desktop_resources::active() {
@@ -2067,6 +2069,7 @@ impl TauriCoordinatorHost {
     /// non-atomic `Rc`, so cloning or dropping one off the main thread races the main thread's
     /// refcount and eventually frees the event loop while it runs (heap corruption 0xc0000374).
     /// This posts through the bound handle by reference instead of cloning it on the caller.
+    #[cfg(target_os = "windows")]
     pub(crate) fn on_main_thread<F>(&self, task: F)
     where
         F: FnOnce() + Send + 'static,
