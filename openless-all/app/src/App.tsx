@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, startTransition, Suspense, useEffect, useState } from 'react';
 import { Capsule } from './components/Capsule';
 import { CapsuleTranscriptOverlay } from './components/LiveTranscriptPill';
 import { CoreStartupScreen } from './components/CoreStartupScreen';
@@ -10,6 +10,7 @@ import {
   getHotkeyStatus,
   getStartupSnapshot,
   getVoiceEditState,
+  getCredentials,
   getSettings,
   getPlatformCapabilities,
   handleWindowHotkeyEvent,
@@ -20,7 +21,16 @@ import { cancelAndCloseVoiceEditSession } from './lib/ipc/voice-edit-session';
 import type { PlatformCapabilities } from './lib/types';
 import { isWindowHotkeyKeyboardCandidate, windowMouseHotkeyCode } from './lib/windowHotkeyFallback';
 import { markStartup } from './lib/startupMetrics';
+import { withStartupDeadline } from './lib/startupProbe';
 import { HotkeySettingsProvider } from './state/HotkeySettingsContext';
+import {
+  needsDesktopGuide,
+  newGuideProgress,
+  readGuideProgress,
+  REOPEN_ONBOARDING_EVENT,
+  saveGuideProgress,
+} from './lib/desktopOnboarding';
+import { useReducedMotion } from './lib/motion';
 
 // Lazy-load pages per WebView by window purpose to cut resident memory. The capsule
 // gives instant recording feedback — small and first-frame-latency sensitive — so it
@@ -160,18 +170,44 @@ function ReadyApp({
 
   const os = forcedOs ?? detectOS();
   // Windows startup must not block the first screen on permission probes.
-  const [gate, setGate] = useState<Gate>(isTauri ? 'checking' : 'ready');
+  const [gate, setGate] = useState<Gate>(
+    isTauri
+      ? 'checking'
+      : new URLSearchParams(location.search).get('onboarding') === '1'
+        ? 'onboarding'
+        : 'ready',
+  );
+  const [onboardingHandoff, setOnboardingHandoff] = useState(false);
+  const reducedMotion = useReducedMotion();
   const [startupError, setStartupError] = useState<string | null>(null);
   const [platformCaps, setPlatformCaps] = useState<PlatformCapabilities | null>(null);
   const [mobileQaOpen, setMobileQaOpen] = useState(false);
   const [mobileVoiceEditOpen, setMobileVoiceEditOpen] = useState(false);
   const [mobileVoiceEditCloseError, setMobileVoiceEditCloseError] = useState('');
-  const completeOnboarding = () => {
+  const completeOnboarding = async () => {
     if (platformCaps?.platform === 'android') {
       localStorage.setItem(ANDROID_SETUP_WIZARD_COMPLETE_KEY, '1');
+    } else {
+      await import('./components/FloatingShell');
     }
-    setGate('ready');
+    startTransition(() => {
+      setOnboardingHandoff(platformCaps?.platform !== 'android' && !reducedMotion);
+      setGate('ready');
+    });
   };
+  useEffect(() => {
+    if (!onboardingHandoff) return;
+    const timer = window.setTimeout(() => setOnboardingHandoff(false), reducedMotion ? 0 : 280);
+    return () => window.clearTimeout(timer);
+  }, [onboardingHandoff, reducedMotion]);
+  useEffect(() => {
+    const reopen = () => {
+      if (isTauri) saveGuideProgress(newGuideProgress());
+      setGate('onboarding');
+    };
+    window.addEventListener(REOPEN_ONBOARDING_EVENT, reopen);
+    return () => window.removeEventListener(REOPEN_ONBOARDING_EVENT, reopen);
+  }, []);
   useEffect(() => {
     if (!isTauri) return;
     void getStartupSnapshot()
@@ -326,6 +362,7 @@ function ReadyApp({
   useEffect(() => {
     if (!isTauri || !platformCaps) return;
     let cancelled = false;
+    const startupProbe = new AbortController();
 
     void (async () => {
       const caps = platformCaps;
@@ -341,6 +378,18 @@ function ReadyApp({
         // of trapping users on onboarding while JNI/runtime permission is pending.
         const blocked = m === 'denied' || m === 'restricted';
         setGate(blocked ? 'onboarding' : 'ready');
+        return;
+      }
+
+      const progress = readGuideProgress();
+      if (progress?.finished) {
+        setGate('ready');
+        return;
+      }
+      const credentials = await withStartupDeadline(getCredentials(), startupProbe.signal);
+      if (cancelled) return;
+      if (needsDesktopGuide(progress, credentials)) {
+        setGate('onboarding');
         return;
       }
 
@@ -383,14 +432,14 @@ function ReadyApp({
       const mOk = m === 'granted' || m === 'notApplicable' || m === 'noDevice';
       setGate(aOk && mOk ? 'ready' : 'onboarding');
     })().catch((error) => {
+      if (cancelled) return;
       console.warn('[startup] permission gate failed', error);
-      if (!cancelled) {
-        setGate('ready');
-      }
+      setGate('ready');
     });
 
     return () => {
       cancelled = true;
+      startupProbe.abort();
     };
   }, [os, platformCaps]);
 
@@ -468,13 +517,27 @@ function ReadyApp({
             />
           </div>
         )}
-        {!mobileQaOpen &&
-          !mobileVoiceEditOpen &&
-          (gate === 'onboarding' ? (
-            <Onboarding onComplete={completeOnboarding} />
-          ) : (
-            <FloatingShell os={os} />
-          ))}
+        {!mobileQaOpen && !mobileVoiceEditOpen && (
+          <div style={{ width: '100%', height: '100%', minWidth: 0, position: 'relative' }}>
+            {gate === 'ready' && (
+              <div className="ol-main-arrival">
+                <FloatingShell os={os} />
+              </div>
+            )}
+            {(gate === 'onboarding' || onboardingHandoff) && (
+              <div
+                className="ol-onboarding-layer"
+                data-leaving={onboardingHandoff || undefined}
+                aria-hidden={onboardingHandoff || undefined}
+                ref={(element) => {
+                  if (element) element.inert = onboardingHandoff;
+                }}
+              >
+                <Onboarding onComplete={completeOnboarding} />
+              </div>
+            )}
+          </div>
+        )}
         {gate === 'ready' && platformCaps?.supportsAutoUpdate === true && <AutoUpdateGate />}
       </HotkeySettingsProvider>
     </Suspense>

@@ -2116,6 +2116,13 @@ impl TauriCoordinatorHost {
     }
 
     #[cfg(not(mobile))]
+    pub(crate) fn refresh_native_capsule_theme(&self) {
+        if let Some(native) = self.native.lock().as_ref() {
+            native.refresh_theme();
+        }
+    }
+
+    #[cfg(not(mobile))]
     pub(crate) fn stop_native_capsule(&self) {
         if let Some(native) = self.native.lock().as_ref() {
             native.stop();
