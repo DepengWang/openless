@@ -1233,7 +1233,7 @@ export const zhTW: typeof zhCN = {
     selectionWorkspace: {
       extraControls: '額外控制項',
       extraControlsDesc: '設定提問/編輯判斷與模型輸出格式；一般使用不需要調整。',
-      openExtraControls: '開啟額外控制項',
+      openExtraControls: '更多',
       extraControlsSaveHint: '修改後會自動儲存。',
       extraControlsDone: '完成',
       title: '選區助手',

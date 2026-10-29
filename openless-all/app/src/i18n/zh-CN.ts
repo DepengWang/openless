@@ -1232,7 +1232,7 @@ export const zhCN = {
     selectionWorkspace: {
       extraControls: '额外控件',
       extraControlsDesc: '配置提问与编辑判断及模型输出格式；普通使用无需调整。',
-      openExtraControls: '打开额外控件',
+      openExtraControls: '更多',
       extraControlsSaveHint: '修改后自动保存。',
       extraControlsDone: '完成',
       title: '选区助手',

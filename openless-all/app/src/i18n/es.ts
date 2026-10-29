@@ -1301,7 +1301,7 @@ export const es: typeof zhCN = {
       extraControls: 'Controles avanzados',
       extraControlsDesc:
         'Configura la decisión entre pregunta y edición y el formato de salida del modelo.',
-      openExtraControls: 'Abrir controles avanzados',
+      openExtraControls: 'Más',
       extraControlsSaveHint: 'Los cambios se guardan automáticamente.',
       extraControlsDone: 'Listo',
       title: 'Asistente de selección',

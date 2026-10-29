@@ -1309,7 +1309,7 @@ export const de: typeof zhCN = {
       extraControls: 'Erweiterte Einstellungen',
       extraControlsDesc:
         'Frage-/Bearbeitungsentscheidung und Ausgabeformat des Modells konfigurieren.',
-      openExtraControls: 'Erweiterte Einstellungen öffnen',
+      openExtraControls: 'Mehr',
       extraControlsSaveHint: 'Änderungen werden automatisch gespeichert.',
       extraControlsDone: 'Fertig',
       title: 'Assistent für Textauswahl',

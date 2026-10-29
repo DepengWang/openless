@@ -1267,7 +1267,7 @@ export const ko: typeof zhCN = {
       extraControls: '추가 설정',
       extraControlsDesc:
         '질문/편집 판단과 모델 출력 형식을 설정합니다. 일반적으로 변경할 필요가 없습니다.',
-      openExtraControls: '추가 설정 열기',
+      openExtraControls: '더보기',
       extraControlsSaveHint: '변경 사항은 자동 저장됩니다.',
       extraControlsDone: '완료',
       title: '선택 영역 도우미',

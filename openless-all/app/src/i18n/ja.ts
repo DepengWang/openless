@@ -1273,7 +1273,7 @@ export const ja: typeof zhCN = {
     selectionWorkspace: {
       extraControls: '追加設定',
       extraControlsDesc: '質問と編集の判定、モデル出力形式を調整します。通常は変更不要です。',
-      openExtraControls: '追加設定を開く',
+      openExtraControls: 'その他',
       extraControlsSaveHint: '変更は自動保存されます。',
       extraControlsDone: '完了',
       title: '選択範囲アシスタント',

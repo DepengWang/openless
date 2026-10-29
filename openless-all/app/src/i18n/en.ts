@@ -1284,7 +1284,7 @@ export const en: typeof zhCN = {
     selectionWorkspace: {
       extraControls: 'Advanced controls',
       extraControlsDesc: 'Configure question/edit routing and model output only when needed.',
-      openExtraControls: 'Open advanced controls',
+      openExtraControls: 'More',
       extraControlsSaveHint: 'Changes save automatically.',
       extraControlsDone: 'Done',
       title: 'Selection Assistant',

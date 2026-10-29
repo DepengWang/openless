@@ -1321,7 +1321,7 @@ export const fr: typeof zhCN = {
       extraControls: 'Options avancées',
       extraControlsDesc:
         'Configurez la distinction question/édition et le format de sortie du modèle.',
-      openExtraControls: 'Ouvrir les options avancées',
+      openExtraControls: 'Plus',
       extraControlsSaveHint: 'Les modifications sont enregistrées automatiquement.',
       extraControlsDone: 'Terminé',
       title: 'Assistant de sélection',
