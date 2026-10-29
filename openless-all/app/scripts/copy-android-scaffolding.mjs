@@ -100,6 +100,7 @@ const KOTLIN_TEST_FILES = [
   'StrokePhraseSuffixTest.kt',
   'EnglishAutoTextTest.kt',
   'InputLearningRulesTest.kt',
+  'FrequencyStampCacheTest.kt',
   'RimePinyinDataTest.kt',
   'LatinInputModeTest.kt',
   'OpenLessContentReaderTest.kt',

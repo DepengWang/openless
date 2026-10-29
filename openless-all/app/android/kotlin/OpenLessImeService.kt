@@ -3325,15 +3325,18 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         if (!personalizedLearningAllowed()) return
         val connection = currentInputConnection ?: return
         val typed = englishComposingWord.toString()
+        var typedPrefix = ""
         for (length in typed.length downTo 1) {
             val actual = connection.getTextBeforeCursor(length, 0)?.toString()
             if (actual != null && actual.equals(typed.takeLast(length), ignoreCase = true)) {
+                typedPrefix = actual
                 connection.deleteSurroundingText(length, 0)
                 break
             }
         }
+        val candidate = EnglishAutoText.candidateText(word, typedPrefix, shiftState == ShiftState.CAPS_LOCK)
         clearEnglishAutoText()
-        if (!connection.commitText("$word ", 1)) return
+        if (!connection.commitText("$candidate ", 1)) return
         englishAutoSpace = englishEditAnchor(connection)
         englishCandidateProvider.recordCommit(word)
         englishComposingWord.clear()
@@ -3535,10 +3538,12 @@ class OpenLessImeService : InputMethodService(), OpenLessOverlayBridge.OverlaySt
         if (isBackendReady()) refreshAsrRoute()
         val key = keyboardFootprintKey()
         val rebuild = appliedKeyboardFootprintKey != key
-        updateAutoShift(refresh = !rebuild)
+        updateAutoShift(refresh = false)
         if (rebuild) {
             appliedKeyboardFootprintKey = key
             refreshInputView()
+        } else if (inputMode == InputMode.ENGLISH && englishLayer == EnglishLayer.LETTERS) {
+            applyShiftState()
         }
     }
 
