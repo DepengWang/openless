@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
-#[cfg(target_os = "windows")]
 use std::sync::OnceLock;
 
 #[path = "capsule_snapshot.rs"]
