@@ -215,6 +215,7 @@ test('Gemini Omni exposes the shared thinking setting and hides it for transcrip
   await page.screenshot({ path: testInfo.outputPath('gemini-omni-desktop.png') });
 
   await page.setViewportSize({ width: 375, height: 812 });
+  await thinking.scrollIntoViewIfNeeded();
   await expect(thinking).toBeInViewport({ ratio: 1 });
   const model = card.getByLabel('模型', { exact: true });
   await model.fill('gemini-3.5-transcribe');
