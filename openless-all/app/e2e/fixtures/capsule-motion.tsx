@@ -1,35 +1,31 @@
 // Real production components with an isolated native event/geometry adapter.
 import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { CapsuleState, ThemeMode } from '../../src/lib/types';
+import type { CapsuleState } from '../../src/lib/types';
 import '../../src/styles/tokens.css';
 import '../../src/styles/global.css';
 
 const callbacks = new Map<number, (value: unknown) => void>();
 const listeners = new Map<string, Set<number>>();
+const listenerTargets = new Map<number, { kind: string; label?: string }>();
 let callbackId = 0;
 const qa = new URLSearchParams(location.search).has('qa');
-const themeSync = new URLSearchParams(location.search).has('themeSync');
-const holdThemeRead = new URLSearchParams(location.search).has('holdThemeRead');
-let releaseThemeRead: (() => void) | undefined;
-let themeReadStarted!: () => void;
-const firstThemeRead = new Promise<void>((resolve) => {
-  themeReadStarted = resolve;
-});
+const params = new URLSearchParams(location.search);
+const windowLabel = params.get('label') ?? (qa ? 'qa' : 'capsule');
 const bridge = {
   emit(event: string, payload: unknown) {
     for (const id of listeners.get(event) ?? []) callbacks.get(id)?.({ event, id, payload });
   },
+  emitTo(label: string, event: string, payload: unknown) {
+    for (const id of listeners.get(event) ?? []) {
+      const target = listenerTargets.get(id);
+      if (!target || target.kind === 'Any' || target.label === label)
+        callbacks.get(id)?.({ event, id, payload });
+    }
+  },
+  transcriptVisibility: [] as boolean[],
   hasListener: (event: string) => Boolean(listeners.get(event)?.size),
   setCapsule: (_: Record<string, unknown>) => {},
-  theme: 'light' as ThemeMode,
-  themeReads: 0,
-  nativeThemeWrites: [] as unknown[],
-  releaseThemeRead: () => releaseThemeRead?.(),
-  setTheme(themeMode: ThemeMode) {
-    bridge.theme = themeMode;
-    bridge.emit('prefs:changed', { themeMode });
-  },
   sizes: [] as boolean[],
   target: {
     sessionId: 'recording-a',
@@ -45,7 +41,10 @@ const bridge = {
 };
 Object.assign(window, { fixture: bridge });
 window.__TAURI_INTERNALS__ = {
-  metadata: { currentWindow: { label: 'capsule' }, currentWebview: { label: 'capsule' } },
+  metadata: {
+    currentWindow: { label: windowLabel },
+    currentWebview: { label: windowLabel },
+  },
   transformCallback(callback: (value: unknown) => void) {
     const id = ++callbackId;
     callbacks.set(id, callback);
@@ -59,33 +58,24 @@ window.__TAURI_INTERNALS__ = {
       const ids = listeners.get(args.event) ?? new Set<number>();
       ids.add(args.handler);
       listeners.set(args.event, ids);
+      listenerTargets.set(args.handler, args.target ?? { kind: 'Any' });
       return args.handler;
     }
     if (command === 'plugin:event|unlisten') {
       listeners.get(args.event)?.delete(args.eventId);
+      listenerTargets.delete(args.eventId);
       return;
     }
     if (command === 'get_startup_snapshot')
       return { contractVersion: '2.0.0', backend: { running: true } };
-    if (command === 'get_settings') {
-      const settings = {
+    if (command === 'get_settings')
+      return {
         translationTargetLanguage: bridge.target.targetLanguage,
         capsuleStyle: 'classic',
-        capsuleTranscriptEnabled: false,
-        ...(themeSync ? { themeMode: bridge.theme } : {}),
+        capsuleTranscriptEnabled: params.has('transcript'),
       };
-      if (themeSync && ++bridge.themeReads === 1) {
-        themeReadStarted();
-        if (holdThemeRead) {
-          await new Promise<void>((resolve) => {
-            releaseThemeRead = resolve;
-          });
-        }
-      }
-      return settings;
-    }
-    if (command === 'plugin:app|set_app_theme') {
-      bridge.nativeThemeWrites.push(args);
+    if (command === 'set_capsule_transcript_visible') {
+      bridge.transcriptVisibility.push(args.visible);
       return;
     }
     if (command === 'get_dictation_translation_target') return { ...bridge.target };
@@ -128,16 +118,10 @@ Object.assign(window, { __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener()
 const { i18nReady } = await import('../../src/i18n');
 await i18nReady;
 const { OpenLessPill } = await import('../../src/components/OpenLessCapsule');
-const { CapsuleTranslationBadge } = await import('../../src/components/LiveTranscriptPill');
+const { CapsuleTranslationBadge, CapsuleTranscriptOverlay } =
+  await import('../../src/components/LiveTranscriptPill');
 const { QaPanel } = await import('../../src/pages/QaPanel');
 const { Capsule } = await import('../../src/components/Capsule');
-if (themeSync) {
-  localStorage.setItem('ol.theme', 'light');
-  const { initThemeMode } = await import('../../src/lib/themeMode');
-  initThemeMode();
-  initThemeMode();
-  await firstThemeRead;
-}
 function CapsuleFixture() {
   const [state, set] = useState({
     state: 'recording' as CapsuleState,
@@ -174,7 +158,9 @@ function CapsuleFixture() {
 }
 document.body.style.background = '#0b1215';
 createRoot(document.getElementById('root')!).render(
-  new URLSearchParams(location.search).has('full') ? (
+  params.has('rail') ? (
+    <CapsuleTranscriptOverlay />
+  ) : params.has('full') ? (
     <div
       style={{
         position: 'absolute',
