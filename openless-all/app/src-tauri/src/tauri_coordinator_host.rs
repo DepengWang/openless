@@ -1039,6 +1039,8 @@ impl CapsuleWindowState {
 #[derive(Clone)]
 pub(crate) struct TauriCapsuleWindow {
     app: AppHandle,
+    #[cfg(target_os = "windows")]
+    host: TauriCoordinatorHost,
     state: Arc<CapsuleWindowState>,
     qa_context: Arc<crate::qa_adapter::TauriQaHostContext>,
 }
@@ -1843,36 +1845,57 @@ impl TauriCapsuleWindow {
             .layout_watch_epoch
             .fetch_add(1, Ordering::SeqCst)
             .wrapping_add(1);
+        let state = Arc::clone(&self.state);
+        // The Windows timer must not own a Tauri handle: both cloning it on a Tokio
+        // worker and dropping it when the timer exits can race the event loop's Rc.
+        #[cfg(target_os = "windows")]
+        let host = self.host.clone();
+        #[cfg(not(target_os = "windows"))]
         let capsule = self.clone();
         tauri::async_runtime::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                if capsule.state.layout_watch_epoch.load(Ordering::SeqCst) != epoch {
+                if state.layout_watch_epoch.load(Ordering::SeqCst) != epoch {
                     break;
                 }
+                #[cfg(target_os = "windows")]
+                {
+                    let host_for_main = host.clone();
+                    host.on_main_thread(move || {
+                        if let Some(capsule) = host_for_main.capsule_window() {
+                            capsule.refresh_watched_layout(epoch);
+                        }
+                    });
+                }
+                #[cfg(not(target_os = "windows"))]
                 let _ = capsule.run_on_main_thread(move |capsule| {
-                    if capsule.state.layout_watch_epoch.load(Ordering::SeqCst) != epoch {
-                        return;
-                    }
-                    let Some(window) = capsule.window() else {
-                        capsule.stop_layout_watch();
-                        return;
-                    };
-                    if !window.is_visible().unwrap_or(false) {
-                        capsule.stop_layout_watch();
-                        return;
-                    }
-                    let payload = capsule.state.snapshot.lock().payload.clone();
-                    if let Some(payload) = payload {
-                        capsule.maybe_position_capsule_bottom_center(
-                            &window,
-                            payload.translation,
-                            capsule.state.cached_style(),
-                        );
-                    }
+                    capsule.refresh_watched_layout(epoch);
                 });
             }
         });
+    }
+
+    fn refresh_watched_layout(&self, epoch: u64) {
+        // A stopped/restarted watch can still have an old tick queued on the main thread.
+        if self.state.layout_watch_epoch.load(Ordering::SeqCst) != epoch {
+            return;
+        }
+        let Some(window) = self.window() else {
+            self.stop_layout_watch();
+            return;
+        };
+        if !window.is_visible().unwrap_or(false) {
+            self.stop_layout_watch();
+            return;
+        }
+        let payload = self.state.snapshot.lock().payload.clone();
+        if let Some(payload) = payload {
+            self.maybe_position_capsule_bottom_center(
+                &window,
+                payload.translation,
+                self.state.cached_style(),
+            );
+        }
     }
 
     fn update_cursor_for_payload(&self, payload: &CapsulePayload, style: CapsuleStyle) {
@@ -2163,6 +2186,8 @@ impl TauriCoordinatorHost {
     pub(crate) fn capsule_window(&self) -> Option<TauriCapsuleWindow> {
         self.app().map(|app| TauriCapsuleWindow {
             app,
+            #[cfg(target_os = "windows")]
+            host: self.clone(),
             state: Arc::clone(&self.capsule),
             qa_context: Arc::clone(&self.qa_context),
         })
