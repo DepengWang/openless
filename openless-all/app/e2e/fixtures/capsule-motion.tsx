@@ -10,15 +10,15 @@ const listeners = new Map<string, Set<number>>();
 const listenerTargets = new Map<number, { kind: string; label?: string }>();
 let callbackId = 0;
 const qa = new URLSearchParams(location.search).has('qa');
-const themeSync = new URLSearchParams(location.search).has('themeSync');
-const holdThemeRead = new URLSearchParams(location.search).has('holdThemeRead');
+const params = new URLSearchParams(location.search);
+const windowLabel = params.get('label') ?? (qa ? 'qa' : 'capsule');
+const themeSync = params.has('themeSync');
+const holdThemeRead = params.has('holdThemeRead');
 let releaseThemeRead: (() => void) | undefined;
 let themeReadStarted!: () => void;
 const firstThemeRead = new Promise<void>((resolve) => {
   themeReadStarted = resolve;
 });
-const params = new URLSearchParams(location.search);
-const windowLabel = params.get('label') ?? (qa ? 'qa' : 'capsule');
 const bridge = {
   emit(event: string, payload: unknown) {
     for (const id of listeners.get(event) ?? []) callbacks.get(id)?.({ event, id, payload });
@@ -99,6 +99,10 @@ window.__TAURI_INTERNALS__ = {
         }
       }
       return settings;
+    }
+    if (command === 'plugin:app|set_app_theme') {
+      bridge.nativeThemeWrites.push(args);
+      return;
     }
     if (command === 'set_capsule_transcript_visible') {
       bridge.transcriptVisibility.push(args.visible);
