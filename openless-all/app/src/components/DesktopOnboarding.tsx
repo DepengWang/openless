@@ -22,6 +22,7 @@ import {
 } from '../lib/ipc';
 import type { CredentialsStatus, PermissionStatus } from '../lib/types';
 import {
+  DESKTOP_ONBOARDING_KEY,
   deferPostGuidePrompts,
   guideSteps,
   newGuideProgress,
@@ -168,13 +169,25 @@ export function DesktopOnboarding({ onComplete }: { onComplete: () => void | Pro
       answers: { ...progress.answers, [step]: answer },
     });
   };
-  const finish = () =>
+  const leaveGuide = (finished: boolean) =>
     run(async () => {
       // The parent's handoff prepares the main bundle before removing this surface.
       deferPostGuidePrompts();
       await onComplete();
-      persist({ ...progress, name: name.trim().slice(0, 40), finished: true });
+      const next = { ...progress, name: name.trim().slice(0, 40), finished };
+      const hasProgress = Boolean(next.name || Object.keys(next.answers).length);
+      if (finished || hasProgress) {
+        persist(next);
+      } else if (!preview) {
+        try {
+          localStorage.removeItem(DESKTOP_ONBOARDING_KEY);
+        } catch {
+          setStorageError(true);
+        }
+      }
     });
+  const finish = () => leaveGuide(true);
+  const exploreFirst = () => leaveGuide(false);
   const requestPermission = () =>
     run(async () => {
       const mic = step === 'microphone';
@@ -285,7 +298,7 @@ export function DesktopOnboarding({ onComplete }: { onComplete: () => void | Pro
           <button
             className="ol-guide-text-button"
             type="button"
-            onClick={() => void finish()}
+            onClick={() => void exploreFirst()}
             disabled={busy}
           >
             {t('desktopGuide.skipAll')}

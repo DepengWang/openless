@@ -165,7 +165,7 @@ test('native permission changes stay on the current step and progress resumes af
     await page.evaluate(
       () => JSON.parse(localStorage.getItem('ol.desktopOnboarding.v1')!).finished,
     ),
-  ).toBe(true);
+  ).toBe(false);
 });
 
 test('native saves and permission failures remain retryable without advancing', async ({
