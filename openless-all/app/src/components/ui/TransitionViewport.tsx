@@ -68,9 +68,7 @@ export function TransitionViewport({
   }, [switching, contentKey, children, reduced, readyKey]);
   useLayoutEffect(() => {
     if (switching || reduced || retained.current.children === children) return;
-    const next = { key: contentKey, children };
-    retained.current = next;
-    setCommitted(next);
+    retained.current = { key: contentKey, children };
   }, [contentKey, children, reduced, switching]);
   useEffect(() => {
     if (reduced) entered.current?.();
