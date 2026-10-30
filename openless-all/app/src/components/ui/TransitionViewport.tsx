@@ -66,10 +66,6 @@ export function TransitionViewport({
     if (reduced && switching) setCommitted({ key: contentKey, children });
     if (reduced && readyKey !== null) setReadyKey(null);
   }, [switching, contentKey, children, reduced, readyKey]);
-  useLayoutEffect(() => {
-    if (switching || reduced || retained.current.children === children) return;
-    retained.current = { key: contentKey, children };
-  }, [contentKey, children, reduced, switching]);
   useEffect(() => {
     if (reduced) entered.current?.();
   }, [contentKey, reduced]);
@@ -82,10 +78,8 @@ export function TransitionViewport({
       if (latest.current.key === key) entered.current?.();
     });
   };
-  const surfaces =
-    switching && !reduced
-      ? [retained.current, { key: contentKey, children }]
-      : [{ key: contentKey, children }];
+  const currentSurface: Surface = { key: contentKey, children };
+  const surfaces = switching && !reduced ? [retained.current, currentSurface] : [currentSurface];
 
   return (
     <div
