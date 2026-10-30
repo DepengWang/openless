@@ -382,10 +382,6 @@ function ReadyApp({
       }
 
       const progress = readGuideProgress();
-      if (progress?.finished) {
-        setGate('ready');
-        return;
-      }
       const credentials = await withStartupDeadline(getCredentials(), startupProbe.signal);
       if (cancelled) return;
       if (needsDesktopGuide(progress, credentials)) {
@@ -406,6 +402,15 @@ function ReadyApp({
           const status = await getHotkeyStatus();
           if (cancelled) return;
           if (status.state !== 'starting') {
+            if (status.state === 'failed') {
+              saveGuideProgress({
+                ...(progress ?? newGuideProgress()),
+                step: 'shortcut',
+                finished: false,
+              });
+              setGate('onboarding');
+              return;
+            }
             setGate('ready');
             return;
           }
@@ -430,7 +435,16 @@ function ReadyApp({
       // onboarding; let them in and show the clear "no microphone detected" notice on
       // the permissions page. See issue #779.
       const mOk = m === 'granted' || m === 'notApplicable' || m === 'noDevice';
-      setGate(aOk && mOk ? 'ready' : 'onboarding');
+      if (aOk && mOk) {
+        setGate('ready');
+      } else {
+        saveGuideProgress({
+          ...(progress ?? newGuideProgress()),
+          step: !aOk && os === 'mac' ? 'accessibility' : 'microphone',
+          finished: false,
+        });
+        setGate('onboarding');
+      }
     })().catch((error) => {
       if (cancelled) return;
       console.warn('[startup] permission gate failed', error);
