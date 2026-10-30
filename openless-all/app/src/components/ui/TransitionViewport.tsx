@@ -213,6 +213,21 @@ function TransitionSurface({
     };
   }, [phase, reduced, slow, pace]);
   useSmoothWheelScroll(ref, surfaceKey);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || !node.contains(active)) return;
+      const viewport = node.getBoundingClientRect();
+      const target = active.getBoundingClientRect();
+      if (target.top < viewport.top || target.bottom > viewport.bottom) {
+        active.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
+      }
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [surfaceKey]);
   useLayoutEffect(() => {
     const node = ref.current;
     if (node) node.inert = phase !== 'settled';
