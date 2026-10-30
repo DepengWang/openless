@@ -7,6 +7,7 @@ import '../../src/styles/global.css';
 
 const callbacks = new Map<number, (value: unknown) => void>();
 const listeners = new Map<string, Set<number>>();
+const listenerTargets = new Map<number, { kind: string; label?: string }>();
 let callbackId = 0;
 const qa = new URLSearchParams(location.search).has('qa');
 const themeSync = new URLSearchParams(location.search).has('themeSync');
@@ -16,10 +17,20 @@ let themeReadStarted!: () => void;
 const firstThemeRead = new Promise<void>((resolve) => {
   themeReadStarted = resolve;
 });
+const params = new URLSearchParams(location.search);
+const windowLabel = params.get('label') ?? (qa ? 'qa' : 'capsule');
 const bridge = {
   emit(event: string, payload: unknown) {
     for (const id of listeners.get(event) ?? []) callbacks.get(id)?.({ event, id, payload });
   },
+  emitTo(label: string, event: string, payload: unknown) {
+    for (const id of listeners.get(event) ?? []) {
+      const target = listenerTargets.get(id);
+      if (!target || target.kind === 'Any' || target.label === label)
+        callbacks.get(id)?.({ event, id, payload });
+    }
+  },
+  transcriptVisibility: [] as boolean[],
   hasListener: (event: string) => Boolean(listeners.get(event)?.size),
   setCapsule: (_: Record<string, unknown>) => {},
   theme: 'light' as ThemeMode,
@@ -45,7 +56,10 @@ const bridge = {
 };
 Object.assign(window, { fixture: bridge });
 window.__TAURI_INTERNALS__ = {
-  metadata: { currentWindow: { label: 'capsule' }, currentWebview: { label: 'capsule' } },
+  metadata: {
+    currentWindow: { label: windowLabel },
+    currentWebview: { label: windowLabel },
+  },
   transformCallback(callback: (value: unknown) => void) {
     const id = ++callbackId;
     callbacks.set(id, callback);
@@ -59,10 +73,12 @@ window.__TAURI_INTERNALS__ = {
       const ids = listeners.get(args.event) ?? new Set<number>();
       ids.add(args.handler);
       listeners.set(args.event, ids);
+      listenerTargets.set(args.handler, args.target ?? { kind: 'Any' });
       return args.handler;
     }
     if (command === 'plugin:event|unlisten') {
       listeners.get(args.event)?.delete(args.eventId);
+      listenerTargets.delete(args.eventId);
       return;
     }
     if (command === 'get_startup_snapshot')
@@ -71,7 +87,7 @@ window.__TAURI_INTERNALS__ = {
       const settings = {
         translationTargetLanguage: bridge.target.targetLanguage,
         capsuleStyle: 'classic',
-        capsuleTranscriptEnabled: false,
+        capsuleTranscriptEnabled: params.has('transcript'),
         ...(themeSync ? { themeMode: bridge.theme } : {}),
       };
       if (themeSync && ++bridge.themeReads === 1) {
@@ -83,6 +99,10 @@ window.__TAURI_INTERNALS__ = {
         }
       }
       return settings;
+    }
+    if (command === 'set_capsule_transcript_visible') {
+      bridge.transcriptVisibility.push(args.visible);
+      return;
     }
     if (command === 'plugin:app|set_app_theme') {
       bridge.nativeThemeWrites.push(args);
@@ -128,7 +148,8 @@ Object.assign(window, { __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener()
 const { i18nReady } = await import('../../src/i18n');
 await i18nReady;
 const { OpenLessPill } = await import('../../src/components/OpenLessCapsule');
-const { CapsuleTranslationBadge } = await import('../../src/components/LiveTranscriptPill');
+const { CapsuleTranslationBadge, CapsuleTranscriptOverlay } =
+  await import('../../src/components/LiveTranscriptPill');
 const { QaPanel } = await import('../../src/pages/QaPanel');
 const { Capsule } = await import('../../src/components/Capsule');
 if (themeSync) {
@@ -174,7 +195,9 @@ function CapsuleFixture() {
 }
 document.body.style.background = '#0b1215';
 createRoot(document.getElementById('root')!).render(
-  new URLSearchParams(location.search).has('full') ? (
+  params.has('rail') ? (
+    <CapsuleTranscriptOverlay />
+  ) : params.has('full') ? (
     <div
       style={{
         position: 'absolute',
