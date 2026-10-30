@@ -108,6 +108,10 @@ window.__TAURI_INTERNALS__ = {
       bridge.transcriptVisibility.push(args.visible);
       return;
     }
+    if (command === 'plugin:app|set_app_theme') {
+      bridge.nativeThemeWrites.push(args);
+      return;
+    }
     if (command === 'get_dictation_translation_target') return { ...bridge.target };
     if (command === 'set_capsule_language_menu') {
       if (args.open && (!bridge.target.mutable || args.sessionId !== bridge.target.sessionId))
