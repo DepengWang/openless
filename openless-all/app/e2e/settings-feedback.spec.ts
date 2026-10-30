@@ -1,3 +1,4 @@
+import { settleNavigation } from './support/navigation';
 import { expect, test, type Page } from '@playwright/test';
 
 // Development React is intentional: production builds hide special-prop/ref warnings.
@@ -24,6 +25,7 @@ async function settings(page: Page, category: string) {
     .getByRole('navigation', { name: '设置分类' })
     .getByRole('button', { name: category, exact: true })
     .click();
+  await settleNavigation(page);
 }
 
 async function expectInViewport(page: Page) {

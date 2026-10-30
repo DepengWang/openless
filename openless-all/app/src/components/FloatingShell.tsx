@@ -11,6 +11,7 @@ import {
   type CSSProperties,
 } from 'react';
 import { afterPaint } from '../lib/startupMetrics';
+import { guideFinishedThisSession } from '../lib/desktopOnboarding';
 import { PageSkeleton } from './ui/PageSkeleton';
 import { useTranslation } from 'react-i18next';
 import { Icon } from './Icon';
@@ -45,7 +46,8 @@ import {
   shouldShowHotkeyModeMigrationPrompt,
 } from '../lib/hotkeyMigration';
 import { useExitMount } from '../lib/useExitMount';
-import { useOverlayMotion, usePageTransition } from '../lib/motion';
+import { useOverlayMotion } from '../lib/motion';
+import { TransitionViewport } from './ui/TransitionViewport';
 import { getCredentials } from '../lib/ipc';
 import {
   PROVIDER_SETUP_PROMPT_DEFERRED_KEY,
@@ -163,7 +165,7 @@ function FloatingShellBody({
   }, [settingsMount.mounted]);
 
   const pageRef = useRef<HTMLDivElement>(null);
-  const displayTab = usePageTransition(currentTab, pageRef, mobile);
+  const displayTab = currentTab;
 
   // Already applied before React mounts; no first-frame scale jump.
   useEffect(() => {
@@ -307,7 +309,7 @@ function FloatingShellBody({
       <div
         ref={shellRef}
         data-ol-settings-open={settingsOpen ? 'true' : undefined}
-        className="ol-app-shell-bg"
+        className="ol-app-shell-bg ol-shell-depth"
         style={{
           flex: 1,
           minHeight: 0,
@@ -530,10 +532,10 @@ function FloatingShellBody({
                     when the page content overflows
                   - height:100% pages (History's two columns): 100% resolves against the
                     wrapper's fixed height so each column's own overflow:auto can scroll */}
-            <div
-              ref={pageRef}
-              key={displayTab}
-              data-ol-page={displayTab}
+            <TransitionViewport
+              scrollRef={pageRef}
+              contentKey={displayTab}
+              page={displayTab}
               // issue #243: all tabs allow overflow:auto so bottom content stays
               //   reachable when the window shrinks or copy grows (Codex P1: overview
               //   used hidden, leaving the Recent card fully invisible after shrinking).
@@ -564,33 +566,31 @@ function FloatingShellBody({
                 flexDirection: 'column',
               }}
             >
-              <Suspense fallback={<PageSkeleton />}>
-                {displayTab === 'overview' ? (
-                  <Overview
-                    onOpenHistory={() => setCurrentTab('history')}
-                    onOpenSettings={openSettings}
-                  />
-                ) : (
-                  <div
-                    className={conservative ? 'ol-conservative-scope' : undefined}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      // Keep the usage-guide content height so the outer scroll area's
-                      // bottom-nav spacing applies.
-                      flex: displayTab === 'selectionAsk' ? '1 0 auto' : 1,
-                      minHeight: 0,
-                    }}
-                  >
-                    {displayTab === 'selectionAsk' ? (
-                      <SelectionAsk onOpenShortcuts={() => openSettings('shortcuts')} />
-                    ) : (
-                      <Page />
-                    )}
-                  </div>
-                )}
-              </Suspense>
-            </div>
+              {displayTab === 'overview' ? (
+                <Overview
+                  onOpenHistory={() => setCurrentTab('history')}
+                  onOpenSettings={openSettings}
+                />
+              ) : (
+                <div
+                  className={conservative ? 'ol-conservative-scope' : undefined}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    // Keep the usage-guide content height so the outer scroll area's
+                    // bottom-nav spacing applies.
+                    flex: displayTab === 'selectionAsk' ? '1 0 auto' : 1,
+                    minHeight: 0,
+                  }}
+                >
+                  {displayTab === 'selectionAsk' ? (
+                    <SelectionAsk onOpenShortcuts={() => openSettings('shortcuts')} />
+                  ) : (
+                    <Page />
+                  )}
+                </div>
+              )}
+            </TransitionViewport>
           </main>
         </div>
       </div>
@@ -676,7 +676,12 @@ function FloatingShellBody({
         />
       ) : null}
       <CloudSyncSetupPrompt
-        blocked={settingsMount.mounted || providerPromptMount.mounted || hotkeyPromptMount.mounted}
+        blocked={
+          guideFinishedThisSession() ||
+          settingsMount.mounted ||
+          providerPromptMount.mounted ||
+          hotkeyPromptMount.mounted
+        }
         onSetup={() => openSettings('privacy')}
       />
       <AudioCueListener />

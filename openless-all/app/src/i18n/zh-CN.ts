@@ -1,3 +1,4 @@
+import { desktopGuideZhCN as desktopGuide } from './desktopGuide';
 import { siwcZhCN as siwc } from './siwc';
 // Simplified Chinese resources — kept in sync with the product's current copy.
 // The eight locale files share one structure; add/remove keys in all of them together.
@@ -6,6 +7,7 @@ import { uiRefinementZhCN as uiRefinement } from './uiRefinement';
 import { experimentalAsrZhCN as experimentalAsr } from './experimentalAsr';
 
 export const zhCN = {
+  desktopGuide,
   siwc,
   experimentalAsr,
   uiRefinement,
