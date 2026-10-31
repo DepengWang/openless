@@ -70,19 +70,25 @@ internal object OpenLessRime {
         try { request(operation, "", argument) } finally { sessionGeneration++ }
 
     /** Writes the pinyin user dictionary snapshot to [target]; false when nothing has been learned yet. Off the main thread. */
-    fun exportUserDictionary(context: Context, target: File): Boolean {
+    fun exportUserDictionary(context: Context, target: File): Boolean = RimeTaskQueue.run {
         initialize(context)
-        return closingSessions("user_dict_export", target.absolutePath).optBoolean("exported")
+        closingSessions("user_dict_export", target.absolutePath).optBoolean("exported")
     }
 
-    /** Merges a snapshot already checked by [RimeUserDictionaryFile.entryCount] into the user dictionary. Off the main thread. */
-    fun importUserDictionary(context: Context, source: File) {
-        initialize(context)
-        closingSessions("user_dict_import", source.absolutePath)
+    /** Validates and merges learned entries only; imported deletion markers cannot remove local words. Off the main thread. */
+    fun importUserDictionary(context: Context, source: File) = RimeTaskQueue.run {
+        val snapshot = RimeUserDictionaryFile.forImport(source.readText())
+        val normalized = File.createTempFile("pinyin-import-", ".userdb.txt", context.cacheDir)
+        try {
+            normalized.writeText(snapshot)
+            initialize(context)
+            closingSessions("user_dict_import", normalized.absolutePath)
+            Unit
+        } finally { normalized.delete() }
     }
 
     /** Rewrites both pinyin schemas' patches for [groups] and redeploys them. Off the main thread. */
-    fun applyFuzzyPinyin(context: Context, groups: Set<String>) {
+    fun applyFuzzyPinyin(context: Context, groups: Set<String>) = RimeTaskQueue.run {
         initialize(context)
         val patch = RimeFuzzyPinyin.customYaml(groups)
         for (schema in listOf("openless_pinyin_learning", "openless_pinyin_private")) {
@@ -90,5 +96,6 @@ internal object OpenLessRime {
             if (patch == null) file.delete() else file.writeText(patch)
         }
         closingSessions("redeploy", "")
+        Unit
     }
 }

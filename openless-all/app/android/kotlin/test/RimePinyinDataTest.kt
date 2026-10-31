@@ -6,6 +6,9 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class RimePinyinDataTest {
     private val sep = "\u0001"
@@ -62,6 +65,97 @@ class RimePinyinDataTest {
         assertThrows(IllegalArgumentException::class.java) { RimeUserDictionaryFile.entryCount("ni hao \t你好\tc=1\n") }
         assertThrows(IllegalArgumentException::class.java) { RimeUserDictionaryFile.entryCount(snapshot(rows = arrayOf("just text"))) }
         assertThrows(IllegalArgumentException::class.java) { RimeUserDictionaryFile.entryCount("{\"openlessSettingsExportVersion\":2}") }
+    }
+
+    @Test
+    fun userDictionaryCannotHideItsTargetBehindCommentDirectives() {
+        val foreign = snapshot(name = "other_dictionary", rows = arrayOf("ni hao \t你好\tc=1 d=1 t=1"))
+        for (directive in listOf("# no comment", "# no comment \t\r")) {
+            val disguised = "$foreign$directive\n#@/db_name\tpinyin_simp\n#@/db_type\tuserdb\n"
+            assertThrows(IllegalArgumentException::class.java) { RimeUserDictionaryFile.entryCount(disguised) }
+            assertThrows(IllegalArgumentException::class.java) { RimeUserDictionaryFile.forImport(disguised) }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RimeUserDictionaryFile.entryCount(snapshot() + "#@/db_name\tpinyin_simp\n")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RimeUserDictionaryFile.entryCount(snapshot() + "#@/db_type\tuserdb\n")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RimeUserDictionaryFile.entryCount(snapshot(name = "pinyin_simp\u00a0"))
+        }
+    }
+
+    @Test
+    fun importSnapshotRetainsMetadataAndLearnedWordsButDropsDeletionMarkers() {
+        val text = snapshot(rows = arrayOf(
+            "ni hao \t你好\tc=3 d=1.2 t=40",
+            "shan chu \t删除\tc=-10 d=0.5 t=30",
+            "ling \t零\tc=0 d=0 t=0",
+        )).replace("\n", "\r\n")
+        val imported = RimeUserDictionaryFile.forImport(text)
+        assertEquals(1, RimeUserDictionaryFile.entryCount(imported))
+        assertTrue(imported.contains("#@/db_name\tpinyin_simp\n"))
+        assertTrue(imported.contains("#@/tick\t42\n"))
+        assertTrue(imported.contains("ni hao \t你好\tc=3 d=1.2 t=40\n"))
+        assertFalse(imported.contains("\t删除\t"))
+        assertFalse(imported.contains("\t零\t"))
+    }
+
+    @Test
+    fun importRejectsAmbiguousOrMalformedCommitCounts() {
+        for (value in listOf("c=-10junk", "c=1 c=-10", "c=2147483648", "d=1 t=1", "c=")) {
+            val text = snapshot(rows = arrayOf("ni hao \t你好\t$value"))
+            assertThrows(IllegalArgumentException::class.java) { RimeUserDictionaryFile.forImport(text) }
+        }
+    }
+
+    @Test
+    fun dictionaryMaintenanceWaitsForTheWholeInputTask() {
+        val events = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val inputStarted = CountDownLatch(1)
+        val releaseInput = CountDownLatch(1)
+        val maintenanceRequested = CountDownLatch(1)
+        val maintenanceStarted = CountDownLatch(1)
+        val caller = Executors.newSingleThreadExecutor()
+        try {
+            val input = RimeTaskQueue.executor.submit {
+                events.add("key")
+                inputStarted.countDown()
+                check(releaseInput.await(5, TimeUnit.SECONDS))
+                events.add("ack")
+            }
+            assertTrue(inputStarted.await(5, TimeUnit.SECONDS))
+            val maintenance = caller.submit {
+                maintenanceRequested.countDown()
+                RimeTaskQueue.run {
+                    events.add("export")
+                    maintenanceStarted.countDown()
+                }
+            }
+            assertTrue(maintenanceRequested.await(5, TimeUnit.SECONDS))
+            assertFalse(maintenanceStarted.await(100, TimeUnit.MILLISECONDS))
+            releaseInput.countDown()
+            input.get(5, TimeUnit.SECONDS)
+            maintenance.get(5, TimeUnit.SECONDS)
+            assertEquals(listOf("key", "ack", "export"), events.toList())
+        } finally {
+            releaseInput.countDown()
+            caller.shutdownNow()
+        }
+    }
+
+    @Test
+    fun maintenanceCanNestOnTheInputQueueAndPreservesErrors() {
+        val thread = RimeTaskQueue.executor.submit<Thread> {
+            val expected = Thread.currentThread()
+            RimeTaskQueue.run { assertEquals(expected, Thread.currentThread()) }
+            expected
+        }.get(5, TimeUnit.SECONDS)
+        assertEquals("openless-rime", thread.name)
+        assertThrows(IllegalArgumentException::class.java) {
+            RimeTaskQueue.run { throw IllegalArgumentException("invalid snapshot") }
+        }
     }
 
     @Test

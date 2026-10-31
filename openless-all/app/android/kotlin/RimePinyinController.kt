@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger
 internal class RimePinyinController(context: Context) {
     private val context = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
-    private val worker = Executors.newSingleThreadExecutor()
+    private val worker = RimeTaskQueue.executor
     private val cloudWorker = Executors.newSingleThreadExecutor()
     @Volatile private var generation = 0L
     @Volatile private var requestId = 0L
@@ -61,7 +61,9 @@ internal class RimePinyinController(context: Context) {
                 OpenLessRime.initialize(context)
                 // A dictionary import/export or a fuzzy-pinyin redeploy closed every native session.
                 if (session.isNotEmpty() && sessionGeneration != OpenLessRime.sessionGeneration) {
-                    session = ""; pending = ""; pendingLiteral = ""
+                    // A failed editor write still belongs to this editor even if
+                    // maintenance closed the native session before its retry.
+                    session = ""
                 }
                 if (session.isEmpty()) {
                     sessionGeneration = OpenLessRime.sessionGeneration
@@ -161,7 +163,8 @@ internal class RimePinyinController(context: Context) {
             catch (_: Throwable) {} finally { session = ""; pending = ""; pendingLiteral = "" }
         }
     }
-    fun shutdown() { clear(); worker.shutdown(); cloudWorker.shutdownNow() }
+    // The input queue also belongs to other controllers and dictionary maintenance.
+    fun shutdown() { clear(); cloudWorker.shutdownNow() }
     private fun cloudEnabled(): Boolean = learning && context.getSharedPreferences("openless_ime_ui", Context.MODE_PRIVATE)
         .getBoolean("cloud_pinyin_enabled", false)
 

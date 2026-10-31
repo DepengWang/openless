@@ -2,6 +2,7 @@ package com.openless.app
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.core.app.ActivityScenario
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.Before
@@ -244,9 +245,13 @@ class RimeEngineIntegrationTest {
                 importRow("pou pou \t抔掊\tc=9 d=9 t=1")
                 assertTrue("Imported words become candidates", "抔掊" in candidatesFor("poupou"))
                 assertTrue("Importing merges instead of replacing", "拟蚝" in candidatesFor("nihao"))
-            } finally {
-                // A larger negative count wins the merge and marks the word deleted.
                 importRow("pou pou \t抔掊\tc=-10 d=0 t=1")
+                assertTrue("Importing a deletion marker must retain local words", "抔掊" in candidatesFor("poupou"))
+            } finally {
+                // Fixture cleanup deliberately uses the raw native restore; the
+                // keyboard import API above filters tombstones before calling it.
+                incoming.writeText("$header\npou pou \t抔掊\tc=-10 d=0 t=1\n")
+                RimeTaskQueue.run { OpenLessRime.request("user_dict_import", "", incoming.absolutePath) }
             }
             assertFalse("The cleanup import deletes the word again", "抔掊" in candidatesFor("poupou"))
         } finally {
@@ -286,6 +291,76 @@ class RimeEngineIntegrationTest {
             controller.space {}
         }
         assertEquals("你好", committed.toString())
+    }
+
+    @Test fun exportRequestedDuringEditorDeliveryWaitsForAcknowledgement() = withController { controller, committed ->
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val caller = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val requested = CountDownLatch(1)
+        val scratch = java.io.File(context.cacheDir, "test-in-flight-export.userdb.txt")
+        var export: java.util.concurrent.Future<*>? = null
+        try {
+            drain(controller) {
+                controller.bindCommit { text ->
+                    committed.append(text)
+                    if (export == null) {
+                        export = caller.submit {
+                            requested.countDown()
+                            OpenLessRime.exportUserDictionary(context, scratch)
+                        }
+                    }
+                    check(requested.await(5, TimeUnit.SECONDS))
+                    true
+                }
+                for (letter in "nihao") controller.appendLetter(letter) {}
+                controller.insertLiteral("!") {}
+            }
+            export!!.get(30, TimeUnit.SECONDS)
+            drain(controller) { controller.refresh {} }
+            assertEquals("你好!", committed.toString())
+            assertTrue(controller.isEmpty())
+        } finally {
+            caller.shutdownNow()
+            scratch.delete()
+        }
+    }
+
+    @Test fun exportBetweenFailedEditorWriteAndRetryRetainsTextAndPunctuation() = withController { controller, committed ->
+        val failed = CountDownLatch(1)
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val scratch = java.io.File(context.cacheDir, "test-failed-write-export.userdb.txt")
+        try {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                controller.bindCommit { failed.countDown(); false }
+                for (letter in "nihao") controller.appendLetter(letter) {}
+                controller.insertLiteral("!") {}
+            }
+            assertTrue(failed.await(30, TimeUnit.SECONDS))
+            OpenLessRime.exportUserDictionary(context, scratch)
+            drain(controller) {
+                controller.bindCommit { committed.append(it); true }
+                controller.refresh {}
+            }
+            assertEquals("你好!", committed.toString())
+        } finally { scratch.delete() }
+    }
+
+    @Test fun exportChecklistSurvivesActivityRecreationWithoutAddingSensitiveSections() {
+        val field = OpenLessKeyboardSettingsActivity::class.java.getDeclaredField("pendingExport").apply { isAccessible = true }
+        val selected = setOf(KeyboardDataFile.Section.SETTINGS, KeyboardDataFile.Section.STROKE)
+        ActivityScenario.launch(OpenLessKeyboardSettingsActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                assertEquals(emptySet<KeyboardDataFile.Section>(), field.get(activity))
+                field.set(activity, selected)
+            }
+            scenario.recreate()
+            scenario.onActivity { activity ->
+                assertEquals(selected, field.get(activity))
+                field.set(activity, emptySet<KeyboardDataFile.Section>())
+            }
+            scenario.recreate()
+            scenario.onActivity { activity -> assertEquals(emptySet<KeyboardDataFile.Section>(), field.get(activity)) }
+        }
     }
 
     private fun withController(test: (RimePinyinController, StringBuilder) -> Unit) {

@@ -70,6 +70,7 @@ const KOTLIN_FILES = [
   'StrokeInputController.kt',
   'StrokeInput.kt',
   'OpenLessRime.kt',
+  'RimeTaskQueue.kt',
   'RimePinyinController.kt',
   'RimeFuzzyPinyin.kt',
   'RimeUserDictionaryFile.kt',

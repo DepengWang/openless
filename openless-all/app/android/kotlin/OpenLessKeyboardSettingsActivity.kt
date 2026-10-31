@@ -52,6 +52,8 @@ class OpenLessKeyboardSettingsActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val exportKeys = savedInstanceState?.getStringArrayList(STATE_EXPORT_SECTIONS).orEmpty()
+        pendingExport = KeyboardDataFile.Section.entries.filter { it.key in exportKeys }.toSet()
         // Explicit rather than relying on targetSdk 36's implicit
         // edge-to-edge enforcement — guarantees the IME-inset listener in
         // buildContent() actually fires so the "云笔记提交" URL/Token fields
@@ -64,6 +66,11 @@ class OpenLessKeyboardSettingsActivity : Activity() {
         // just created as the standard companion call to
         // setDecorFitsSystemWindows(false) above.
         WindowCompat.getInsetsController(window, window.decorView)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putStringArrayList(STATE_EXPORT_SECTIONS, ArrayList(pendingExport.map { it.key }))
+        super.onSaveInstanceState(outState)
     }
 
     private fun saveMigrationSetting(write: () -> Unit) {
@@ -653,7 +660,8 @@ class OpenLessKeyboardSettingsActivity : Activity() {
         }
     }
 
-    private var pendingExport: Set<KeyboardDataFile.Section> = KeyboardDataFile.defaultExport
+    // A result without a saved checklist must never silently export every section.
+    private var pendingExport: Set<KeyboardDataFile.Section> = emptySet()
 
     /** A checklist of [sections], [preset] checked; [onConfirm] gets the checked ones (never called with none). */
     private fun chooseSections(
@@ -736,18 +744,29 @@ class OpenLessKeyboardSettingsActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         val uri = data?.data?.toString()
-        if (resultCode != RESULT_OK || uri == null) return
+        if (resultCode != RESULT_OK || uri == null) {
+            if (requestCode == REQUEST_KEYBOARD_DATA_EXPORT) pendingExport = emptySet()
+            return
+        }
         val app = applicationContext
         when (requestCode) {
-            REQUEST_KEYBOARD_DATA_EXPORT -> rimeWorker.execute {
-                val result = runCatching {
-                    val json = KeyboardDataFile.export(app, pendingExport)
-                    check(OpenLessContentWriter.writeBytes(app, uri, json.toByteArray(Charsets.UTF_8))) { "write failed" }
+            REQUEST_KEYBOARD_DATA_EXPORT -> {
+                val sections = pendingExport
+                pendingExport = emptySet()
+                if (sections.isEmpty()) {
+                    toast("请重新选择要导出的内容", "Choose what to export again")
+                    return
                 }
-                runOnUiThread {
-                    result.onSuccess { toast("键盘数据已导出", "Keyboard data exported") }
-                        .onFailure { toast("导出失败：${it.message}", "Export failed: ${it.message}") }
-                    refreshPinyinDictionaryCount()
+                rimeWorker.execute {
+                    val result = runCatching {
+                        val json = KeyboardDataFile.export(app, sections)
+                        check(OpenLessContentWriter.writeBytes(app, uri, json.toByteArray(Charsets.UTF_8))) { "write failed" }
+                    }
+                    runOnUiThread {
+                        result.onSuccess { toast("键盘数据已导出", "Keyboard data exported") }
+                            .onFailure { toast("导出失败：${it.message}", "Export failed: ${it.message}") }
+                        refreshPinyinDictionaryCount()
+                    }
                 }
             }
             REQUEST_KEYBOARD_DATA_IMPORT -> rimeWorker.execute {
@@ -768,7 +787,9 @@ class OpenLessKeyboardSettingsActivity : Activity() {
     private companion object {
         const val REQUEST_KEYBOARD_DATA_EXPORT = 7101
         const val REQUEST_KEYBOARD_DATA_IMPORT = 7102
-        // Outlives the Activity so a redeploy or import finishes even if the page closes; also serializes them.
+        const val STATE_EXPORT_SECTIONS = "keyboardDataExportSections"
+        // Outlives the Activity. OpenLessRime serializes session-closing work with input;
+        // JSON parsing and document I/O can stay off the input queue.
         val rimeWorker: java.util.concurrent.ExecutorService = java.util.concurrent.Executors.newSingleThreadExecutor()
         val fuzzyRedeployPending = java.util.concurrent.atomic.AtomicBoolean(false)
     }
