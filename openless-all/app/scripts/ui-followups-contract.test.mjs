@@ -10,6 +10,12 @@ const transitionViewport = readFileSync(
 );
 const capsuleStyles = readFileSync(resolve(root, 'src/components/CapsuleStyles.css'), 'utf8');
 const insertMotion = readFileSync(resolve(root, 'src/lib/insertTextAnimation.ts'), 'utf8');
+const themeSection = readFileSync(resolve(root, 'src/pages/settings/ThemeSection.tsx'), 'utf8');
+const languageSection = readFileSync(resolve(root, 'src/pages/settings/LanguageSection.tsx'), 'utf8');
+const recordingSection = readFileSync(
+  resolve(root, 'src/pages/settings/RecordingInputSection.tsx'),
+  'utf8',
+);
 
 assert.match(
   floatingShell,
@@ -38,4 +44,8 @@ assert.match(
 );
 assert.match(insertMotion, /bornBlurPx: 4\.5/);
 assert.match(insertMotion, /bornFadeMs: 220/);
+assert.match(themeSection, /<Segmented/);
+assert.match(themeSection, /settings\.theme\.dark/);
+assert.match(languageSection, /<SelectLite[\s\S]*?searchable/);
+assert.match(recordingSection, /className="ol-capsule-style-segmented"/);
 console.log('UI follow-up motion, settings flash and transcript radius contracts passed');
