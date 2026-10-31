@@ -2094,10 +2094,11 @@ pub(crate) fn request_microphone_from_foreground<R: Runtime>(
 
 fn hide_main_window<R: Runtime>(app: &AppHandle<R>) {
     #[cfg(not(mobile))]
-    if desktop_resources::active() {
-        // Hide now, destroy after a short grace so accidental close/reopen
-        // cycles keep the WebView (and its form state) alive.
-        desktop_resources::hide_main_with_grace(app);
+    {
+        // The main editor is an infrequent surface. Destroy its WebView when the
+        // user closes it so WebKit can release its content process and memory;
+        // tray/menu actions recreate it through ensure_main on the next open.
+        desktop_resources::close_main(app);
         let app_for_preview = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
             if let Some(state) = app_for_preview.try_state::<commands::MicrophoneMonitorState>() {
