@@ -1470,7 +1470,7 @@ export const zhCN = {
       capsuleStyleLabel: '胶囊样式',
       capsuleStyleSiri: '流光 Siri 风格',
       capsuleStyleSiriEnhanced: '极光',
-      capsuleStyleClassic: 'OpenLess 默认风格',
+      capsuleStyleClassic: '默认风格',
       stableTranscriptionLabel: '稳定模式（先录音后识别）',
       stableTranscriptionDesc:
         '开启后，录音期间不连接 ASR，停止后才提交整段音频。结果出现更晚，但录音不受建连延迟和录音期间网络抖动影响。',

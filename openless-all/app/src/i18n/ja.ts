@@ -1533,7 +1533,7 @@ export const ja: typeof zhCN = {
       capsuleStyleLabel: 'カプセルスタイル',
       capsuleStyleSiri: '光条 Siri スタイル',
       capsuleStyleSiriEnhanced: 'オーロラ',
-      capsuleStyleClassic: 'OpenLess デフォルトスタイル',
+      capsuleStyleClassic: 'デフォルトスタイル',
       stableTranscriptionLabel: '安定モード（録音後に文字起こし）',
       stableTranscriptionDesc:
         '有効にすると、録音中は ASR に接続せず、停止後に音声全体を送信します。結果は遅くなりますが、接続遅延や録音中のネットワーク変動に録音が影響されません。',

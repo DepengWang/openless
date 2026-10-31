@@ -1111,10 +1111,30 @@ impl TauriCapsuleWindow {
     where
         F: FnOnce(Self) + Send + 'static,
     {
-        let capsule = self.clone();
-        self.app
-            .run_on_main_thread(move || task(capsule))
-            .map_err(|error| error.to_string())
+        self.run_on_main_thread_observed(crate::issue1266_debug::Kind::CapsuleDispatch, task)
+    }
+
+    fn run_on_main_thread_observed<F>(&self, kind: crate::issue1266_debug::Kind, task: F)
+        -> Result<(), String>
+    where
+        F: FnOnce(Self) + Send + 'static,
+    {
+        #[cfg(all(target_os = "windows", feature = "issue-1266-diagnostics"))]
+        {
+            let dispatch = crate::issue1266_debug::MainDispatch::new(kind);
+            let capsule = dispatch.clone_handle(|| self.clone());
+            let result = self.app.run_on_main_thread(dispatch.wrap(move || task(capsule)))
+                .map_err(|error| error.to_string());
+            dispatch.dispatched(result.is_ok());
+            result
+        }
+        #[cfg(not(all(target_os = "windows", feature = "issue-1266-diagnostics")))]
+        {
+            let _ = kind;
+            let capsule = self.clone();
+            self.app.run_on_main_thread(move || task(capsule))
+                .map_err(|error| error.to_string())
+        }
     }
 
     fn restore_translation_menu(&self, owner: Option<(&str, openless_core::SessionId)>) -> Result<bool, String> {
@@ -1296,7 +1316,8 @@ impl TauriCapsuleWindow {
     /// Apply the user's display-target choice on the native main thread.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(crate) fn sync_capsule_mirrors(&self) {
-        let _ = self.run_on_main_thread(|capsule| capsule.apply_capsule_mirrors());
+        let _ = self.run_on_main_thread_observed(crate::issue1266_debug::Kind::MirrorDispatch,
+            |capsule| capsule.apply_capsule_mirrors());
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -1801,14 +1822,14 @@ impl TauriCapsuleWindow {
                 #[cfg(target_os = "windows")]
                 {
                     let host_for_main = host.clone();
-                    host.on_main_thread(move || {
+                    host.on_main_thread_observed(crate::issue1266_debug::Kind::LayoutDispatch, move || {
                         if let Some(capsule) = host_for_main.capsule_window() {
                             capsule.refresh_watched_layout(epoch);
                         }
                     });
                 }
                 #[cfg(not(target_os = "windows"))]
-                let _ = capsule.run_on_main_thread(move |capsule| {
+                let _ = capsule.run_on_main_thread_observed(crate::issue1266_debug::Kind::LayoutDispatch, move |capsule| {
                     capsule.refresh_watched_layout(epoch);
                 });
             }
@@ -2028,15 +2049,38 @@ impl TauriCoordinatorHost {
     where
         F: FnOnce() + Send + 'static,
     {
+        self.on_main_thread_observed(crate::issue1266_debug::Kind::HostDispatch, task);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn on_main_thread_observed<F>(&self, kind: crate::issue1266_debug::Kind, task: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        #[cfg(feature = "issue-1266-diagnostics")]
+        let dispatch = crate::issue1266_debug::MainDispatch::new(kind);
+        #[cfg(feature = "issue-1266-diagnostics")]
+        let task = dispatch.wrap(task);
+        #[cfg(not(feature = "issue-1266-diagnostics"))]
+        let _ = kind;
+
         if MAIN_THREAD.get() == Some(&std::thread::current().id()) {
             task();
+            #[cfg(feature = "issue-1266-diagnostics")]
+            dispatch.dispatched(true);
             return;
         }
-        // On a worker thread `run_on_main_thread` only queues through the event-loop proxy, so
-        // holding the slot lock here cannot re-enter it.
-        if let Some(app) = self.app.lock().as_ref() {
-            let _ = app.run_on_main_thread(task);
-        }
+        // Borrow, never clone, the bound handle. On a worker this only queues;
+        // the slot lock cannot re-enter on the same thread.
+        let queued = if let Some(app) = self.app.lock().as_ref() {
+            app.run_on_main_thread(task).is_ok()
+        } else {
+            false
+        };
+        #[cfg(feature = "issue-1266-diagnostics")]
+        dispatch.dispatched(queued);
+        #[cfg(not(feature = "issue-1266-diagnostics"))]
+        let _ = queued;
     }
 
     #[cfg(not(mobile))]
@@ -2238,11 +2282,23 @@ impl TauriCoordinatorHost {
     where
         F: FnOnce() + Send + 'static,
     {
-        let app = self
-            .app()
-            .ok_or_else(|| "Tauri AppHandle is not bound".to_string())?;
-        app.run_on_main_thread(task)
-            .map_err(|error| error.to_string())
+        #[cfg(all(target_os = "windows", feature = "issue-1266-diagnostics"))]
+        {
+            use crate::issue1266_debug::{Kind, MainDispatch};
+            let dispatch = MainDispatch::new(Kind::HostDispatch);
+            let app = dispatch.clone_handle(|| self.app());
+            let result = app.ok_or_else(|| "Tauri AppHandle is not bound".to_string())
+                .and_then(|app| app.run_on_main_thread(dispatch.wrap(task))
+                    .map_err(|error| error.to_string()));
+            dispatch.dispatched(result.is_ok());
+            result
+        }
+        #[cfg(not(all(target_os = "windows", feature = "issue-1266-diagnostics")))]
+        {
+            let app = self.app()
+                .ok_or_else(|| "Tauri AppHandle is not bound".to_string())?;
+            app.run_on_main_thread(task).map_err(|error| error.to_string())
+        }
     }
 
     pub(crate) fn spawn<F>(&self, future: F) -> tauri::async_runtime::JoinHandle<F::Output>
