@@ -348,18 +348,29 @@ class RimeEngineIntegrationTest {
     @Test fun exportChecklistSurvivesActivityRecreationWithoutAddingSensitiveSections() {
         val field = OpenLessKeyboardSettingsActivity::class.java.getDeclaredField("pendingExport").apply { isAccessible = true }
         val selected = setOf(KeyboardDataFile.Section.SETTINGS, KeyboardDataFile.Section.STROKE)
-        ActivityScenario.launch(OpenLessKeyboardSettingsActivity::class.java).use { scenario ->
-            scenario.onActivity { activity ->
-                assertEquals(emptySet<KeyboardDataFile.Section>(), field.get(activity))
-                field.set(activity, selected)
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val intent = android.content.Intent(context, OpenLessKeyboardSettingsActivity::class.java)
+        assertNotNull("Keyboard settings must be registered in the target app", context.packageManager.resolveActivity(intent, 0))
+        try {
+            ActivityScenario.launch<OpenLessKeyboardSettingsActivity>(intent).use { scenario ->
+                scenario.onActivity { activity ->
+                    assertEquals(emptySet<KeyboardDataFile.Section>(), field.get(activity))
+                    field.set(activity, selected)
+                }
+                scenario.recreate()
+                scenario.onActivity { activity ->
+                    assertEquals(selected, field.get(activity))
+                    field.set(activity, emptySet<KeyboardDataFile.Section>())
+                }
+                scenario.recreate()
+                scenario.onActivity { activity -> assertEquals(emptySet<KeyboardDataFile.Section>(), field.get(activity)) }
             }
-            scenario.recreate()
-            scenario.onActivity { activity ->
-                assertEquals(selected, field.get(activity))
-                field.set(activity, emptySet<KeyboardDataFile.Section>())
-            }
-            scenario.recreate()
-            scenario.onActivity { activity -> assertEquals(emptySet<KeyboardDataFile.Section>(), field.get(activity)) }
+        } finally {
+            // Each recreation queues a dictionary count/export. Finish those
+            // before later tests create disposable raw native sessions.
+            val worker = OpenLessKeyboardSettingsActivity::class.java.getDeclaredField("rimeWorker").apply { isAccessible = true }
+                .get(null) as java.util.concurrent.ExecutorService
+            worker.submit {}.get(30, TimeUnit.SECONDS)
         }
     }
 
