@@ -1,3 +1,4 @@
+import { desktopGuideJa as desktopGuide } from './desktopGuide';
 import { siwcJa as siwc } from './siwc';
 import type { zhCN } from './zh-CN';
 import { en } from './en';
@@ -10,6 +11,7 @@ import { experimentalAsrEn as experimentalAsr } from './experimentalAsr';
 
 export const ja: typeof zhCN = {
   ...en,
+  desktopGuide,
   siwc,
   experimentalAsr,
   uiRefinement,
@@ -1269,6 +1271,11 @@ export const ja: typeof zhCN = {
       unavailable: 'このプラットフォームでは、利用できるテスト機能はまだありません。',
     },
     selectionWorkspace: {
+      extraControls: '追加設定',
+      extraControlsDesc: '質問と編集の判定、モデル出力形式を調整します。通常は変更不要です。',
+      openExtraControls: 'その他',
+      extraControlsSaveHint: '変更は自動保存されます。',
+      extraControlsDone: '完了',
       title: '選択範囲アシスタント',
       hint: 'テキスト選択後、同じショートカットで：音声編集オフ時は推敲、オン時は押しながら話してから「質問」か「編集」を選択。',
       polishHotkey: '選択範囲アシスタントのショートカット',
@@ -1693,16 +1700,6 @@ export const ja: typeof zhCN = {
       voiceActivationTimeoutEnabled: 'タイムアウトで停止',
       voiceActivationTimeoutSeconds: 'タイムアウト（秒）',
       startupGroupTitle: '起動',
-      lowMemoryBackgroundLabel: '省メモリバックグラウンドモード',
-      lowMemoryBackgroundDesc:
-        '再起動後に適用。メイン画面を閉じると解放し、録音時のみネイティブカプセルを表示します。待機中のマイク事前起動を無効にします。ローカルモデルの解放設定は維持されます。',
-      lowMemoryRestartLabel: '再起動後に適用',
-      lowMemoryRestartDesc:
-        '低メモリバックグラウンドモードの設定を保存しました。実行モードの切り替えにはアプリの再起動が必要です。',
-      lowMemoryRestartNow: '今すぐ再起動',
-      lowMemoryCapsuleErrorLabel: 'ネイティブカプセル利用不可',
-      lowMemoryCapsuleErrorDesc:
-        'ディクテーションは引き続き利用できますが、フローティングカプセルは表示されません。ヘルパーが見つからないかブロックされている可能性があります。アプリを再インストールしてください。',
       startMinimizedLabel: '起動時にメインウィンドウを表示しない',
       startMinimizedDesc:
         'どの起動経路でもメインウィンドウを開かず、メニューバー / トレイのみで動作。',

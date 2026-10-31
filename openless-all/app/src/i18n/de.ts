@@ -1,3 +1,4 @@
+import { desktopGuideDe as desktopGuide } from './desktopGuide';
 import { siwcDe as siwc } from './siwc';
 import type { zhCN } from './zh-CN';
 
@@ -5,6 +6,7 @@ import { uiRefinementEn as uiRefinement } from './uiRefinement';
 import { experimentalAsrEn as experimentalAsr } from './experimentalAsr';
 
 export const de: typeof zhCN = {
+  desktopGuide,
   siwc,
   experimentalAsr,
   uiRefinement,
@@ -1304,6 +1306,12 @@ export const de: typeof zhCN = {
       unavailable: 'Auf dieser Plattform sind noch keine Testfunktionen verfügbar.',
     },
     selectionWorkspace: {
+      extraControls: 'Erweiterte Einstellungen',
+      extraControlsDesc:
+        'Frage-/Bearbeitungsentscheidung und Ausgabeformat des Modells konfigurieren.',
+      openExtraControls: 'Mehr',
+      extraControlsSaveHint: 'Änderungen werden automatisch gespeichert.',
+      extraControlsDone: 'Fertig',
       title: 'Assistent für Textauswahl',
       hint: 'Wähle Text aus und verwende einen Kurzbefehl: Ohne Sprachbearbeitung wird der Text direkt überarbeitet. Mit Sprachbearbeitung hältst du die Taste gedrückt und sprichst; danach wählst du „Fragen“ oder „Bearbeiten“.',
       polishHotkey: 'Kurzbefehl für den Auswahlassistenten',
@@ -1738,16 +1746,6 @@ export const de: typeof zhCN = {
       voiceActivationTimeoutEnabled: 'Nach Zeitüberschreitung stoppen',
       voiceActivationTimeoutSeconds: 'Zeitüberschreitung (Sekunden)',
       startupGroupTitle: 'Startverhalten',
-      lowMemoryBackgroundLabel: 'Speichersparender Hintergrundmodus',
-      lowMemoryBackgroundDesc:
-        'Nach einem Neustart: Hauptfenster beim Schließen freigeben, native Kapsel bei Bedarf anzeigen und Mikrofonvorwärmung im Leerlauf deaktivieren. Die Freigabeeinstellungen lokaler Modelle bleiben erhalten.',
-      lowMemoryRestartLabel: 'Wird nach Neustart wirksam',
-      lowMemoryRestartDesc:
-        'Der Schalter für den speichersparenden Hintergrundmodus ist gespeichert; der aktive Modus wechselt erst nach einem Neustart der App.',
-      lowMemoryRestartNow: 'Jetzt neu starten',
-      lowMemoryCapsuleErrorLabel: 'Native Kapsel nicht verfügbar',
-      lowMemoryCapsuleErrorDesc:
-        'Diktieren funktioniert weiterhin, aber die schwebende Kapsel wird nicht angezeigt. Das Hilfsprogramm fehlt möglicherweise oder wird blockiert; installiere die App neu.',
       startMinimizedLabel: 'Minimiert starten (ohne Hauptfenster)',
       startMinimizedDesc:
         'Zeigt bei keinem Startweg das Hauptfenster an. Nur Menüleiste / Infobereich.',

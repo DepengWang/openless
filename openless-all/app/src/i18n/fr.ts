@@ -1,3 +1,4 @@
+import { desktopGuideFr as desktopGuide } from './desktopGuide';
 import { siwcFr as siwc } from './siwc';
 import type { zhCN } from './zh-CN';
 
@@ -5,6 +6,7 @@ import { uiRefinementEn as uiRefinement } from './uiRefinement';
 import { experimentalAsrEn as experimentalAsr } from './experimentalAsr';
 
 export const fr: typeof zhCN = {
+  desktopGuide,
   siwc,
   experimentalAsr,
   uiRefinement,
@@ -1316,6 +1318,12 @@ export const fr: typeof zhCN = {
       unavailable: 'Aucune fonctionnalité de test n’est encore disponible sur cette plateforme.',
     },
     selectionWorkspace: {
+      extraControls: 'Options avancées',
+      extraControlsDesc:
+        'Configurez la distinction question/édition et le format de sortie du modèle.',
+      openExtraControls: 'Plus',
+      extraControlsSaveHint: 'Les modifications sont enregistrées automatiquement.',
+      extraControlsDone: 'Terminé',
       title: 'Assistant de sélection',
       hint: 'Sélectionnez du texte, puis utilisez un seul raccourci : amélioration directe sans édition vocale ; sinon, maintenez et parlez, puis choisissez Question ou Modification.',
       polishHotkey: 'Raccourci de l’assistant de sélection',
@@ -1751,16 +1759,6 @@ export const fr: typeof zhCN = {
       voiceActivationTimeoutEnabled: 'Arrêter après expiration',
       voiceActivationTimeoutSeconds: 'Délai (secondes)',
       startupGroupTitle: 'Démarrage',
-      lowMemoryBackgroundLabel: 'Mode arrière-plan économe en mémoire',
-      lowMemoryBackgroundDesc:
-        'Après redémarrage : libère la fenêtre principale à sa fermeture et affiche la capsule native à la demande. Désactive le préchauffage du microphone au repos. Conserve les réglages de libération des modèles locaux.',
-      lowMemoryRestartLabel: 'Appliqué après redémarrage',
-      lowMemoryRestartDesc:
-        "Le commutateur du mode arrière à faible mémoire est enregistré ; le mode actif ne change qu'après le redémarrage de l'application.",
-      lowMemoryRestartNow: 'Redémarrer maintenant',
-      lowMemoryCapsuleErrorLabel: 'Capsule native indisponible',
-      lowMemoryCapsuleErrorDesc:
-        "La dictée fonctionne toujours, mais la capsule flottante ne s'affichera pas. Le programme auxiliaire est peut-être manquant ou bloqué ; réinstallez l'application.",
       startMinimizedLabel: 'Démarrer réduit (sans fenêtre principale)',
       startMinimizedDesc:
         'Au lancement, seule la barre des menus ou la zone de notification est affichée, jamais la fenêtre principale.',

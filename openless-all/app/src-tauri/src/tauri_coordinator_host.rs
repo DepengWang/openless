@@ -23,6 +23,10 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::types::{CapsuleDisplayMode, CapsulePayload, CapsuleState, CapsuleStyle};
 
+/// The Tauri event-loop thread, recorded by [`TauriCoordinatorHost::bind`].
+#[cfg(target_os = "windows")]
+static MAIN_THREAD: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
+
 static CAPSULE_SUPPRESSED_BY_TOGGLE_LOGGED: AtomicBool = AtomicBool::new(false);
 static CAPSULE_FIRST_SHOW_LOGGED: AtomicBool = AtomicBool::new(false);
 static CAPSULE_NO_ACTIVATE_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
@@ -973,6 +977,8 @@ impl CapsuleWindowState {
 #[derive(Clone)]
 pub(crate) struct TauriCapsuleWindow {
     app: AppHandle,
+    #[cfg(target_os = "windows")]
+    host: TauriCoordinatorHost,
     state: Arc<CapsuleWindowState>,
     qa_context: Arc<crate::qa_adapter::TauriQaHostContext>,
 }
@@ -1779,36 +1785,57 @@ impl TauriCapsuleWindow {
             .layout_watch_epoch
             .fetch_add(1, Ordering::SeqCst)
             .wrapping_add(1);
+        let state = Arc::clone(&self.state);
+        // The Windows timer must not own a Tauri handle: both cloning it on a Tokio
+        // worker and dropping it when the timer exits can race the event loop's Rc.
+        #[cfg(target_os = "windows")]
+        let host = self.host.clone();
+        #[cfg(not(target_os = "windows"))]
         let capsule = self.clone();
         tauri::async_runtime::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                if capsule.state.layout_watch_epoch.load(Ordering::SeqCst) != epoch {
+                if state.layout_watch_epoch.load(Ordering::SeqCst) != epoch {
                     break;
                 }
+                #[cfg(target_os = "windows")]
+                {
+                    let host_for_main = host.clone();
+                    host.on_main_thread(move || {
+                        if let Some(capsule) = host_for_main.capsule_window() {
+                            capsule.refresh_watched_layout(epoch);
+                        }
+                    });
+                }
+                #[cfg(not(target_os = "windows"))]
                 let _ = capsule.run_on_main_thread(move |capsule| {
-                    if capsule.state.layout_watch_epoch.load(Ordering::SeqCst) != epoch {
-                        return;
-                    }
-                    let Some(window) = capsule.window() else {
-                        capsule.stop_layout_watch();
-                        return;
-                    };
-                    if !window.is_visible().unwrap_or(false) {
-                        capsule.stop_layout_watch();
-                        return;
-                    }
-                    let payload = capsule.state.snapshot.lock().payload.clone();
-                    if let Some(payload) = payload {
-                        capsule.maybe_position_capsule_bottom_center(
-                            &window,
-                            payload.translation,
-                            capsule.state.cached_style(),
-                        );
-                    }
+                    capsule.refresh_watched_layout(epoch);
                 });
             }
         });
+    }
+
+    fn refresh_watched_layout(&self, epoch: u64) {
+        // A stopped/restarted watch can still have an old tick queued on the main thread.
+        if self.state.layout_watch_epoch.load(Ordering::SeqCst) != epoch {
+            return;
+        }
+        let Some(window) = self.window() else {
+            self.stop_layout_watch();
+            return;
+        };
+        if !window.is_visible().unwrap_or(false) {
+            self.stop_layout_watch();
+            return;
+        }
+        let payload = self.state.snapshot.lock().payload.clone();
+        if let Some(payload) = payload {
+            self.maybe_position_capsule_bottom_center(
+                &window,
+                payload.translation,
+                self.state.cached_style(),
+            );
+        }
     }
 
     fn update_cursor_for_payload(&self, payload: &CapsulePayload, style: CapsuleStyle) {
@@ -1955,11 +1982,6 @@ pub(crate) struct TauriCoordinatorHost {
     capsule: Arc<CapsuleWindowState>,
     #[cfg(not(mobile))]
     native: Arc<Mutex<Option<Arc<crate::native_capsule::NativeCapsule>>>>,
-    /// Last sidecar init failure, surfaced by `native_capsule_status` so the
-    /// settings page can explain a missing recording overlay instead of
-    /// failing silently.
-    #[cfg(not(mobile))]
-    native_capsule_error: Arc<Mutex<Option<String>>>,
     qa_context: Arc<crate::qa_adapter::TauriQaHostContext>,
 }
 
@@ -1973,38 +1995,48 @@ impl TauriCoordinatorHost {
             capsule: Arc::new(CapsuleWindowState::default()),
             #[cfg(not(mobile))]
             native: Arc::new(Mutex::new(None)),
-            #[cfg(not(mobile))]
-            native_capsule_error: Arc::new(Mutex::new(None)),
             qa_context,
         }
     }
 
     pub(crate) fn bind(&self, app: AppHandle) {
+        // `bind` runs in Tauri's `setup`, on the event-loop thread.
+        #[cfg(target_os = "windows")]
+        let _ = MAIN_THREAD.set(std::thread::current().id());
         #[cfg(not(mobile))]
         if crate::desktop_resources::active() {
             match crate::native_capsule::NativeCapsule::new(app.clone()) {
                 Ok(native) => {
                     *self.native.lock() = Some(Arc::new(native));
-                    *self.native_capsule_error.lock() = None;
                 }
                 Err(error) => {
                     log::error!("[native-capsule] {error}; dictation remains available");
-                    *self.native_capsule_error.lock() = Some(error.to_string());
                 }
             }
         }
         *self.app.lock() = Some(app);
     }
 
-    /// `(available, last_error)` for the disposable capsule sidecar.
-    #[cfg(not(mobile))]
-    pub(crate) fn native_capsule_status(&self) -> (bool, Option<String>) {
-        let native = self.native.lock();
-        let error = native
-            .as_ref()
-            .and_then(|native| native.last_error())
-            .or_else(|| self.native_capsule_error.lock().clone());
-        (native.is_some() && error.is_none(), error)
+    /// Runs `task` on the event-loop thread.
+    ///
+    /// Tauri handles (`AppHandle`, windows, `TauriCapsuleWindow`) share the event loop through a
+    /// non-atomic `Rc`, so cloning or dropping one off the main thread races the main thread's
+    /// refcount and eventually frees the event loop while it runs (heap corruption 0xc0000374).
+    /// This posts through the bound handle by reference instead of cloning it on the caller.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn on_main_thread<F>(&self, task: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        if MAIN_THREAD.get() == Some(&std::thread::current().id()) {
+            task();
+            return;
+        }
+        // On a worker thread `run_on_main_thread` only queues through the event-loop proxy, so
+        // holding the slot lock here cannot re-enter it.
+        if let Some(app) = self.app.lock().as_ref() {
+            let _ = app.run_on_main_thread(task);
+        }
     }
 
     #[cfg(not(mobile))]
@@ -2056,6 +2088,13 @@ impl TauriCoordinatorHost {
     }
 
     #[cfg(not(mobile))]
+    pub(crate) fn refresh_native_capsule_theme(&self) {
+        if let Some(native) = self.native.lock().as_ref() {
+            native.refresh_theme();
+        }
+    }
+
+    #[cfg(not(mobile))]
     pub(crate) fn stop_native_capsule(&self) {
         if let Some(native) = self.native.lock().as_ref() {
             native.stop();
@@ -2074,6 +2113,8 @@ impl TauriCoordinatorHost {
     pub(crate) fn capsule_window(&self) -> Option<TauriCapsuleWindow> {
         self.app().map(|app| TauriCapsuleWindow {
             app,
+            #[cfg(target_os = "windows")]
+            host: self.clone(),
             state: Arc::clone(&self.capsule),
             qa_context: Arc::clone(&self.qa_context),
         })

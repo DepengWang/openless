@@ -1,3 +1,4 @@
+import { desktopGuideZhTW as desktopGuide } from './desktopGuide';
 import { siwcZhTW as siwc } from './siwc';
 import type { zhCN } from './zh-CN';
 
@@ -6,6 +7,7 @@ import { uiRefinementZhTW as uiRefinement } from './uiRefinement';
 import { experimentalAsrZhTW as experimentalAsr } from './experimentalAsr';
 
 export const zhTW: typeof zhCN = {
+  desktopGuide,
   siwc,
   experimentalAsr,
   uiRefinement,
@@ -1229,6 +1231,11 @@ export const zhTW: typeof zhCN = {
       unavailable: '目前平台暫無可用的測試功能。',
     },
     selectionWorkspace: {
+      extraControls: '額外控制項',
+      extraControlsDesc: '設定提問/編輯判斷與模型輸出格式；一般使用不需要調整。',
+      openExtraControls: '更多',
+      extraControlsSaveHint: '修改後會自動儲存。',
+      extraControlsDone: '完成',
       title: '選區助手',
       hint: '選中文字後按同一快捷鍵：關閉語音編輯時直接潤色；開啟後口述指令，說完再選擇「提問」或「編輯選區」。',
       polishHotkey: '選區助手快捷鍵',
@@ -1620,15 +1627,6 @@ export const zhTW: typeof zhCN = {
       voiceActivationTimeoutEnabled: '逾時後停止',
       voiceActivationTimeoutSeconds: '逾時（秒）',
       startupGroupTitle: '啟動',
-      lowMemoryBackgroundLabel: '低記憶體背景模式',
-      lowMemoryBackgroundDesc:
-        '重新啟動後生效。關閉主介面時釋放視窗，錄音時按需顯示原生膠囊；閒置時關閉麥克風預熱。本機模型仍依原有設定釋放。',
-      lowMemoryRestartLabel: '重啟後生效',
-      lowMemoryRestartDesc: '低記憶體背景模式開關已儲存，重新啟動應用後才會切換執行模式。',
-      lowMemoryRestartNow: '立即重啟',
-      lowMemoryCapsuleErrorLabel: '原生膠囊不可用',
-      lowMemoryCapsuleErrorDesc:
-        '聽寫仍可進行，但不會顯示懸浮膠囊。輔助程式可能缺失或被系統攔截，請重新安裝應用。',
       startMinimizedLabel: '啟動時靜默執行',
       startMinimizedDesc: '所有啟動路徑都不彈主視窗，僅選單欄 / 託盤執行。',
       autoUpdateCheckLabel: '自動檢查更新',

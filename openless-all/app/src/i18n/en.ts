@@ -1,3 +1,4 @@
+import { desktopGuideEn as desktopGuide } from './desktopGuide';
 import { siwcEn as siwc } from './siwc';
 // English resources — translated from zh-CN.ts. Keep keys in sync.
 
@@ -8,6 +9,7 @@ import { uiRefinementEn as uiRefinement } from './uiRefinement';
 import { experimentalAsrEn as experimentalAsr } from './experimentalAsr';
 
 export const en: typeof zhCN = {
+  desktopGuide,
   siwc,
   experimentalAsr,
   uiRefinement,
@@ -1280,6 +1282,11 @@ export const en: typeof zhCN = {
       unavailable: 'No testing features are available on this platform yet.',
     },
     selectionWorkspace: {
+      extraControls: 'Advanced controls',
+      extraControlsDesc: 'Configure question/edit routing and model output only when needed.',
+      openExtraControls: 'More',
+      extraControlsSaveHint: 'Changes save automatically.',
+      extraControlsDone: 'Done',
       title: 'Selection Assistant',
       hint: 'With a selection, one shortcut polishes (voice edit off) or takes a spoken instruction to ask or edit. With no selection but focus in a text field, speak to Help me write a draft or ask a question.',
       polishHotkey: 'Selection assistant shortcut',
@@ -1706,16 +1713,6 @@ export const en: typeof zhCN = {
       voiceActivationTimeoutEnabled: 'Stop after timeout',
       voiceActivationTimeoutSeconds: 'Timeout (seconds)',
       startupGroupTitle: 'Startup',
-      lowMemoryBackgroundLabel: 'Low-memory background mode',
-      lowMemoryBackgroundDesc:
-        'Applies after restart. Release the main window on close and show a native capsule on demand. Disable microphone prewarming while idle. Local models keep their existing release settings.',
-      lowMemoryRestartLabel: 'Applies after restart',
-      lowMemoryRestartDesc:
-        'The low-memory background switch is saved; the running mode changes after the app restarts.',
-      lowMemoryRestartNow: 'Restart now',
-      lowMemoryCapsuleErrorLabel: 'Native capsule unavailable',
-      lowMemoryCapsuleErrorDesc:
-        'Dictation still works, but the floating capsule will not appear. The helper may be missing or blocked; reinstall the app.',
       startMinimizedLabel: 'Start minimized (no main window)',
       startMinimizedDesc: 'No main window on any launch path — menu bar / tray only.',
       autoUpdateCheckLabel: 'Auto-check for updates',

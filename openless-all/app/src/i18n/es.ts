@@ -1,3 +1,4 @@
+import { desktopGuideEs as desktopGuide } from './desktopGuide';
 import { siwcEs as siwc } from './siwc';
 import type { zhCN } from './zh-CN';
 
@@ -5,6 +6,7 @@ import { uiRefinementEn as uiRefinement } from './uiRefinement';
 import { experimentalAsrEn as experimentalAsr } from './experimentalAsr';
 
 export const es: typeof zhCN = {
+  desktopGuide,
   siwc,
   experimentalAsr,
   uiRefinement,
@@ -1296,6 +1298,12 @@ export const es: typeof zhCN = {
       unavailable: 'Todavía no hay funciones de prueba disponibles en esta plataforma.',
     },
     selectionWorkspace: {
+      extraControls: 'Controles avanzados',
+      extraControlsDesc:
+        'Configura la decisión entre pregunta y edición y el formato de salida del modelo.',
+      openExtraControls: 'Más',
+      extraControlsSaveHint: 'Los cambios se guardan automáticamente.',
+      extraControlsDone: 'Listo',
       title: 'Asistente de selección',
       hint: 'Selecciona texto y usa un solo atajo: mejora el texto si la edición por voz está desactivada; si está activada, mantén pulsado y habla, y luego elige Preguntar o Editar.',
       polishHotkey: 'Atajo del asistente de selección',
@@ -1730,16 +1738,6 @@ export const es: typeof zhCN = {
       voiceActivationTimeoutEnabled: 'Detener al agotarse el tiempo',
       voiceActivationTimeoutSeconds: 'Tiempo de espera (segundos)',
       startupGroupTitle: 'Inicio',
-      lowMemoryBackgroundLabel: 'Modo de fondo con poca memoria',
-      lowMemoryBackgroundDesc:
-        'Se aplica al reiniciar. Libera la ventana principal al cerrarla y muestra la cápsula nativa cuando se necesita. Desactiva el precalentamiento del micrófono en reposo. Conserva la configuración de descarga de los modelos locales.',
-      lowMemoryRestartLabel: 'Se aplica tras reiniciar',
-      lowMemoryRestartDesc:
-        'El cambio del modo de fondo de baja memoria está guardado; el modo en ejecución cambia al reiniciar la aplicación.',
-      lowMemoryRestartNow: 'Reiniciar ahora',
-      lowMemoryCapsuleErrorLabel: 'Cápsula nativa no disponible',
-      lowMemoryCapsuleErrorDesc:
-        'El dictado sigue funcionando, pero no se mostrará la cápsula flotante. Puede que falte el programa auxiliar o esté bloqueado; reinstala la app.',
       startMinimizedLabel: 'Iniciar minimizado (sin ventana principal)',
       startMinimizedDesc:
         'Al iniciar, solo se muestra la barra de menús o la bandeja del sistema, nunca la ventana principal.',
