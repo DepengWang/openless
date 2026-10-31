@@ -286,6 +286,16 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - name: Free disk space before Android emulator restore
+        shell: bash
+        run: |
+          # This runner only builds Android; .NET and Haskell are unused.
+          sudo rm -rf /usr/share/dotnet /usr/local/.ghcup
+          # JNI libraries and dictionaries are already staged in the app, and
+          # beta saved the Rime build cache before compiling the test APK.
+          rm -rf -- "${RUNNER_TEMP:?}/openless-cache/mobile-rime"
+          df -h "$RUNNER_TEMP"
+
       - name: Restore the pinned Android emulator and system image
         id: emulator_cache
         uses: actions/cache/restore@v4
